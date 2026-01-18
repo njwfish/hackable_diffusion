@@ -46,7 +46,9 @@ def compute_discrete_diffusion_loss(
     *,
     schedule: DiscreteSchedule | None = None,
     use_mask: bool = False,
+    mask_key: str = 'mask',
     weight_fn: base.WeightFn | None = None,
+    normalize_by_mask: bool = True,
 ) -> LossOutput:
   """Compute the discrete diffusion loss."""
 
@@ -58,26 +60,47 @@ def compute_discrete_diffusion_loss(
   labels = jnp.squeeze(targets['x0'], axis=-1)
   # Remove trailing dimension of the x0.
   if use_mask:
-    mask = jnp.squeeze(targets['mask'], axis=-1)
+    if mask_key not in targets:
+      raise ValueError(
+          f'Mask key {mask_key} not found in targets: {targets.keys()=}'
+      )
+    mask = jnp.squeeze(targets[mask_key], axis=-1)
+    mask = mask.astype(jnp.bool_)
     # Remove trailing dimension of the mask.
     # Mask is True if xt is not masked. This is to stay consistent with
     # the conditioning mask.
   else:
     mask = jnp.zeros_like(labels, dtype=jnp.bool_)
 
+  inverted_mask = jnp.invert(mask)
   neg_xentropy = -optax.softmax_cross_entropy_with_integer_labels(
       logits=preds['logits'],
       labels=labels,
-      where=jnp.invert(mask),
+      where=inverted_mask,
   )
 
-  assert neg_xentropy.shape == labels.shape
+  if neg_xentropy.shape != labels.shape:
+    raise ValueError(
+        f'neg_xentropy shape {neg_xentropy.shape} does not match labels shape'
+        f' {labels.shape}'
+    )
 
+  # Sum and normalize.
   reduce_axes = tuple(range(1, neg_xentropy.ndim))
-  neg_xentropy = jnp.mean(neg_xentropy, axis=reduce_axes, keepdims=True)
+  if normalize_by_mask:
+    denominator = jnp.sum(inverted_mask, axis=reduce_axes, keepdims=True)
+  else:
+    denominator = jnp.sum(
+        jnp.ones_like(neg_xentropy), axis=reduce_axes, keepdims=True
+    )
+  neg_xentropy = jnp.sum(neg_xentropy, axis=reduce_axes, keepdims=True)
+  neg_xentropy = neg_xentropy / jnp.clip(denominator, min=1e-8)
   neg_xentropy = utils.flatten_non_batch_dims(neg_xentropy)
 
-  assert neg_xentropy.shape == (bsz, 1)
+  if neg_xentropy.shape != (bsz, 1):
+    raise ValueError(
+        f'neg_xentropy should have shape ({bsz}, 1), got {neg_xentropy.shape}'
+    )
 
   if weight_fn is not None:
     weight = weight_fn(
@@ -94,7 +117,10 @@ def compute_discrete_diffusion_loss(
 
   weighted_loss = jnp.squeeze(weighted_loss, axis=-1)
 
-  assert weighted_loss.shape == (bsz,)
+  if weighted_loss.shape != (bsz,):
+    raise ValueError(
+        f'weighted_loss should have shape ({bsz},), got {weighted_loss.shape}'
+    )
   return weighted_loss
 
 
@@ -108,6 +134,8 @@ class NoWeightDiscreteLoss(base.DiffusionLoss):
   """Discrete loss without weight."""
 
   use_mask: bool = False
+  mask_key: str = 'mask'
+  normalize_by_mask: bool = True
 
   @typechecked
   def __call__(
@@ -123,7 +151,9 @@ class NoWeightDiscreteLoss(base.DiffusionLoss):
         time=time,
         schedule=None,
         use_mask=self.use_mask,
+        mask_key=self.mask_key,
         weight_fn=None,
+        normalize_by_mask=self.normalize_by_mask,
     )
 
 
@@ -133,6 +163,8 @@ class MD4Loss(base.DiffusionLoss):
 
   schedule: DiscreteSchedule
   use_mask: bool = False
+  mask_key: str = 'mask'
+  normalize_by_mask: bool = True
 
   @typechecked
   def __call__(
@@ -163,5 +195,7 @@ class MD4Loss(base.DiffusionLoss):
         time=time,
         schedule=self.schedule,
         use_mask=self.use_mask,
+        mask_key=self.mask_key,
         weight_fn=_weight_fn,
+        normalize_by_mask=self.normalize_by_mask,
     )

@@ -14,6 +14,7 @@
 
 """Tests for Discrete loss functions."""
 
+import chex
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.loss import discrete
@@ -94,6 +95,57 @@ class DiscreteLossTest(parameterized.TestCase):
 
     self.assertEqual(loss.shape, (self.bsz,))
     self.assertFalse(jnp.isnan(loss).any())
+
+  def test_masking_and_normalization(self):
+    """Tests NoWeightDiscreteLoss with masking and normalization options."""
+    # Setup: Create logits and labels such that CE loss = -log(0.5) = log(2)
+    # for every element if label is 0 and logits are [1, 1].
+    logits = jnp.array([[[1.0, 1.0], [1.0, 1.0], [1.0, 1.0], [1.0, 1.0]]])
+    labels = jnp.array([[[0], [0], [0], [0]]])
+    # For mask: False means "include in loss", True means "exclude from loss"
+    # This is because the loss function uses `where=jnp.invert(mask)`.
+    mask = jnp.array([[[False], [False], [True], [True]]])
+    time = jnp.array([0.5])
+    log2 = jnp.log(2.0)
+
+    preds = {'logits': logits}
+    targets = {'x0': labels, 'test_mask': mask}
+
+    # Case 1: use_mask=True, normalize_by_mask=True
+    # Loss is computed on 2 elements, sum is 2*log2, count is 2.
+    # Expected: (2*log2) / 2 = log2
+    loss1 = discrete.NoWeightDiscreteLoss(
+        use_mask=True, mask_key='test_mask', normalize_by_mask=True
+    )
+    res1 = loss1(preds=preds, targets=targets, time=time)
+    chex.assert_trees_all_close(res1, jnp.array([log2]))
+
+    # Case 2: use_mask=True, normalize_by_mask=False
+    # Loss is computed on 2 elements, sum is 2*log2, count is 4.
+    # Expected: (2*log2) / 4 = 0.5*log2
+    loss2 = discrete.NoWeightDiscreteLoss(
+        use_mask=True, mask_key='test_mask', normalize_by_mask=False
+    )
+    res2 = loss2(preds=preds, targets=targets, time=time)
+    chex.assert_trees_all_close(res2, jnp.array([0.5 * log2]))
+
+    # Case 3: use_mask=False, normalize_by_mask=True
+    # Mask is ignored, all 4 elements are used. Sum is 4*log2, count is 4.
+    # Expected: (4*log2) / 4 = log2
+    loss3 = discrete.NoWeightDiscreteLoss(
+        use_mask=False, mask_key='test_mask', normalize_by_mask=True
+    )
+    res3 = loss3(preds=preds, targets=targets, time=time)
+    chex.assert_trees_all_close(res3, jnp.array([log2]))
+
+    # Case 4: use_mask=False, normalize_by_mask=False
+    # Mask is ignored, all 4 elements are used. Sum is 4*log2, count is 4.
+    # Expected: (4*log2) / 4 = log2
+    loss4 = discrete.NoWeightDiscreteLoss(
+        use_mask=False, mask_key='test_mask', normalize_by_mask=False
+    )
+    res4 = loss4(preds=preds, targets=targets, time=time)
+    chex.assert_trees_all_close(res4, jnp.array([log2]))
 
 
 if __name__ == '__main__':
