@@ -23,9 +23,12 @@ step and t=1 to the first time step. This in accordance with the notation in
 the diffusion literature.
 """
 
+import abc
 import dataclasses
 from typing import Protocol
+
 from hackable_diffusion.lib import hd_typing
+from hackable_diffusion.lib import time_sampling
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 from hackable_diffusion.lib.sampling import base as sampling_base
@@ -35,7 +38,7 @@ import jax.numpy as jnp
 ################################################################################
 # MARK: Type Aliases
 ################################################################################
-
+ABC = abc.ABC
 PRNGKey = hd_typing.PRNGKey
 PyTree = hd_typing.PyTree
 
@@ -80,30 +83,38 @@ class TimeSchedule(Protocol):
     ...
 
 
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class TimeScheduleBaseClass(ABC, TimeSchedule):
+  """Base class for time schedules."""
+  # Creates a time schedule in
+  # [min_time + safety_epsilon, max_time-safety_epsilon].
+  min_time: float = 0.0
+  max_time: float = 1.0
+  safety_epsilon: float = 1e-6
+  span: tuple[float, float] = dataclasses.field(init=False)
+
+  def __post_init__(self):
+    span = time_sampling.get_sampling_time_interval(
+        (self.min_time, self.max_time), self.safety_epsilon
+    )
+    object.__setattr__(self, "span", span)
+
+
 ################################################################################
 # MARK: Uniform Time Schedule
 ################################################################################
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class UniformTimeSchedule(TimeSchedule):
+class UniformTimeSchedule(TimeScheduleBaseClass):
   """Creates a schedule with uniformly spaced time steps in [ε, 1-ε]."""
-
-  safety_epsilon: float = 1e-6
-
-  def __post_init__(self):
-    if self.safety_epsilon < 0.0 or self.safety_epsilon > 1.0:
-      raise ValueError(
-          "safety_epsilon must be between 0.0 and 1.0, got"
-          f" {self.safety_epsilon}"
-      )
 
   @typechecked
   def all_step_infos(
       self, rng: PRNGKey, num_steps: int, data_spec: DataArray
   ) -> StepInfo:
     bsz, *data_shape = data_spec.shape
-    start, stop = 1.0 - self.safety_epsilon, self.safety_epsilon
+    stop, start = self.span
     steps = jnp.linspace(start, stop, num_steps)
     steps = utils.bcast_right(steps, data_spec.ndim + 1)
     steps = jnp.repeat(steps, bsz, axis=1)
@@ -132,7 +143,7 @@ class UniformTimeSchedule(TimeSchedule):
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class EDMTimeSchedule(TimeSchedule):
+class EDMTimeSchedule(TimeScheduleBaseClass):
   """Creates a schedule with non-uniformly spaced time steps in [ε, 1-ε].
 
   The implementation is based on https://arxiv.org/abs/2206.00364.
@@ -145,22 +156,14 @@ class EDMTimeSchedule(TimeSchedule):
   uniform.
   """
 
-  safety_epsilon: float = 1e-6
   rho: float = 1.0
-
-  def __post_init__(self):
-    if self.safety_epsilon < 0.0 or self.safety_epsilon > 1.0:
-      raise ValueError(
-          "safety_epsilon must be between 0.0 and 1.0, got"
-          f" {self.safety_epsilon}"
-      )
 
   @typechecked
   def all_step_infos(
       self, rng: PRNGKey, num_steps: int, data_spec: DataArray
   ) -> StepInfo:
     bsz, *data_shape = data_spec.shape
-    start, stop = 1.0 - self.safety_epsilon, self.safety_epsilon
+    stop, start = self.span
     start_inv_rho = start ** (1.0 / self.rho)
     stop_inv_rho = stop ** (1.0 / self.rho)
     steps = jnp.linspace(start_inv_rho, stop_inv_rho, num_steps)

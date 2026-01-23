@@ -49,6 +49,27 @@ class TimeScheduleTest(absltest.TestCase):
         expected,
     )
 
+  def test_uniform_all_step_infos_with_starting_noise(self):
+    time_schedule = time_scheduling.UniformTimeSchedule(
+        safety_epsilon=0.1, min_time=0, max_time=0.6
+    )
+    data_spec = jnp.zeros((2, 3))
+    expected = jnp.array([
+        [[0.5], [0.5]],
+        [[0.4], [0.4]],
+        [[0.3], [0.3]],
+        [[0.2], [0.2]],
+        [[0.1], [0.1]],
+    ])
+    chex.assert_trees_all_close(
+        time_schedule.all_step_infos(
+            rng=jax.random.PRNGKey(0),
+            num_steps=5,
+            data_spec=data_spec,
+        ).time,
+        expected,
+    )
+
   def test_uniform_all_step_infos_without_safety_epsilon(self):
     time_schedule = time_scheduling.UniformTimeSchedule(safety_epsilon=0.0)
     data_spec = jnp.zeros((2, 3))
@@ -69,11 +90,25 @@ class TimeScheduleTest(absltest.TestCase):
     )
 
   def test_fail_epsilon_out_of_range(self):
-    with self.assertRaisesRegex(ValueError, "must be between 0.0 and 1.0"):
+    with self.assertRaisesRegex(ValueError, r"must be between 0.0 and 1.0"):
       time_scheduling.UniformTimeSchedule(safety_epsilon=-0.1)
 
-    with self.assertRaisesRegex(ValueError, "must be between 0.0 and 1.0"):
+    with self.assertRaisesRegex(ValueError, r"must be between 0.0 and 1.0"):
       time_scheduling.UniformTimeSchedule(safety_epsilon=1.1)
+
+  def test_fail_min_max_time_out_of_range(self):
+    with self.assertRaisesRegex(
+        ValueError, r"interval must be within \[0, 1\]"
+    ):
+      time_scheduling.UniformTimeSchedule(
+          safety_epsilon=0.1, min_time=-0.2, max_time=1.0
+      )
+    with self.assertRaisesRegex(
+        ValueError, r"interval must be within \[0, 1\]"
+    ):
+      time_scheduling.UniformTimeSchedule(
+          safety_epsilon=0.1, min_time=0.1, max_time=1.2
+      )
 
   # MARK: EDMTimeSchedule tests
 
