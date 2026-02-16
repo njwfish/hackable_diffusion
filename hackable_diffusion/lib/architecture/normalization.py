@@ -1,4 +1,4 @@
-# Copyright 2025 Hackable Diffusion Authors.
+# Copyright 2026 Hackable Diffusion Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -34,6 +34,7 @@ import jax.numpy as jnp
 
 DType = hd_typing.DType
 Float = hd_typing.Float
+Bool = hd_typing.Bool
 
 NormalizationType = arch_typing.NormalizationType
 
@@ -112,6 +113,18 @@ class NormalizationLayer(nn.Module):
 
   The scale and shift are computed from conditioning `c` using a dense layer.
 
+  Supported normalization methods:
+
+  - RMSNorm: https://arxiv.org/abs/1910.07467 with `reduction_axes=-1`, meaning
+  that normalization statistics are computed along the last dimension.
+
+  - GroupNorm: https://arxiv.org/abs/1803.08494 with `reduction_axes=None`,
+  meaning that normalization statistics are computed over all dimensions except
+  the batch dimension.
+
+  Sharp bit: for the normalization statistics to be correct in the case of
+  padded inputs, please provide a mask when calling this layer.
+
   Attributes:
     normalization_method: The normalization method to use.
     conditional: Whether to apply conditional scaling and shifting.
@@ -138,29 +151,60 @@ class NormalizationLayer(nn.Module):
   @typechecked
   def __call__(
       self,
-      x: Float["batch ... channels"],
+      x: Float["batch *other channels"],
       c: Float["batch cond_dim"] | None = None,
-  ) -> Float["batch ... channels"]:
+      mask: (
+          Bool["batch *#other #channels"] | Bool["batch *#other"] | None
+      ) = None,
+  ) -> Float["batch *other channels"]:
+    """Run the normalization layer.
+
+    If `mask` is provided, it is expected to be broadcastable to the shape of
+    `x`. This is in accordance with Flax conventions. The mask indicates at
+    which positions the reduction features (like mean and variance in the case
+    of GroupNorm) should be computed.
+
+    Args:
+      x: The input tensor.
+      c: The conditioning tensor.
+      mask: (Optional) The mask to use for normalization. The value of the mask
+        is true when the element is valid and false when it is padding, i.e., we
+        only compute the reduction over the valid values.
+
+    Returns:
+      The normalized tensor.
+    """
+
     x_shape = x.shape
-    ch = x_shape[-1]  # (B ... channel)
+    ch = x_shape[-1]
 
     if self.normalization_method == NormalizationType.RMS_NORM:
       x = nn.RMSNorm(
           epsilon=self.epsilon,
           dtype=self.dtype,
-          reduction_axes=-1,  # for (B ... ch) results in (B ... ) rms values
-          feature_axes=-1,  # per channel learnable scale
-      )(x)
+          reduction_axes=-1,  # For (B ... ch) results in (B ... ) RMS values.
+          feature_axes=-1,  # Per channel learnable scale.
+      )(x=x, mask=mask)
     elif self.normalization_method == NormalizationType.GROUP_NORM:
+
+      # If using GroupNorm the mask data must be such that the last dimension
+      # corresponds to the channels.
+      if mask is not None and mask.shape[-1] != x_shape[-1]:
+        raise ValueError(
+            "If using GroupNorm with a mask, the mask's last dimension must"
+            " match the input's channel dimension. Otherwise, one cannot"
+            " reshape the mask during the grouping operation."
+        )
+
       x = nn.GroupNorm(
           epsilon=self.epsilon,
           dtype=self.dtype,
-          reduction_axes=None,  # reduction over (H, W, C)
+          reduction_axes=None,  # Reduction over all non-batch axes.
           num_groups=self.num_groups,
-      )(x)
+      )(x=x, mask=mask)
     else:
       raise ValueError(
-          f"Unsupported normalization method: {self.normalization_method}"
+          "Unsupported normalization method: %s" % self.normalization_method
       )
 
     if self.conditional:
@@ -171,9 +215,9 @@ class NormalizationLayer(nn.Module):
           bias_init=nn.zeros_init(),
           dtype=self.dtype,
       )(c)
-      scale, shift = jnp.split(scale_and_shift, 2, axis=-1)  # (B, channel) each
+      scale, shift = jnp.split(scale_and_shift, 2, axis=-1)  # (B, ch) each.
 
-      x = einops.rearrange(x, "b ... c -> b c ...")  # (B, channel, ...)
+      x = einops.rearrange(x, "b ... c -> b c ...")  # (B, ch, ...).
       scale = utils.bcast_right(scale, x.ndim)
       shift = utils.bcast_right(shift, x.ndim)
       x = (1.0 + scale) * x + shift
