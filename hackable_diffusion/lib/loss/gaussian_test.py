@@ -162,8 +162,8 @@ class PredictionConverterTest(parameterized.TestCase):
     # Get the converter
     converter = gaussian_corrupt.CONVERTERS[start_type][target_type]
 
-    converted_pred = converter(pred, **kwargs)
-    converted_target = converter(target, **kwargs)
+    converted_pred = converter(pred, **kwargs)  # pytype: disable=wrong-keyword-args
+    converted_target = converter(target, **kwargs)  # pytype: disable=wrong-keyword-args
     scaled_loss = gaussian.compute_continuous_diffusion_loss(
         preds={start_type: pred},
         targets={start_type: target},
