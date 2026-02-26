@@ -1,0 +1,140 @@
+# Copyright 2026 Hackable Diffusion Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Tests for the DiT blocks."""
+
+from hackable_diffusion.lib.architecture import arch_typing
+from hackable_diffusion.lib.architecture import dit_blocks
+import jax
+import jax.numpy as jnp
+
+from absl.testing import absltest
+from absl.testing import parameterized
+
+INVALID_INT = arch_typing.INVALID_INT
+
+
+class DiTBlockAdaLNZeroTest(parameterized.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    self.key = jax.random.PRNGKey(0)
+
+    self.batch, self.n, self.d, self.c = 2, 16, 32, 64
+
+  @parameterized.named_parameters(
+      ('num_heads', 4, INVALID_INT),
+      ('head_dim', INVALID_INT, 8),
+  )
+  def test_output_shape(self, num_heads, head_dim):
+    input_shape = (self.batch, self.n, self.d)
+    cond_shape = (self.batch, self.c)
+    x = jnp.ones(input_shape)
+    cond = jnp.ones(cond_shape)
+    module = dit_blocks.DiTBlockAdaLNZero(
+        hidden_size=self.d,
+        num_heads=num_heads,
+        head_dim=head_dim,
+        mlp_ratio=4.0,
+    )
+    variables = module.init(self.key, x, cond, is_training=False)
+    output = module.apply(variables, x, cond, is_training=False)
+    self.assertEqual(output.shape, input_shape)
+
+  def test_zero_init_is_identity(self):
+    input_shape = (self.batch, self.n, self.d)
+    cond_shape = (self.batch, self.c)
+    x = jax.random.normal(self.key, input_shape)
+    cond = jnp.zeros(cond_shape)
+    module = dit_blocks.DiTBlockAdaLNZero(hidden_size=self.d, num_heads=4)
+    variables = module.init(self.key, x, cond, is_training=False)
+    output = module.apply(variables, x, cond, is_training=False)
+    self.assertTrue(jnp.allclose(output, x, atol=1e-5))
+
+
+class PositionalEmbeddingTest(parameterized.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    self.key = jax.random.PRNGKey(0)
+    self.batch, self.n, self.d = 2, 16, 32
+
+  def test_output_shape(self):
+    batch, n, d = 2, 16, 32
+    x = jnp.ones((batch, n, d))
+    module = dit_blocks.PositionalEmbedding()
+    variables = module.init(self.key, x)
+    output = module.apply(variables, x)
+    self.assertEqual(output.shape, (batch, n, d))
+
+
+class PatchifyTest(parameterized.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    self.key = jax.random.PRNGKey(0)
+    self.batch, self.h, self.w, self.c = 2, 16, 16, 3
+    self.patch_size = (4, 4)
+    self.embedding_dim = 64
+
+  def test_output_shape(self):
+    x = jnp.ones((self.batch, self.h, self.w, self.c))
+    module = dit_blocks.Patchify(
+        patch_size=self.patch_size, embedding_dim=self.embedding_dim
+    )
+    variables = module.init(self.key, x)
+    output = module.apply(variables, x)
+    expected_n = (self.h // self.patch_size[0]) * (self.w // self.patch_size[1])
+    self.assertEqual(output.shape, (self.batch, expected_n, self.embedding_dim))
+
+  def test_raises_error_on_non_divisible_shape(self):
+    x = jnp.ones((self.batch, self.h + 1, self.w, self.c))
+    module = dit_blocks.Patchify(
+        patch_size=self.patch_size, embedding_dim=self.embedding_dim
+    )
+    with self.assertRaises(
+        ValueError,
+        msg=(
+            f'Height {self.h} must be divisible by patch height'
+            f' {self.patch_size[0]}.Width {self.w} must be divisible by patch'
+            f' width {self.patch_size[1]}.'
+        ),
+    ):
+      module.init(self.key, x)
+
+
+class DePatchifyTest(parameterized.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    self.key = jax.random.PRNGKey(0)
+    self.batch, self.h, self.w, self.c = 2, 16, 16, 3
+    self.patch_size = (4, 4)
+    self.embedding_dim = 64
+    self.cond_dim = 32
+
+  def test_output_shape(self):
+    n = (self.h // self.patch_size[0]) * (self.w // self.patch_size[1])
+    x = jnp.ones((self.batch, n, self.embedding_dim))
+    cond = jnp.ones((self.batch, self.cond_dim))
+    module = dit_blocks.DePatchify(
+        patch_size=self.patch_size, output_shape=(self.h, self.w, self.c)
+    )
+    variables = module.init(self.key, x, cond)
+    output = module.apply(variables, x, cond)
+    self.assertEqual(output.shape, (self.batch, self.h, self.w, self.c))
+
+
+if __name__ == '__main__':
+  absltest.main()

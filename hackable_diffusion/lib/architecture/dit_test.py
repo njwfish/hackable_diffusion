@@ -1,0 +1,134 @@
+# Copyright 2026 Hackable Diffusion Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Tests for the DiT backbone."""
+
+from hackable_diffusion.lib.architecture import arch_typing
+from hackable_diffusion.lib.architecture import dit
+from hackable_diffusion.lib.architecture import dit_blocks
+import jax
+import jax.numpy as jnp
+
+from absl.testing import absltest
+from absl.testing import parameterized
+
+################################################################################
+# MARK: Type Aliases
+################################################################################
+
+ConditioningMechanism = arch_typing.ConditioningMechanism
+
+################################################################################
+# MARK: Tests
+################################################################################
+
+
+class DiTTest(parameterized.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    self.key = jax.random.PRNGKey(0)
+    self.is_training = True
+    self.batch_size, self.h, self.w, self.c = 2, 16, 16, 3
+    self.patch_size = (4, 4)
+    self.embedding_dim = 32
+    self.cond_dim = 17
+    self.sequence_length = 33
+
+  def test_output_shape_with_patchify(self):
+    data_shape = (self.h, self.w, self.c)
+    input_shape = (self.batch_size, *data_shape)
+    x = jnp.ones(input_shape)
+    model = dit.DiT(
+        num_blocks=2,
+        block=dit_blocks.DiTBlockAdaLNZero(
+            hidden_size=self.embedding_dim, num_heads=4
+        ),
+        encoder=dit_blocks.Patchify(
+            patch_size=self.patch_size, embedding_dim=self.embedding_dim
+        ),
+        decoder=dit_blocks.DePatchify(
+            patch_size=self.patch_size, output_shape=data_shape
+        ),
+    )
+    conditioning_embeddings = {
+        ConditioningMechanism.ADAPTIVE_NORM: jnp.ones(
+            (self.batch_size, self.cond_dim)
+        ),
+    }
+    variables = model.init(
+        self.key,
+        x=x,
+        conditioning_embeddings=conditioning_embeddings,
+        is_training=self.is_training,
+    )
+    output = model.apply(
+        variables,
+        x=x,
+        conditioning_embeddings=conditioning_embeddings,
+        is_training=self.is_training,
+    )
+    self.assertEqual(output.shape, input_shape)
+
+  def test_output_shape_tokens(self):
+    input_shape = (self.batch_size, self.sequence_length, self.embedding_dim)
+    x = jnp.ones(input_shape)
+    conditioning_embeddings = {
+        ConditioningMechanism.ADAPTIVE_NORM: jnp.ones(
+            (self.batch_size, self.cond_dim)
+        ),
+    }
+    model = dit.DiT(
+        num_blocks=2,
+        block=dit_blocks.DiTBlockAdaLNZero(
+            hidden_size=self.embedding_dim, num_heads=4
+        ),
+    )
+    variables = model.init(
+        self.key,
+        x=x,
+        conditioning_embeddings=conditioning_embeddings,
+        is_training=self.is_training,
+    )
+    output = model.apply(
+        variables,
+        x=x,
+        conditioning_embeddings=conditioning_embeddings,
+        is_training=self.is_training,
+    )
+    self.assertEqual(output.shape, input_shape)
+
+  def test_missing_adaptive_norm_raises(self):
+    x = jnp.ones((self.batch_size, self.sequence_length, self.embedding_dim))
+    conditioning_embeddings = {}
+
+    model = dit.DiT(
+        num_blocks=1,
+        block=dit_blocks.DiTBlockAdaLNZero(
+            hidden_size=self.embedding_dim, num_heads=4
+        ),
+    )
+    with self.assertRaises(
+        ValueError, msg="adaptive_norm_emb must be provided."
+    ):
+      model.init(
+          self.key,
+          x=x,
+          conditioning_embeddings=conditioning_embeddings,
+          is_training=self.is_training,
+      )
+
+
+if __name__ == "__main__":
+  absltest.main()
