@@ -46,8 +46,8 @@ class MLP(nn.Module):
   @nn.compact
   @typechecked
   def __call__(
-      self, x: Float['batch num_inputs'], *, is_training: bool
-  ) -> Float['batch num_features']:
+      self, x: Float['batch *other_dims num_inputs'], *, is_training: bool
+  ) -> Float['batch *other_dims num_features']:
     """Applies MLP blocks to the input tensor.
 
     Args:
