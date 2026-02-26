@@ -72,3 +72,8 @@ def get_leaves_with_paths(variables: VariableDict) -> dict[str, Any]:
 
   leaves_with_paths = jax.tree.leaves_with_path(variables)
   return {_get_path(path): array for path, array in leaves_with_paths}
+
+
+def get_pytree_shapes(pytree: dict[str, Any]) -> dict[str, Any]:
+  """Recursively extracts the shape of every leaf in a PyTree."""
+  return jax.tree_util.tree_map(lambda x: getattr(x, 'shape', None), pytree)

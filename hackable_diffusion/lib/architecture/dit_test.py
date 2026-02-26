@@ -14,6 +14,7 @@
 
 """Tests for the DiT backbone."""
 
+from hackable_diffusion.lib import test_utils
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import dit
 from hackable_diffusion.lib.architecture import dit_blocks
@@ -42,6 +43,9 @@ class DiTTest(parameterized.TestCase):
     self.is_training = True
     self.batch_size, self.h, self.w, self.c = 2, 16, 16, 3
     self.patch_size = (4, 4)
+    self.implied_sequence_length = (self.h // self.patch_size[0]) * (
+        self.w // self.patch_size[1]
+    )
     self.embedding_dim = 32
     self.cond_dim = 17
     self.sequence_length = 33
@@ -80,6 +84,129 @@ class DiTTest(parameterized.TestCase):
         is_training=self.is_training,
     )
     self.assertEqual(output.shape, input_shape)
+
+  def test_variable_shapes_with_patchify(self):
+    data_shape = (self.h, self.w, self.c)
+    input_shape = (self.batch_size, *data_shape)
+    x = jnp.ones(input_shape)
+    model = dit.DiT(
+        num_blocks=2,
+        block=dit_blocks.DiTBlockAdaLNZero(
+            hidden_size=self.embedding_dim, num_heads=4
+        ),
+        encoder=dit_blocks.Patchify(
+            patch_size=self.patch_size, embedding_dim=self.embedding_dim
+        ),
+        decoder=dit_blocks.DePatchify(
+            patch_size=self.patch_size, output_shape=data_shape
+        ),
+        absolute_posenc=dit_blocks.PositionalEmbedding(),
+    )
+    conditioning_embeddings = {
+        ConditioningMechanism.ADAPTIVE_NORM: jnp.ones(
+            (self.batch_size, self.cond_dim)
+        ),
+    }
+    mlp_hidden = int(self.embedding_dim * 4.0)
+
+    variables = model.init(
+        self.key,
+        x=x,
+        conditioning_embeddings=conditioning_embeddings,
+        is_training=self.is_training,
+    )
+    variables_shapes = test_utils.get_pytree_shapes(variables)
+
+    block_params = {
+        'Dense_Gate_MSA': {
+            'kernel': (self.cond_dim, self.embedding_dim),
+            'bias': (self.embedding_dim,),
+        },
+        'Dense_Gate_MLP': {
+            'kernel': (self.cond_dim, self.embedding_dim),
+            'bias': (self.embedding_dim,),
+        },
+        'ConditionalNorm': {
+            'Dense_0': {
+                'kernel': (self.cond_dim, self.embedding_dim * 2),
+                'bias': (self.embedding_dim * 2,),
+            },
+        },
+        'MLP': {
+            'Dense_Hidden_0': {
+                'kernel': (self.embedding_dim, mlp_hidden),
+                'bias': (mlp_hidden,),
+            },
+            'Dense_Output': {
+                'kernel': (mlp_hidden, self.embedding_dim),
+                'bias': (self.embedding_dim,),
+            },
+        },
+        'attn': {
+            'Dense_Q': {
+                'kernel': (self.embedding_dim, self.embedding_dim),
+                'bias': (self.embedding_dim,),
+            },
+            'Dense_K': {
+                'kernel': (self.embedding_dim, self.embedding_dim),
+                'bias': (self.embedding_dim,),
+            },
+            'Dense_V': {
+                'kernel': (self.embedding_dim, self.embedding_dim),
+                'bias': (self.embedding_dim,),
+            },
+            'Dense_Output': {
+                'kernel': (self.embedding_dim, self.embedding_dim),
+                'bias': (self.embedding_dim,),
+            },
+            'norm_qk_scale': (1, 1, 1, 1),
+        },
+    }
+
+    expected_variables_shapes = {
+        'params': {
+            'encoder': {
+                'Dense_Project': {
+                    'kernel': (
+                        self.patch_size[0] * self.patch_size[1] * self.c,
+                        self.embedding_dim,
+                    ),
+                    'bias': (self.embedding_dim,),
+                },
+            },
+            'absolute_posenc': {
+                'PositionalEmbeddingTensor': (
+                    1,
+                    self.implied_sequence_length,
+                    self.embedding_dim,
+                ),
+            },
+            'Block_1': block_params,
+            'Block_2': block_params,
+            'ConditionalNorm': {
+                'Dense_0': {
+                    'kernel': (self.cond_dim, self.embedding_dim * 2),
+                    'bias': (self.embedding_dim * 2,),
+                },
+            },
+            'decoder': {
+                'ConditionalNorm': {
+                    'Dense_0': {
+                        'kernel': (self.cond_dim, self.embedding_dim * 2),
+                        'bias': (self.embedding_dim * 2,),
+                    },
+                },
+                'Dense_Out': {
+                    'kernel': (
+                        self.embedding_dim,
+                        self.patch_size[0] * self.patch_size[1] * self.c,
+                    ),
+                    'bias': (self.patch_size[0] * self.patch_size[1] * self.c,),
+                },
+            },
+        }
+    }
+    self.assertDictEqual(expected_variables_shapes, variables_shapes)
 
   def test_output_shape_tokens(self):
     input_shape = (self.batch_size, self.sequence_length, self.embedding_dim)
@@ -120,7 +247,7 @@ class DiTTest(parameterized.TestCase):
         ),
     )
     with self.assertRaises(
-        ValueError, msg="adaptive_norm_emb must be provided."
+        ValueError, msg='adaptive_norm_emb must be provided.'
     ):
       model.init(
           self.key,
@@ -130,5 +257,5 @@ class DiTTest(parameterized.TestCase):
       )
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
   absltest.main()

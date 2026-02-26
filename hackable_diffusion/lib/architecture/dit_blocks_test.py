@@ -14,6 +14,7 @@
 
 """Tests for the DiT blocks."""
 
+from hackable_diffusion.lib import test_utils
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import dit_blocks
 import jax
@@ -52,6 +53,61 @@ class DiTBlockAdaLNZeroTest(parameterized.TestCase):
     output = module.apply(variables, x, cond, is_training=False)
     self.assertEqual(output.shape, input_shape)
 
+  def test_variable_shapes(self):
+    input_shape = (self.batch, self.n, self.d)
+    cond_shape = (self.batch, self.c)
+    x = jnp.ones(input_shape)
+    cond = jnp.ones(cond_shape)
+    mlp_hidden = int(self.d * 4.0)
+    module = dit_blocks.DiTBlockAdaLNZero(
+        hidden_size=self.d, num_heads=4, mlp_ratio=4.0
+    )
+    variables = module.init(self.key, x, cond, is_training=False)
+    variables_shapes = test_utils.get_pytree_shapes(variables)
+
+    expected_variables_shapes = {
+        'params': {
+            'Dense_Gate_MSA': {
+                'kernel': (self.c, self.d),
+                'bias': (self.d,),
+            },
+            'Dense_Gate_MLP': {
+                'kernel': (self.c, self.d),
+                'bias': (self.d,),
+            },
+            'ConditionalNorm': {
+                'Dense_0': {
+                    'kernel': (self.c, self.d * 2),
+                    'bias': (self.d * 2,),
+                },
+            },
+            'ConditionalNorm': {
+                'Dense_0': {
+                    'kernel': (self.c, self.d * 2),
+                    'bias': (self.d * 2,),
+                },
+            },
+            'MLP': {
+                'Dense_Hidden_0': {
+                    'kernel': (self.d, mlp_hidden),
+                    'bias': (mlp_hidden,),
+                },
+                'Dense_Output': {
+                    'kernel': (mlp_hidden, self.d),
+                    'bias': (self.d,),
+                },
+            },
+            'attn': {
+                'Dense_Q': {'kernel': (self.d, self.d), 'bias': (self.d,)},
+                'Dense_K': {'kernel': (self.d, self.d), 'bias': (self.d,)},
+                'Dense_V': {'kernel': (self.d, self.d), 'bias': (self.d,)},
+                'Dense_Output': {'kernel': (self.d, self.d), 'bias': (self.d,)},
+                'norm_qk_scale': (1, 1, 1, 1),
+            },
+        }
+    }
+    self.assertDictEqual(expected_variables_shapes, variables_shapes)
+
   def test_zero_init_is_identity(self):
     input_shape = (self.batch, self.n, self.d)
     cond_shape = (self.batch, self.c)
@@ -71,12 +127,25 @@ class PositionalEmbeddingTest(parameterized.TestCase):
     self.batch, self.n, self.d = 2, 16, 32
 
   def test_output_shape(self):
-    batch, n, d = 2, 16, 32
-    x = jnp.ones((batch, n, d))
+    input_shape = (self.batch, self.n, self.d)
+    x = jnp.ones(input_shape)
     module = dit_blocks.PositionalEmbedding()
     variables = module.init(self.key, x)
     output = module.apply(variables, x)
-    self.assertEqual(output.shape, (batch, n, d))
+    self.assertEqual(output.shape, input_shape)
+
+  def test_variable_shapes(self):
+    input_shape = (self.batch, self.n, self.d)
+    x = jnp.ones(input_shape)
+    module = dit_blocks.PositionalEmbedding()
+    variables = module.init(self.key, x)
+    variables_shapes = test_utils.get_pytree_shapes(variables)
+    expected_variables_shapes = {
+        'params': {
+            'PositionalEmbeddingTensor': (1, self.n, self.d),
+        }
+    }
+    self.assertDictEqual(expected_variables_shapes, variables_shapes)
 
 
 class PatchifyTest(parameterized.TestCase):
@@ -113,6 +182,26 @@ class PatchifyTest(parameterized.TestCase):
     ):
       module.init(self.key, x)
 
+  def test_variable_shapes(self):
+    x = jnp.ones((self.batch, self.h, self.w, self.c))
+    module = dit_blocks.Patchify(
+        patch_size=self.patch_size, embedding_dim=self.embedding_dim
+    )
+    variables = module.init(self.key, x)
+    variables_shapes = test_utils.get_pytree_shapes(variables)
+    expected_variables_shapes = {
+        'params': {
+            'Dense_Project': {
+                'kernel': (
+                    self.patch_size[0] * self.patch_size[1] * self.c,
+                    self.embedding_dim,
+                ),
+                'bias': (self.embedding_dim,),
+            }
+        }
+    }
+    self.assertDictEqual(expected_variables_shapes, variables_shapes)
+
 
 class DePatchifyTest(parameterized.TestCase):
 
@@ -134,6 +223,34 @@ class DePatchifyTest(parameterized.TestCase):
     variables = module.init(self.key, x, cond)
     output = module.apply(variables, x, cond)
     self.assertEqual(output.shape, (self.batch, self.h, self.w, self.c))
+
+  def test_variable_shapes(self):
+    n = (self.h // self.patch_size[0]) * (self.w // self.patch_size[1])
+    x = jnp.ones((self.batch, n, self.embedding_dim))
+    cond = jnp.ones((self.batch, self.cond_dim))
+    module = dit_blocks.DePatchify(
+        patch_size=self.patch_size, output_shape=(self.h, self.w, self.c)
+    )
+    variables = module.init(self.key, x, cond)
+    variables_shapes = test_utils.get_pytree_shapes(variables)
+    expected_variables_shapes = {
+        'params': {
+            'ConditionalNorm': {
+                'Dense_0': {
+                    'kernel': (self.cond_dim, self.embedding_dim * 2),
+                    'bias': (self.embedding_dim * 2,),
+                },
+            },
+            'Dense_Out': {
+                'kernel': (
+                    self.embedding_dim,
+                    self.patch_size[0] * self.patch_size[1] * self.c,
+                ),
+                'bias': (self.patch_size[0] * self.patch_size[1] * self.c,),
+            },
+        }
+    }
+    self.assertDictEqual(expected_variables_shapes, variables_shapes)
 
 
 if __name__ == '__main__':
