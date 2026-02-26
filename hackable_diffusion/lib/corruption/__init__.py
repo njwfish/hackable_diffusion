@@ -31,7 +31,7 @@ from hackable_diffusion.lib.corruption.schedules import GeometricSchedule
 from hackable_diffusion.lib.corruption.schedules import InverseCosineSchedule
 from hackable_diffusion.lib.corruption.schedules import LinearDiffusionSchedule
 from hackable_diffusion.lib.corruption.schedules import LinearDiscreteSchedule
-from hackable_diffusion.lib.corruption.schedules import PolynominalDiscreteSchedule
+from hackable_diffusion.lib.corruption.schedules import PolynomialDiscreteSchedule
 from hackable_diffusion.lib.corruption.schedules import RFSchedule
 from hackable_diffusion.lib.corruption.schedules import Schedule
 from hackable_diffusion.lib.corruption.schedules import ShiftedSchedule

@@ -108,7 +108,7 @@ class DiffusionNetwork(BaseDiffusionNetwork):
     backbone_network: The backbone network to use for the diffusion model.
     conditioning_encoder: The conditioning encoder to use for the diffusion
       model.
-    predition_type: the type of prediction used by the diffusion model. For
+    prediction_type: the type of prediction used by the diffusion model. For
       example, in the Gaussian diffusion model, the prediction type can be 'x0',
       'epsilon', 'score', 'velocity', or 'v'.
     input_rescaler: The input rescaler to use for the diffusion model,
@@ -198,7 +198,7 @@ class DiffusionNetwork(BaseDiffusionNetwork):
 class MultiModalDiffusionNetwork(BaseDiffusionNetwork):
   """Multi-modal diffusion network.
 
-  This DiffusioNetwork is a generalization of the DiffusionNetwork to
+  This DiffusionNetwork is a generalization of the DiffusionNetwork to
   multi-modal data. It is able to handle different data types (e.g., continuous
   and discrete), different prediction types (e.g., x0, logits), and different
   conditioning encoders (e.g., time embedder, token embedder, etc.).
@@ -231,7 +231,8 @@ class MultiModalDiffusionNetwork(BaseDiffusionNetwork):
         'data_continuous': time_embedder_continuous,
         'data_discrete': time_embedder_discrete,
     }
-    time_embedder = conditioning_encoder.NestedTimeEmbedder(time_embedders=)
+    time_embedder =
+    conditioning_encoder.NestedTimeEmbedder(time_embedders=time_embedders)
 
     encoder = conditioning_encoder.ConditioningEncoder(
         time_embedder=time_embedder,

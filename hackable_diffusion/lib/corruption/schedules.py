@@ -447,7 +447,7 @@ class GeometricDiscreteSchedule(DiscreteSchedule):
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class PolynominalDiscreteSchedule(DiscreteSchedule):
+class PolynomialDiscreteSchedule(DiscreteSchedule):
   """Polynomial schedule for alpha for discrete corruption processes."""
 
   degree: float = 1.0

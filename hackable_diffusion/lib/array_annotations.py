@@ -116,7 +116,7 @@ Int64 = ArrayAliasMeta("Int64", jaxtyping.Int64)
 
 UInt = ArrayAliasMeta("UInt", jaxtyping.UInt)
 UInt8 = ArrayAliasMeta("UInt8", jaxtyping.UInt8)
-UInt16 = ArrayAliasMeta("UInt8", jaxtyping.UInt16)
+UInt16 = ArrayAliasMeta("UInt16", jaxtyping.UInt16)
 UInt32 = ArrayAliasMeta("UInt32", jaxtyping.UInt32)
 UInt64 = ArrayAliasMeta("UInt64", jaxtyping.UInt64)
 Complex = ArrayAliasMeta("Complex", jaxtyping.Complex)
