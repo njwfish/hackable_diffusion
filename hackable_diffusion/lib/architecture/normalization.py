@@ -20,6 +20,7 @@ Implements the following methods:
 - LayerNorm: https://arxiv.org/abs/1607.06450
 """
 
+from typing import Callable
 import einops
 import flax.linen as nn
 from hackable_diffusion.lib import hd_typing
@@ -38,74 +39,6 @@ Float = hd_typing.Float
 Bool = hd_typing.Bool
 
 NormalizationType = arch_typing.NormalizationType
-
-################################################################################
-# MARK: NormalizationLayerFactory
-################################################################################
-
-
-class NormalizationLayerFactory:
-  """A factory for creating normalization layers.
-
-  This class provides a convenient way to configure and create
-  `NormalizationLayer` instances. It separates the configuration of the
-  normalization from its application, allowing for easy injection of different
-  normalization strategies.
-
-  It can create both conditional and unconditional normalization layers via
-  the `conditional_norm_factory` and `unconditional_norm_factory` properties.
-
-  Attributes:
-    normalization_method: The normalization method to use (e.g., 'rms_norm').
-    num_groups: The number of groups to use for group normalization. If None,
-      group normalization cannot be used and an error will be raised.
-    epsilon: A small float added to variance to avoid dividing by zero.
-    dtype: The data type of the computation.
-  """
-
-  def __init__(
-      self,
-      normalization_method: NormalizationType,
-      num_groups: int | None = None,
-      epsilon: float = 1e-5,
-      dtype: DType = jnp.float32,
-      use_bias: bool = True,
-      use_scale: bool = True,
-  ):
-    self.normalization_method = normalization_method
-    self.epsilon = epsilon
-    self.num_groups = num_groups
-    self.dtype = dtype
-    self.use_bias = use_bias
-    self.use_scale = use_scale
-
-  @property
-  def unconditional_norm_factory(self, name: str = "UnconditionalNorm"):
-    """Returns a factory for creating unconditional normalization layers."""
-    return lambda: NormalizationLayer(
-        normalization_method=self.normalization_method,
-        conditional=False,
-        num_groups=self.num_groups,
-        epsilon=self.epsilon,
-        name=name,
-        dtype=self.dtype,
-        use_bias=self.use_bias,
-        use_scale=self.use_scale,
-    )
-
-  @property
-  def conditional_norm_factory(self, name: str = "ConditionalNorm"):
-    """Returns a factory for creating conditional normalization layers."""
-    return lambda: NormalizationLayer(
-        normalization_method=self.normalization_method,
-        conditional=True,
-        num_groups=self.num_groups,
-        epsilon=self.epsilon,
-        name=name,
-        dtype=self.dtype,
-        use_bias=self.use_bias,
-        use_scale=self.use_scale,
-    )
 
 
 ################################################################################
@@ -253,3 +186,73 @@ class NormalizationLayer(nn.Module):
       x = einops.rearrange(x, "b c ... -> b ... c")
 
     return x
+
+################################################################################
+# MARK: NormalizationLayerFactory
+################################################################################
+
+
+class NormalizationLayerFactory:
+  """A factory for creating normalization layers.
+
+  This class provides a convenient way to configure and create
+  `NormalizationLayer` instances. It separates the configuration of the
+  normalization from its application, allowing for easy injection of different
+  normalization strategies.
+
+  It can create both conditional and unconditional normalization layers via
+  the `conditional_norm_factory` and `unconditional_norm_factory` properties.
+
+  Attributes:
+    normalization_method: The normalization method to use (e.g., 'rms_norm').
+    num_groups: The number of groups to use for group normalization. If None,
+      group normalization cannot be used and an error will be raised.
+    epsilon: A small float added to variance to avoid dividing by zero.
+    dtype: The data type of the computation.
+    use_bias: Whether to use bias in the normalization layer.
+    use_scale: Whether to use scale in the normalization layer.
+  """
+
+  def __init__(
+      self,
+      normalization_method: NormalizationType,
+      num_groups: int | None = None,
+      epsilon: float = 1e-5,
+      dtype: DType = jnp.float32,
+      use_bias: bool = True,
+      use_scale: bool = True,
+  ):
+    self.normalization_method = normalization_method
+    self.epsilon = epsilon
+    self.num_groups = num_groups
+    self.dtype = dtype
+    self.use_bias = use_bias
+    self.use_scale = use_scale
+
+  @property
+  def unconditional_norm_factory(self):
+    """Returns a factory for creating unconditional normalization layers."""
+    return lambda: NormalizationLayer(
+        normalization_method=self.normalization_method,
+        conditional=False,
+        num_groups=self.num_groups,
+        epsilon=self.epsilon,
+        name="UnconditionalNorm",
+        dtype=self.dtype,
+        use_bias=self.use_bias,
+        use_scale=self.use_scale,
+    )
+
+  @property
+  def conditional_norm_factory(self):
+    """Returns a factory for creating conditional normalization layers."""
+    return lambda: NormalizationLayer(
+        normalization_method=self.normalization_method,
+        conditional=True,
+        num_groups=self.num_groups,
+        epsilon=self.epsilon,
+        name="ConditionalNorm",
+        dtype=self.dtype,
+        use_bias=self.use_bias,
+        use_scale=self.use_scale,
+    )
