@@ -17,6 +17,7 @@
 Implements the following methods:
 - RMSNorm: https://arxiv.org/abs/1910.07467
 - GroupNorm: https://arxiv.org/abs/1803.08494
+- LayerNorm: https://arxiv.org/abs/1607.06450
 """
 
 import einops
@@ -68,34 +69,42 @@ class NormalizationLayerFactory:
       num_groups: int | None = None,
       epsilon: float = 1e-5,
       dtype: DType = jnp.float32,
+      use_bias: bool = True,
+      use_scale: bool = True,
   ):
     self.normalization_method = normalization_method
     self.epsilon = epsilon
     self.num_groups = num_groups
     self.dtype = dtype
+    self.use_bias = use_bias
+    self.use_scale = use_scale
 
   @property
-  def unconditional_norm_factory(self):
+  def unconditional_norm_factory(self, name: str = "UnconditionalNorm"):
     """Returns a factory for creating unconditional normalization layers."""
     return lambda: NormalizationLayer(
         normalization_method=self.normalization_method,
         conditional=False,
         num_groups=self.num_groups,
         epsilon=self.epsilon,
-        name="UnconditionalNorm",
+        name=name,
         dtype=self.dtype,
+        use_bias=self.use_bias,
+        use_scale=self.use_scale,
     )
 
   @property
-  def conditional_norm_factory(self):
+  def conditional_norm_factory(self, name: str = "ConditionalNorm"):
     """Returns a factory for creating conditional normalization layers."""
     return lambda: NormalizationLayer(
         normalization_method=self.normalization_method,
         conditional=True,
         num_groups=self.num_groups,
         epsilon=self.epsilon,
-        name="ConditionalNorm",
+        name=name,
         dtype=self.dtype,
+        use_bias=self.use_bias,
+        use_scale=self.use_scale,
     )
 
 
@@ -122,6 +131,10 @@ class NormalizationLayer(nn.Module):
   meaning that normalization statistics are computed over all dimensions except
   the batch dimension.
 
+  - LayerNorm: https://arxiv.org/abs/1607.06450 with `reduction_axes=-1`,
+  meaning
+  that normalization statistics are computed along the last dimension.
+
   Sharp bit: for the normalization statistics to be correct in the case of
   padded inputs, please provide a mask when calling this layer.
 
@@ -132,6 +145,8 @@ class NormalizationLayer(nn.Module):
       group normalization cannot be used and an error will be raised.
     epsilon: Epsilon value for numerical stability in normalization.
     dtype: The data type of the computation.
+    use_bias: Whether to use bias in the normalization layer.
+    use_scale: Whether to use scale in the normalization layer.
   """
 
   normalization_method: NormalizationType
@@ -139,6 +154,8 @@ class NormalizationLayer(nn.Module):
   num_groups: int | None = None
   epsilon: float = 1e-5
   dtype: DType = jnp.float32
+  use_bias: bool = True
+  use_scale: bool = True
 
   def setup(self):
     if (
@@ -183,7 +200,8 @@ class NormalizationLayer(nn.Module):
           epsilon=self.epsilon,
           dtype=self.dtype,
           reduction_axes=-1,  # For (B ... ch) results in (B ... ) RMS values.
-          feature_axes=-1,  # Per channel learnable scale.
+          feature_axes=-1,  # Per channel scale.
+          use_scale=self.use_scale,
       )(x=x, mask=mask)
     elif self.normalization_method == NormalizationType.GROUP_NORM:
 
@@ -201,6 +219,17 @@ class NormalizationLayer(nn.Module):
           dtype=self.dtype,
           reduction_axes=None,  # Reduction over all non-batch axes.
           num_groups=self.num_groups,
+          use_bias=self.use_bias,
+          use_scale=self.use_scale,
+      )(x=x, mask=mask)
+    elif self.normalization_method == NormalizationType.LAYER_NORM:
+      x = nn.LayerNorm(
+          epsilon=self.epsilon,
+          dtype=self.dtype,
+          use_bias=self.use_bias,
+          use_scale=self.use_scale,
+          reduction_axes=-1,  # For (B ... ch) results in (B ... ) values.
+          feature_axes=-1,  # Per channel scale.
       )(x=x, mask=mask)
     else:
       raise ValueError(

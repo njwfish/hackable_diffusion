@@ -72,6 +72,7 @@ class RoPEPositionType(enum.StrEnum):
 class NormalizationType(enum.StrEnum):
   RMS_NORM = "rms_norm"
   GROUP_NORM = "group_norm"
+  LAYER_NORM = "layer_norm"
 
 
 class DownsampleType(enum.StrEnum):

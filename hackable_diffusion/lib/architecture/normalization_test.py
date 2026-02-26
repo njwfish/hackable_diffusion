@@ -249,6 +249,81 @@ class NormalizationTest(parameterized.TestCase):
         atol=1e-5,
     )
 
+  def test_unconditional_layernorm_at_init(self):
+    """Tests unconditional LayerNorm at init."""
+    norm_layer = normalization.NormalizationLayer(
+        normalization_method=NormalizationType.LAYER_NORM,
+        conditional=False,
+    )
+    params = norm_layer.init(self.rng, self.x)
+    output_new = norm_layer.apply(params, self.x)
+
+    norm_ref = nn.LayerNorm()
+    params_ref = norm_ref.init(self.rng, self.x)
+    output_ref = norm_ref.apply(params_ref, self.x)
+
+    self.assertEqual(output_new.shape, self.x_shape)
+    np.testing.assert_allclose(output_new, output_ref, rtol=1e-4, atol=1e-4)
+
+  def test_conditional_layernorm_at_init(self):
+    """Tests conditional LayerNorm at init when scale=0 and shift=0."""
+    norm_layer = normalization.NormalizationLayer(
+        normalization_method=NormalizationType.LAYER_NORM,
+        conditional=True,
+    )
+    params = norm_layer.init(self.rng, self.x, self.c)
+    output_new = norm_layer.apply(params, self.x, self.c)
+
+    norm_ref = nn.LayerNorm()
+    params_ref = norm_ref.init(self.rng, self.x)
+    output_ref = norm_ref.apply(params_ref, self.x)
+
+    self.assertEqual(output_new.shape, self.x_shape)
+    np.testing.assert_allclose(output_new, output_ref, rtol=1e-4, atol=1e-4)
+
+  def test_conditional_layernorm_perturbed(self):
+    """Tests conditional LayerNorm when scale!=0 and shift!=0."""
+    norm_layer = normalization.NormalizationLayer(
+        normalization_method=NormalizationType.LAYER_NORM,
+        conditional=True,
+    )
+    params = norm_layer.init(self.rng, self.x, self.c)
+    params_perturbed = _perturb_params(params=params, key=self.rng)
+    output = norm_layer.apply(params_perturbed, self.x, self.c)
+
+    norm_ref = nn.LayerNorm()
+    params_ref = norm_ref.init(self.rng, self.x)
+    output_ref = norm_ref.apply(params_ref, self.x)
+
+    self.assertEqual(output.shape, self.x_shape)
+    self.assertFalse(
+        np.allclose(output, output_ref, rtol=1e-5, atol=1e-5, equal_nan=True),
+        "Conditional output should be different from unconditional output after"
+        " perturbing params.",
+    )
+
+  def test_layernorm_padding_invariance(self):
+    """Tests LayerNorm padding invariance.
+
+    LayerNorm normalizes over the last (channel) dimension, so it should be
+    padding invariant, similar to RMSNorm.
+    """
+
+    norm_layer = normalization.NormalizationLayer(
+        normalization_method=NormalizationType.LAYER_NORM,
+        conditional=False,
+    )
+    params = norm_layer.init(self.rng, self.x_small)
+    params_perturbed = _perturb_params(params=params, key=self.rng)
+
+    out_small = norm_layer.apply(params_perturbed, self.x_small)
+    out_large = norm_layer.apply(params_perturbed, self.x_large)
+    np.testing.assert_allclose(
+        out_small[:, :, : self.unpadded_seq_len, :],
+        out_large[:, :, : self.unpadded_seq_len, :],
+        atol=1e-5,
+    )
+
   def test_groupnorm_padding_non_invariance(self):
     """Tests GroupNorm padding invariance."""
 
@@ -258,12 +333,10 @@ class NormalizationTest(parameterized.TestCase):
         num_groups=self.num_groups,
     )
     params = norm_layer.init(self.rng, self.x_small)
-    # Perturb the params.
     params_perturbed = _perturb_params(params=params, key=self.rng)
 
     out_small = norm_layer.apply(params_perturbed, self.x_small)
     out_large = norm_layer.apply(params_perturbed, self.x_large)
-    # GroupNorm normalizes over spatial dims, so it is NOT padding invariant.
     self.assertFalse(
         np.allclose(
             out_small[:, :, : self.unpadded_seq_len, :],
@@ -284,6 +357,12 @@ class NormalizationTest(parameterized.TestCase):
           normalization_method=NormalizationType.GROUP_NORM,
           num_groups=5,
           mask_dim=10,
+      ),
+      dict(
+          testcase_name="layernorm",
+          normalization_method=NormalizationType.LAYER_NORM,
+          num_groups=None,
+          mask_dim=1,
       ),
   )
   def test_masked_padding_invariance(
