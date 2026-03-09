@@ -251,7 +251,10 @@ class UnMaskingStep(SamplerStep):
   temperature: float = 1.0
 
   def __post_init__(self):
-    """UnMaskingStep only supports masking processes, see update for more details."""
+    """UnMaskingStep only supports masking processes.
+
+    We refer to update for more details.
+    """
     if not self.corruption_process.is_masking:
       raise ValueError('UnMaskingStep only supports masking processes.')
 
@@ -395,7 +398,10 @@ class DiscreteDDIMStep(SamplerStep):
   temperature: float = 1.0
 
   def __post_init__(self):
-    """DiscreteDDIMStep does not support masking processes, see update for more details."""
+    """DiscreteDDIMStep does not support masking processes.
+
+    We refer to update for more details.
+    """
     if self.corruption_process.is_masking:
       raise ValueError('DiscreteDDIMStep does not support masking processes.')
 

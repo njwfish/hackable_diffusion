@@ -20,7 +20,6 @@ Implements the following methods:
 - LayerNorm: https://arxiv.org/abs/1607.06450
 """
 
-from typing import Callable
 import einops
 import flax.linen as nn
 from hackable_diffusion.lib import hd_typing
@@ -186,6 +185,7 @@ class NormalizationLayer(nn.Module):
       x = einops.rearrange(x, "b c ... -> b ... c")
 
     return x
+
 
 ################################################################################
 # MARK: NormalizationLayerFactory

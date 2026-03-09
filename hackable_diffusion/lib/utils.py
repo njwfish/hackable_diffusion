@@ -14,7 +14,6 @@
 
 """Utility functions."""
 
-import enum
 import functools
 from types import FunctionType  # pylint: disable=g-importing-member
 from typing import Any, Callable, cast
@@ -242,7 +241,7 @@ def optional_bf16_to_fp32(x: PyTree) -> PyTree:
 
 
 class CustomGradient:
-  """A convenience decorator to define a custom gradient for a function or method.
+  """Convenience decorator to define a custom gradient for a function or method.
 
   Simplified interface compared to `jax.custom_jvp` but with the following
   limitations:
