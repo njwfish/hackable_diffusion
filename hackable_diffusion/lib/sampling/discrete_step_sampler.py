@@ -392,7 +392,25 @@ class UnMaskingStep(SamplerStep):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class DiscreteDDIMStep(SamplerStep):
-  """This is the discrete version of the DDIM step."""
+  """Discrete version of the DDIM step.
+
+  This sampler is inspired by the discrete sampler of "Structured Denoising
+  Diffusion Models in Discrete State-Spaces" (known as D3PM, see
+  https://arxiv.org/abs/2107.03006).
+
+  Given the forward process with density p(x_t|x_0) it computes the reverse
+  process by first sampling from p(x_0|x_t) to obtain x_0.
+
+  Then it samples x_s (for s < t) using the following formula:
+
+    p(x_s|x_t,x_0) ∝ p(x_s|x_0) * p(x_t|x_s) (1)
+
+  In order to compute (1) we recall that for any s, t such that s < t we have:
+
+    p(x_t|x_s) = (α_t/α_s) * δ_{x_s}(x_t) + (1 - α_t/α_s) * π(x_t)
+
+  The computation of the probability happens in the logits space.
+  """
 
   corruption_process: CategoricalProcess
   temperature: float = 1.0
