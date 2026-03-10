@@ -85,6 +85,7 @@ class DiTBlockAdaLNZero(nn.Module):
   head_dim: int = INVALID_INT
   mlp_ratio: float = 4.0
   use_rope: bool = False
+  dropout_rate: float = 0.0
   rope_position_type: RoPEPositionType = RoPEPositionType.SQUARE
   dtype: DType = jnp.float32
 
@@ -144,6 +145,11 @@ class DiTBlockAdaLNZero(nn.Module):
     # Attention Branch
     x_attn_modulated = self.conditional_norm(x, c=nn.silu(cond))
     attn_out = self.attn(x_attn_modulated, c=None)
+    # Optional dropout
+    if self.dropout_rate > 0.0:
+      attn_out = nn.Dropout(rate=self.dropout_rate)(
+          attn_out, deterministic=not is_training
+      )
     gate_msa = self.gate_msa(nn.silu(cond))
     # Add a sequence dimension [...,None,:] to broadcast to [*batch,seq,dim].
     x = x + gate_msa[..., None, :] * attn_out
@@ -151,6 +157,11 @@ class DiTBlockAdaLNZero(nn.Module):
     # MLP Branch
     x_mlp_modulated = self.conditional_norm(x, c=nn.silu(cond))
     mlp_out = self.mlp(x_mlp_modulated, is_training=is_training)
+    # Optional dropout
+    if self.dropout_rate > 0.0:
+      mlp_out = nn.Dropout(rate=self.dropout_rate)(
+          mlp_out, deterministic=not is_training
+      )
     gate_mlp = self.gate_mlp(nn.silu(cond))
     # Add a sequence dimension [...,None,:] to broadcast to [*batch,seq,dim].
     x = x + gate_mlp[..., None, :] * mlp_out
