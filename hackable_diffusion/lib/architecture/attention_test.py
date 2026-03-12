@@ -20,6 +20,7 @@ from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import attention
 import jax
 import jax.numpy as jnp
+import numpy as np
 
 from absl.testing import absltest
 from absl.testing import parameterized
@@ -150,6 +151,129 @@ class AttentionTest(parameterized.TestCase):
 
   # MARK: MultiHeadAttention tests
 
+  def test_multi_head_attention_mask_invariance(self):
+    """Tests that masked tokens do not affect the attention output."""
+    module = attention.MultiHeadAttention(
+        num_heads=self.num_heads,
+    )
+
+    # Create an initial input sequence
+    rng1, rng2 = jax.random.split(self.rng)
+    x_original = jnp.ones((self.batch_size, self.seq_len_q, self.dim))
+
+    # Create a mask: Keep the first half of the sequence, mask out the second
+    # half. Shape needs to be (batch_size, seq_len_q)
+    half_seq = self.seq_len_q // 2
+    single_mask = jnp.arange(self.seq_len_q) < half_seq
+    mask = jnp.broadcast_to(single_mask, (self.batch_size, self.seq_len_q))
+
+    # Initialize variables
+    variables = module.init(rng1, x_original, c=None, mask=mask)
+
+    # Get the output using the original sequence with the mask
+    output_original = module.apply(variables, x_original, c=None, mask=mask)
+
+    # Corrupt the masked tokens in the input sequence
+    # We add random noise only to the tokens where mask == False
+    noise = jax.random.normal(rng2, x_original.shape)
+    x_corrupted = jnp.where(
+        jnp.expand_dims(mask, -1), x_original, x_original + noise
+    )
+
+    # Get the output using the corrupted sequence with the SAME mask
+    output_corrupted = module.apply(variables, x_corrupted, c=None, mask=mask)
+
+    # We check that the outputs of the valid tokens are the same for the
+    # original and corrupted sequences.
+    valid_output_original = output_original[mask]
+    valid_output_corrupted = output_corrupted[mask]
+
+    np.testing.assert_allclose(
+        valid_output_original,
+        valid_output_corrupted,
+        atol=1e-5,
+    )
+
+    # Ensure that WITHOUT the mask, the corrupted tokens DO change the valid
+    # outputs.
+    output_original_no_mask = module.apply(
+        variables, x_original, c=None, mask=None
+    )
+    output_corrupted_no_mask = module.apply(
+        variables, x_corrupted, c=None, mask=None
+    )
+
+    valid_output_original_no_mask = output_original_no_mask[mask]
+    valid_output_corrupted_no_mask = output_corrupted_no_mask[mask]
+
+    self.assertFalse(
+        jnp.allclose(
+            valid_output_original_no_mask,
+            valid_output_corrupted_no_mask,
+            atol=1e-5,
+        ),
+        msg="Outputs should differ when the mask is removed.",
+    )
+
+  def test_multi_head_cross_attention_different_lengths_and_mask(self):
+    """Tests cross-attention with different sequence lengths and key masking."""
+    module = attention.MultiHeadAttention(
+        num_heads=self.num_heads,
+    )
+
+    rng1, rng2 = jax.random.split(self.rng)
+
+    # x (queries) has length 16
+    x = jax.random.normal(rng1, (self.batch_size, self.seq_len_q, self.dim))
+
+    # c (keys/values) has length 64
+    c_original = jax.random.normal(
+        rng2, (self.batch_size, self.seq_len_kv, self.dim)
+    )
+
+    # Mask applies to c (length 64). Keep first half, mask second half.
+    half_seq_kv = self.seq_len_kv // 2
+
+    # Explicitly cast to boolean for strict type safety
+    single_mask = (jnp.arange(self.seq_len_kv) < half_seq_kv).astype(jnp.bool_)
+    mask = jnp.broadcast_to(single_mask, (self.batch_size, self.seq_len_kv))
+
+    variables = module.init(rng2, x, c_original, mask=mask)
+
+    # Check Output Shape
+    output_original = module.apply(variables, x, c_original, mask=mask)
+    self.assertEqual(output_original.shape, x.shape)
+
+    # Check Mask Invariance on Keys
+    noise = jax.random.normal(rng1, c_original.shape)
+    c_corrupted = jnp.where(
+        jnp.expand_dims(mask, -1), c_original, c_original + noise
+    )
+
+    output_corrupted = module.apply(variables, x, c_corrupted, mask=mask)
+
+    np.testing.assert_allclose(
+        output_original,
+        output_corrupted,
+        atol=1e-5,
+    )
+
+    # Ensure that WITHOUT the mask, the corrupted keys DO change the outputs.
+    output_original_no_mask = module.apply(variables, x, c_original, mask=None)
+    output_corrupted_no_mask = module.apply(
+        variables, x, c_corrupted, mask=None
+    )
+
+    self.assertFalse(
+        jnp.allclose(
+            output_original_no_mask, output_corrupted_no_mask, atol=1e-5
+        ),
+        msg=(
+            "Outputs should differ when the mask is removed and keys are"
+            " altered."
+        ),
+    )
+
   @parameterized.named_parameters(
       ("self_attention_linear", None, True, RoPEPositionType.LINEAR),
       ("self_attention_square", None, True, RoPEPositionType.SQUARE),
@@ -243,6 +367,50 @@ class AttentionTest(parameterized.TestCase):
         self.assertEqual(leaf.shape, (1, 1, 1, 1))
       else:
         self.fail(f"Unknown params name: {params_name}")
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="self_attention_wrong_mask_shape",
+          pass_context=False,
+          invalid_seq_len=42,
+          expected_regex=(
+              r"In self-attention, mask shape \(\d+, \d+\) does not match"
+              r" expected shape \(\d+, \d+\)"
+          ),
+      ),
+      dict(
+          testcase_name="cross_attention_wrong_mask_shape",
+          pass_context=True,
+          invalid_seq_len=42,
+          expected_regex=(
+              r"In cross-attention, mask shape \(\d+, \d+\) does not match"
+              r" expected shape \(\d+, \d+\)"
+          ),
+      ),
+      dict(
+          testcase_name="cross_attention_but_mask_has_x_shape",
+          pass_context=True,
+          invalid_seq_len=16,
+          expected_regex=(
+              r"In cross-attention, mask shape \(\d+, \d+\) does not match"
+              r" expected shape \(\d+, \d+\)"
+          ),
+      ),
+  )
+  def test_multi_head_attention_invalid_mask_shape_raises_error(
+      self, pass_context: bool, invalid_seq_len: int, expected_regex: str
+  ):
+    """Tests that an invalid mask shape raises a ValueError."""
+    module = attention.MultiHeadAttention(num_heads=self.num_heads)
+
+    c = self.c if pass_context else None
+
+    # Create the mask with the intentionally incorrect shape
+    invalid_mask = jnp.ones((self.batch_size, invalid_seq_len), dtype=jnp.bool_)
+
+    # Verify that calling the module with this mask triggers the shape exception
+    with self.assertRaisesRegex(ValueError, expected_regex):
+      module.init(self.rng, self.x, c, mask=invalid_mask)
 
 
 if __name__ == "__main__":

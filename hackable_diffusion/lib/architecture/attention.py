@@ -31,6 +31,7 @@ import jax.numpy as jnp
 ################################################################################
 
 Float = hd_typing.Float
+Bool = hd_typing.Bool
 DType = hd_typing.DType
 
 RoPEPositionType = arch_typing.RoPEPositionType
@@ -41,6 +42,7 @@ INVALID_INT = arch_typing.INVALID_INT
 ################################################################################
 
 SAFETY_EPSILON = 1e-6
+MASK_LOGITS_VALUE = -1e9
 
 ################################################################################
 # MARK: Attention utilities
@@ -123,13 +125,33 @@ def _dot_product_attention(
     k: Float["batch head sequence_key dim"],
     v: Float["batch head sequence_key dim"],
     rescale: Float["..."],
+    *,
+    mask: Bool["batch sequence_key"] | None = None,
 ) -> Float["batch sequence_query head*dim"]:
-  """Dot product attention."""
+  """Performs dot product attention.
+
+  Args:
+    q: Query tensor.
+    k: Key tensor.
+    v: Value tensor.
+    rescale: Rescale factor for the attention scores.
+    mask: Mask tensor. Mask is True for tokens we want to keep and False for
+      tokens we want to mask. If None, no masking is performed.
+
+  Returns:
+    The output tensor.
+  """
 
   b, _, t, _ = q.shape
 
   # Attention scores
   attn_logits = jnp.einsum("bhtd,bhsd->bhts", q, k) * rescale
+
+  # We apply the mask to the logits before softmax so that the softmax is zero
+  # for masked tokens.
+  if mask is not None:
+    bcast_mask = jnp.expand_dims(mask, axis=(1, 2))
+    attn_logits = jnp.where(bcast_mask, attn_logits, MASK_LOGITS_VALUE)
 
   # Softmax and attention weights
   attn_weights = _stable_softmax(logits=attn_logits)
@@ -154,7 +176,9 @@ class MultiHeadAttention(nn.Module):
   This module implements multi-head attention, supporting both self-attention
   and cross-attention. If conditioning `c` is provided, cross-attention is
   performed using `x` as query and `c` as key/value. Otherwise, self-attention
-  is performed using `x` as query, key, and value.
+  is performed using `x` as query, key, and value. Additionally, a mask can be
+  provided to mask out certain tokens, such as padding tokens. Mask is True for
+  tokens that should be kept and False for tokens that should be masked.
 
   It supports RoPE for positional embeddings and QK normalization.
 
@@ -200,12 +224,40 @@ class MultiHeadAttention(nn.Module):
       self,
       x: Float["batch sequence1 dim1"],
       c: Float["batch sequence2 dim2"] | None,
+      *,
+      mask: Bool["batch sequence1"] | Bool["batch sequence2"] | None = None,
   ) -> Float["batch sequence1 dim1"]:
+    """Computes multi-head attention.
+
+    Args:
+      x: The input tensor.
+      c: The conditioning tensor.
+      mask: The mask tensor. Mask is True for tokens we want to keep and False
+        for tokens we want to mask. If None, no masking is performed. In
+        cross-attention, mask is applied to the key/value sequence which comes
+        from c. In self-attention, the mask is applied to x.
+
+    Returns:
+      The output tensor.
+    """
+    if c is None:
+      if mask is not None and mask.shape != x.shape[:2]:
+        raise ValueError(
+            f"In self-attention, mask shape {mask.shape} does not match"
+            f" expected shape {x.shape[:2]}."
+        )
+    else:
+      if mask is not None and mask.shape != c.shape[:2]:
+        raise ValueError(
+            f"In cross-attention, mask shape {mask.shape} does not match"
+            f" expected shape {c.shape[:2]}."
+        )
     b, _, d = x.shape  # batch size, sequence length, embedding dim
     head_d, num_heads = self.get_attention_dims(x)
 
     # if c is None, use x (self-attention)
     y = x if c is None else c
+
     seq_len_kv = y.shape[1]
     seq_len_q = x.shape[1]
 
@@ -266,6 +318,7 @@ class MultiHeadAttention(nn.Module):
         k=k,
         v=v,
         rescale=scale,
+        mask=mask,
     )
 
     attn_output = nn.Dense(
