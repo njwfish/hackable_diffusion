@@ -378,6 +378,161 @@ class DiscreteDDIMStepTest(absltest.TestCase):
     ):
       discrete_step_sampler.DiscreteDDIMStep(corruption_process=process)
 
+  def test_fail_for_zero_invariant_probs(self):
+    invariant_probs = (1.0, 0.0, 0.0)
+    process = CategoricalProcess(
+        schedule=self.schedule,
+        invariant_probs=invariant_probs,
+        num_categories=len(invariant_probs),
+    )
+    with self.assertRaisesRegex(
+        ValueError,
+        'DiscreteDDIMStep does not support invariant probabilities'
+        ' with 0.0 probability mass for any element.',
+    ):
+      discrete_step_sampler.DiscreteDDIMStep(corruption_process=process)
+
+
+class IntegratedDiscreteDDIMStepTest(absltest.TestCase):
+  """Tests for the IntegratedDiscreteDDIMStep sampler."""
+
+  def setUp(self):
+    super().setUp()
+    self.schedule = schedules.LinearDiscreteSchedule()
+    self.num_categories = 4
+    self.process = CategoricalProcess.uniform_process(
+        schedule=self.schedule, num_categories=self.num_categories
+    )
+    key = jax.random.PRNGKey(0)
+    self.initial_noise = jax.random.randint(
+        key, (2, 4, 1), 0, self.process.process_num_categories
+    )
+    self.integrated_ddim_step = (
+        discrete_step_sampler.IntegratedDiscreteDDIMStep(
+            corruption_process=self.process
+        )
+    )
+
+  def _dummy_inference_fn(self, xt, conditioning, time):
+    del conditioning, time
+    # Return logits that will deterministically sample category 0.
+    logits = jnp.zeros(xt.shape[:-1] + (self.process.process_num_categories,))
+    logits = logits.at[..., 1].set(10.0)
+    return {'logits': logits}
+
+  def test_initialize(self):
+    initial_step_info = StepInfo(
+        step=0,
+        time=jnp.array([1.0, 1.0])[:, None, None],
+        rng=jax.random.PRNGKey(0),
+    )
+    initial_step = self.integrated_ddim_step.initialize(
+        initial_noise=self.initial_noise,
+        initial_step_info=initial_step_info,
+    )
+
+    init_logits = jnp.repeat(
+        self.initial_noise, self.process.num_categories, axis=-1
+    )
+    init_logits = jnp.zeros_like(init_logits, dtype=jnp.float32) - jnp.inf
+
+    chex.assert_trees_all_equal(
+        initial_step,
+        DiffusionStep(
+            xt=self.initial_noise,
+            step_info=initial_step_info,
+            aux={'logits': init_logits},
+        ),
+    )
+
+  def test_update(self):
+    initial_step_info = StepInfo(
+        step=0,
+        time=jnp.array([0.5, 0.5])[:, None, None],
+        rng=jax.random.PRNGKey(0),
+    )
+    initial_step = self.integrated_ddim_step.initialize(
+        initial_noise=self.initial_noise,
+        initial_step_info=initial_step_info,
+    )
+    prediction = self._dummy_inference_fn(
+        xt=initial_step.xt,
+        conditioning={},
+        time=initial_step.step_info.time,
+    )
+
+    next_step_info = StepInfo(
+        step=1,
+        time=jnp.array([0.1, 0.1])[:, None, None],
+        rng=jax.random.PRNGKey(1),
+    )
+    next_step = self.integrated_ddim_step.update(
+        prediction=prediction,
+        current_step=initial_step,
+        next_step_info=next_step_info,
+    )
+
+    self.assertEqual(next_step.xt.shape, self.initial_noise.shape)
+    self.assertEqual(next_step.xt.dtype, self.initial_noise.dtype)
+
+  def test_finalize(self):
+    initial_step_info = StepInfo(
+        step=0,
+        time=jnp.array([0.1, 0.1])[:, None, None],
+        rng=jax.random.PRNGKey(0),
+    )
+    initial_step = self.integrated_ddim_step.initialize(
+        initial_noise=self.initial_noise,
+        initial_step_info=initial_step_info,
+    )
+    prediction = self._dummy_inference_fn(
+        xt=initial_step.xt,
+        conditioning={},
+        time=initial_step.step_info.time,
+    )
+
+    last_step_info = StepInfo(
+        step=1,
+        time=jnp.array([0.0, 0.0])[:, None, None],
+        rng=jax.random.PRNGKey(1),
+    )
+    final_step = self.integrated_ddim_step.finalize(
+        prediction=prediction,
+        current_step=initial_step,
+        last_step_info=last_step_info,
+    )
+
+    expected_xt = jnp.ones_like(self.initial_noise)
+    chex.assert_trees_all_close(final_step.xt, expected_xt)
+
+  def test_fail_for_masking_process(self):
+    process = CategoricalProcess.masking_process(
+        schedule=self.schedule, num_categories=self.num_categories
+    )
+    with self.assertRaisesRegex(
+        ValueError,
+        'IntegratedDiscreteDDIMStep does not support masking processes.',
+    ):
+      discrete_step_sampler.IntegratedDiscreteDDIMStep(
+          corruption_process=process
+      )
+
+  def test_fail_for_zero_invariant_probs(self):
+    invariant_probs = (1.0, 0.0, 0.0)
+    process = CategoricalProcess(
+        schedule=self.schedule,
+        invariant_probs=invariant_probs,
+        num_categories=len(invariant_probs),
+    )
+    with self.assertRaisesRegex(
+        ValueError,
+        'IntegratedDiscreteDDIMStep does not support invariant probabilities'
+        ' with 0.0 probability mass for any element.',
+    ):
+      discrete_step_sampler.IntegratedDiscreteDDIMStep(
+          corruption_process=process
+      )
+
 
 if __name__ == '__main__':
   absltest.main()

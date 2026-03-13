@@ -422,6 +422,11 @@ class DiscreteDDIMStep(SamplerStep):
     """
     if self.corruption_process.is_masking:
       raise ValueError('DiscreteDDIMStep does not support masking processes.')
+    if 0.0 in self.corruption_process.invariant_probs:
+      raise ValueError(
+          'DiscreteDDIMStep does not support invariant probabilities'
+          ' with 0.0 probability mass for any element.'
+      )
 
   @property
   def mask_value(self) -> int:
@@ -527,6 +532,199 @@ class DiscreteDDIMStep(SamplerStep):
     # This is not what we want and this behavior should not be accepted.
 
     # Sample from the distribution defined by logits
+    new_xt = jax.random.categorical(key=key, logits=total_logit)[..., None]
+    new_xt = self.post_corruption_fn(new_xt)
+
+    # Replace the unused tokens with the unused_mask_value.
+    new_xt = jnp.where(unused_mask, self.unused_mask_value, new_xt)
+
+    return DiffusionStep(
+        xt=new_xt,
+        step_info=next_step_info,
+        aux={'logits': logits},
+    )
+    # `logits` need to be passed in `aux` dictionary to a performance
+    # bug when using TPU. Needs to be investigated.
+
+  @typechecked
+  def finalize(
+      self,
+      prediction: TargetInfo,
+      current_step: DiffusionStep,
+      last_step_info: StepInfo,
+  ) -> DiffusionStep:
+    return self.update(
+        prediction,
+        current_step,
+        last_step_info,
+    )
+
+
+################################################################################
+# MARK: Integrated DDIM Step
+################################################################################
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class IntegratedDiscreteDDIMStep(SamplerStep):
+  """Integrated discrete version of the DDIM step.
+
+  This sampler is inspired by the discrete sampler of "Structured Denoising
+  Diffusion Models in Discrete State-Spaces" (known as D3PM, see
+  https://arxiv.org/abs/2107.03006).
+
+  Remember that the `DiscreteDDIMStep` does the following.
+  Given the forward process with density p(x_t|x_0) it computes the reverse
+  process by first sampling from p(x_0|x_t) to obtain x_0.
+
+  Then it samples x_s (for s < t) using the following formula:
+
+    p(x_s|x_t,x_0) ∝ p(x_s|x_0) * p(x_t|x_s) (1)
+
+  In order to compute (1) we recall that for any s, t such that s < t we have:
+
+    p(x_t|x_s) = (α_t/α_s) * δ_{x_s}(x_t) + (1 - α_t/α_s) * π(x_t) (1)
+
+  The computation of the probability happens in the logits space.
+
+  In the `IntegratedDiscreteDDIMStep`, instead of sampling from p(x_0|x_t) and
+  then sampling x_s using (1), we directly sample x_s using a formula that
+  integrates over the (unknown) samples of x_0.
+
+  In particular, we use the following formula:
+
+    p(x_s|x_t) = p(x_t|x_s) * sum_{x_0} (p(x_0|x_t) / p(x_t|x_0)) p(x_s|x_0) (2)
+
+  Denoting w(x_0, x_t) =  p(x_0|x_t) / p(x_t|x_0) and W(x_t) = sum_{x_0} w(x_0,
+  x_t) we have:
+
+    p(x_s|x_0) = α_s * w(x_s, x_t) + (1 - α_s) * W(X_t) * π(x_s) (3)
+  """
+
+  corruption_process: CategoricalProcess
+  temperature: float = 1.0
+
+  def __post_init__(self):
+    """IntegratedDiscreteDDIMStep does not support masking processes.
+
+    We refer to update for more details.
+    """
+    if self.corruption_process.is_masking:
+      raise ValueError(
+          'IntegratedDiscreteDDIMStep does not support masking processes.'
+      )
+    if 0.0 in self.corruption_process.invariant_probs:
+      raise ValueError(
+          'IntegratedDiscreteDDIMStep does not support invariant probabilities'
+          ' with 0.0 probability mass for any element.'
+      )
+
+  @property
+  def mask_value(self) -> int:
+    return self.corruption_process.num_categories - 1
+
+  @property
+  def unused_mask_value(self) -> int:
+    return self.corruption_process.unused_mask_value
+
+  @property
+  def post_corruption_fn(self) -> discrete.PostCorruptionFn:
+    return self.corruption_process.post_corruption_fn
+
+  @property
+  def invariant_probs_vec(self) -> Float['M']:
+    return self.corruption_process.invariant_probs_vec
+
+  @property
+  def process_num_categories(self) -> int:
+    return self.corruption_process.process_num_categories
+
+  @typechecked
+  def initialize(
+      self,
+      initial_noise: DataArray,
+      initial_step_info: StepInfo,
+  ) -> DiffusionStep:
+
+    init_logits = jnp.repeat(
+        initial_noise, self.corruption_process.num_categories, axis=-1
+    )
+    init_logits = jnp.zeros_like(init_logits, dtype=jnp.float32) - jnp.inf
+
+    return DiffusionStep(
+        xt=initial_noise,
+        step_info=initial_step_info,
+        aux={'logits': init_logits},
+    )
+    # `logits` need to be passed in `aux` dictionary to a performance
+    # bug when using TPU. Needs to be investigated.
+
+  @typechecked
+  def update(
+      self,
+      prediction: TargetInfo,
+      current_step: DiffusionStep,
+      next_step_info: StepInfo,
+  ) -> DiffusionStep:
+
+    xt = current_step.xt
+    unused_mask = xt == self.unused_mask_value
+
+    time = utils.bcast_right(current_step.step_info.time, xt.ndim)
+    next_time = utils.bcast_right(next_step_info.time, xt.ndim)
+    key = next_step_info.rng
+
+    # Extract predictions.
+    logits = self.corruption_process.convert_predictions(prediction, xt, time)[
+        'logits'
+    ]
+    logits = logits / self.temperature
+    p_x0 = jax.nn.softmax(logits, axis=-1)
+    # (bsz, *seq_len, M)
+
+    # One-hot encoding for the current state
+    xt_oh = jax.nn.one_hot(xt[..., 0], num_classes=self.process_num_categories)
+    # (bsz, *seq_len, M)
+
+    # Calculate schedule alphas.
+    alpha_s = self.corruption_process.schedule.alpha(next_time)
+    alpha_t = self.corruption_process.schedule.alpha(time)
+    alpha_s = jnp.broadcast_to(alpha_s, xt_oh.shape)
+    alpha_t = jnp.broadcast_to(alpha_t, xt_oh.shape)
+    ratio = alpha_t / alpha_s
+    # (bsz, *seq_len, M)
+
+    # Extract invariant probabilities.
+    pi = self.invariant_probs_vec
+    pi_xt = pi[xt[..., 0]][..., None]  # The prior prob of the current token
+    # (bsz, *seq_len, 1)
+
+    # Calculate q(x_t | x_s).
+    q_xt_given_xs = ratio * xt_oh + (1.0 - ratio) * pi_xt
+    # (bsz, *seq_len, M)
+
+    # Calculate q(x_t | x_0)'
+    q_xt_given_x0 = alpha_t * xt_oh + (1.0 - alpha_t) * pi_xt
+    # (bsz, *seq_len, M)
+
+    # Calculate integration weights: W(x_0) = p(x_0 | x_t) / q(x_t | x_0).
+    w_x0 = p_x0 / jnp.clip(q_xt_given_x0, a_min=1e-12)
+    # (bsz, *seq_len, M)
+    sum_w = jnp.sum(w_x0, axis=-1, keepdims=True)
+    # (bsz, *seq_len, 1)
+
+    # Compute Sum_{x_0} W(x_0) * q(x_s | x_0).
+    expected_xs_given_x0 = alpha_s * w_x0 + (1.0 - alpha_s) * pi * sum_w
+    # (bsz, *seq_len, M)
+
+    # Final marginalized probability p(x_s | x_t).
+    p_xs = q_xt_given_xs * expected_xs_given_x0
+    # (bsz, *seq_len, M)
+
+    # Convert back to logits for safe categorical sampling
+    total_logit = jnp.log(jnp.clip(p_xs, a_min=1e-12))
+
+    # Sample and format the new state
     new_xt = jax.random.categorical(key=key, logits=total_logit)[..., None]
     new_xt = self.post_corruption_fn(new_xt)
 
