@@ -23,10 +23,17 @@ from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-mu
 import jax.numpy as jnp
 
 ################################################################################
+# MARK: Constants
+################################################################################
+
+PAD_TOKEN = 0  # We use `0` because most text tokenizers use it for pad tokens.
+
+################################################################################
 # MARK: Type Aliases
 ################################################################################
 
 Float = hd_typing.Float
+Bool = hd_typing.Bool
 DType = hd_typing.DType
 
 DataArray = hd_typing.DataArray
@@ -43,12 +50,11 @@ NormalizationType = arch_typing.NormalizationType
 class DiT(ConditionalBackbone):
   """DiT model.
 
-  A Diffusion Transformer backbone based on:
-  https://arxiv.org/abs/2212.09748
+  A Diffusion Transformer backbone based on https://arxiv.org/abs/2212.09748.
 
   Uses adaptive layer norm zero (adaLN-Zero) conditioning mechanism.
-  The architecture consists of repeated DiT blocks with optional
-  encoder/decoder and absolute positional encoding.
+  The architecture consists of repeated DiT blocks with optional encoder/decoder
+  and absolute positional encoding.
 
   Attributes:
     num_blocks: Number of DiT blocks.
@@ -56,6 +62,15 @@ class DiT(ConditionalBackbone):
     encoder: Optional encoder module (e.g., Patchify for image inputs).
     decoder: Optional decoder module (e.g., DePatchify for image outputs).
     absolute_posenc: Optional absolute positional encoding module.
+    cast_to_float32: Whether to cast the output to float32.
+    dtype: The data type of the module.
+    pad_token: The pad token value. This value is used in the attention function
+      down the line to mask out padding tokens. Note that using this tokens
+      assumes that the inptus to DiT are already tokenized, which is not the
+      case for images.
+    use_padding_mask: Whether to use a padding mask. Note that in this case we
+      assume that inputs are already tokenized. By default, we are not using it
+      becuase DiT is mainly used for image generation.
   """
 
   num_blocks: int
@@ -69,6 +84,8 @@ class DiT(ConditionalBackbone):
 
   cast_to_float32: bool = False
   dtype: DType = jnp.float32
+  pad_token: int = PAD_TOKEN
+  use_padding_mask: bool = False
 
   def setup(self):
     self.conditional_norm = normalization.NormalizationLayerFactory(
@@ -92,24 +109,32 @@ class DiT(ConditionalBackbone):
     if adaptive_norm_emb is None:
       raise ValueError("adaptive_norm_emb must be provided.")
 
+    # TODO(agalashov): This assumes that x is already tokenized, which is not
+    # true for images.
+    if self.use_padding_mask:
+      padding_mask = (x != self.pad_token).astype(jnp.bool_)
+      padding_mask = jnp.squeeze(padding_mask, axis=-1)
+    else:
+      padding_mask = None
+
     # Tokenize the input and add positional encoding.
-    tokens = self.encoder(x) if self.encoder else x
+    tokens_emb = self.encoder(x) if self.encoder else x
     if self.absolute_posenc:
-      tokens = tokens + self.absolute_posenc(tokens)
+      tokens_emb = tokens_emb + self.absolute_posenc(tokens_emb)
 
     # Apply DiT blocks.
     cond = adaptive_norm_emb
     for i in range(1, self.num_blocks + 1):
-      tokens = self.block.copy(name=f"Block_{i}")(
-          tokens, cond, is_training=is_training
+      tokens_emb = self.block.copy(name=f"Block_{i}")(
+          tokens_emb, cond, is_training=is_training, mask=padding_mask
       )
 
-    tokens = self.conditional_norm(tokens, c=nn.silu(cond))
+    tokens_emb = self.conditional_norm(tokens_emb, c=nn.silu(cond))
 
     # Decode the tokens to the output.
     if self.decoder:
-      tokens = self.decoder(tokens, cond)
+      tokens_emb = self.decoder(tokens_emb, cond)
 
     if self.cast_to_float32:
-      tokens = utils.optional_bf16_to_fp32(tokens)
-    return tokens
+      tokens_emb = utils.optional_bf16_to_fp32(tokens_emb)
+    return tokens_emb

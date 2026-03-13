@@ -30,6 +30,7 @@ import jax.numpy as jnp
 
 DType = hd_typing.DType
 Float = hd_typing.Float
+Bool = hd_typing.Bool
 Num = hd_typing.Num
 
 NormalizationLayer = normalization.NormalizationLayer
@@ -141,10 +142,25 @@ class DiTBlockAdaLNZero(nn.Module):
       cond: Float["*#batch cond_dim"],
       *,
       is_training: bool,
+      mask: Bool["batch seq_dim"] | None = None,
   ) -> Float["*batch seq_dim emb_dim"]:
+    """Calls the DiT block.
+
+    Args:
+      x: The input tensor.
+      cond: The conditioning tensor.
+      is_training: Whether the block is in training mode.
+      mask: The self-attention padding mask. If the mask is provided, it is
+        assumed that the input sequence contains padding tokens that should be
+        masked out when computing the self-attention.
+
+    Returns:
+      The output tensor.
+    """
+
     # Attention Branch
     x_attn_modulated = self.conditional_norm(x, c=nn.silu(cond))
-    attn_out = self.attn(x_attn_modulated, c=None)
+    attn_out = self.attn(x_attn_modulated, c=None, mask=mask)
     # Optional dropout
     if self.dropout_rate > 0.0:
       attn_out = nn.Dropout(rate=self.dropout_rate)(

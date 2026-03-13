@@ -29,6 +29,12 @@ import jax
 import jax.numpy as jnp
 
 ################################################################################
+# MARK: Constants
+################################################################################
+
+UNUSED_MASK_VALUE = -1
+
+################################################################################
 # MARK: Type Aliases
 ################################################################################
 
@@ -153,7 +159,7 @@ class CategoricalProcess(CorruptionProcess):
   schedule: DiscreteSchedule
   invariant_probs: Sequence[float]
   num_categories: int
-  unused_mask_value: int = -1
+  unused_mask_value: int = UNUSED_MASK_VALUE
   post_corruption_fn: PostCorruptionFn = IdentityPostCorruptionFn()
   mode: SamplingPrecisionMode = SamplingPrecisionMode.HIGH
 
@@ -313,7 +319,7 @@ class CategoricalProcess(CorruptionProcess):
       cls,
       schedule: DiscreteSchedule,
       num_categories: int,
-      unused_mask_value: int = -1,
+      unused_mask_value: int = UNUSED_MASK_VALUE,
       post_corruption_fn: PostCorruptionFn = IdentityPostCorruptionFn(),
       mode: SamplingPrecisionMode = SamplingPrecisionMode.HIGH,
   ) -> CategoricalProcess:
@@ -338,7 +344,7 @@ class CategoricalProcess(CorruptionProcess):
       cls,
       schedule: DiscreteSchedule,
       num_categories: int,
-      unused_mask_value: int = -1,
+      unused_mask_value: int = UNUSED_MASK_VALUE,
       post_corruption_fn: PostCorruptionFn = IdentityPostCorruptionFn(),
       mode: SamplingPrecisionMode = SamplingPrecisionMode.HIGH,
   ) -> CategoricalProcess:
