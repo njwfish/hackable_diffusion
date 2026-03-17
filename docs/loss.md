@@ -140,9 +140,11 @@ The cross-entropy loss is computed using
 `weight_fn`, an optional, arbitrary function of time that applies a weighting to
 the loss.
 
-A key option is `use_mask`. If `True`, it will ignore tokens that were *not*
-corrupted at a given timestep, focusing the loss only on the tokens the model
-needs to predict.
+A key option is `use_mask`. If `True`, it will compute the loss only on the
+tokens for which the mask (given by `mask_key`) is `True`. By default
+`mask_key=is_corrupted`, which corresponds to the tokens which were corrupted by
+the process, focusing the loss only on the tokens the model needs to predict.
+The existing `dLLM` library is also using this strategy.
 
 ### `MD4Loss`
 

@@ -205,12 +205,15 @@ class CategoricalProcessTest(parameterized.TestCase):
     with self.assertRaises(KeyError):
       self.process.convert_predictions(prediction, xt, time)
 
-  def test_non_valid_unused_mask_value(self):
-    with self.assertRaises(ValueError):
+  def test_non_valid_unused_token_raises_error(self):
+    with self.assertRaisesRegex(
+        ValueError,
+        'unused_token must be outside of the range of the vocabulary.',
+    ):
       discrete.CategoricalProcess.uniform_process(
           schedule=self.schedule,
           num_categories=self.num_categories,
-          unused_mask_value=0,
+          unused_token=0,
       )
 
   @parameterized.named_parameters(
@@ -246,11 +249,11 @@ class CategoricalProcessTest(parameterized.TestCase):
     self.assertTrue(jnp.allclose(process.invariant_probs_vec, expected_probs))
 
   def test_factory_methods_raise_for_invalid_num_categories(self):
-    with self.assertRaises(ValueError):
+    with self.assertRaisesRegex(ValueError, 'num_categories must be positive'):
       discrete.CategoricalProcess.uniform_process(
           schedule=self.schedule, num_categories=0
       )
-    with self.assertRaises(ValueError):
+    with self.assertRaisesRegex(ValueError, 'num_categories must be positive'):
       discrete.CategoricalProcess.masking_process(
           schedule=self.schedule, num_categories=0
       )
@@ -316,6 +319,39 @@ class CategoricalProcessTest(parameterized.TestCase):
       self.assertFalse(process.is_masking)
     else:
       raise ValueError(f'Unknown process type: {process_type}')
+
+  @parameterized.named_parameters(
+      ('masking', 'masking'),
+      ('uniform', 'uniform'),
+  )
+  def test_unused_mask_gives_always_false_on_other_masks(self, process_type):
+    # At t=0, alpha=1, so xt should be x0.
+    process = {
+        'masking': discrete.CategoricalProcess.masking_process(
+            schedule=self.schedule, num_categories=self.num_categories
+        ),
+        'uniform': discrete.CategoricalProcess.uniform_process(
+            schedule=self.schedule, num_categories=self.num_categories
+        ),
+    }[process_type]
+
+    x0 = jnp.array(
+        [1, process.unused_token, 2, process.unused_token, 3, 4],
+        dtype=jnp.int32,
+    )
+    expected_unused_mask = [False, True, False, True, False, False]
+
+    x0 = jnp.reshape(x0, (1, -1, 1))
+    for t in [0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0]:
+      time = jnp.ones((1,)) * t
+      _, target_info = process.corrupt(self.key, x0, time)
+      # Check that the unused mask remains the same no matter what.
+      is_unused_mask = target_info['is_unused'].reshape((-1,)).tolist()
+      self.assertSequenceEqual(is_unused_mask, expected_unused_mask)
+      is_corrupted_mask = target_info['is_corrupted'].reshape((-1,)).tolist()
+      # Both masks must have False on unused tokens.
+      self.assertFalse(is_corrupted_mask[1])
+      self.assertFalse(is_corrupted_mask[3])
 
 
 if __name__ == '__main__':

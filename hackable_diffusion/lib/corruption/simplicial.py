@@ -30,6 +30,12 @@ import jax
 import jax.numpy as jnp
 
 ################################################################################
+# MARK: Constants
+################################################################################
+
+UNUSED_TOKEN = -1
+
+################################################################################
 # MARK: Type Aliases
 ################################################################################
 
@@ -100,10 +106,10 @@ class SimplicialProcess(CorruptionProcess):
     num_categories: The number of categories in the distribution. Note that this
       might be different from the length of invariant_probs, which might contain
       K+1 elements in the case of masking.
-    unused_mask_value: If a token is unused then it should have this value. Note
-      that we require that this unused_mask_value is not in the range of the
-      vocabulary, i,e., unused_mask_value < 0 or unused_mask_value >=
-      len(invariant_probs) (which is the same as process_num_categories).
+    unused_token: If a token is unused then it should have this value. Note that
+      we require that this unused_token is not in the range of the vocabulary,
+      i,e., unused_token < 0 or unused_token >= len(invariant_probs) (which is
+      the same as process_num_categories).
     temperature: The temperature parameter of the Dirichlet distribution. This
       parameter controls the sharpness of the distribution.
     mode: The mode to use in `jax.random.choice` and `jax.random.bernoulli`. Can
@@ -117,19 +123,19 @@ class SimplicialProcess(CorruptionProcess):
   schedule: SimplicialSchedule
   invariant_probs: Sequence[float]
   num_categories: int
-  unused_mask_value: int = -1
+  unused_token: int = UNUSED_TOKEN
   temperature: float = 1.0
   mode: SamplingPrecisionMode = SamplingPrecisionMode.HIGH
   safety_epsilon: float = 1e-6
 
   def __post_init__(self):
     if (
-        self.unused_mask_value >= 0
-        and self.unused_mask_value < self.process_num_categories
+        self.unused_token >= 0
+        and self.unused_token < self.process_num_categories
     ):
       raise ValueError(
-          'unused_mask_value must be outside of the range of the vocabulary.'
-          f' Got: {self.unused_mask_value=} and {self.num_categories=}'
+          'unused_token must be outside of the range of the vocabulary.'
+          f' Got: {self.unused_token=} and {self.num_categories=}'
       )
 
   ##############################################################################
@@ -217,7 +223,7 @@ class SimplicialProcess(CorruptionProcess):
       target_info: The target info for the corrupted data.
     """
     # get the unused mask
-    unused_mask = x0 == self.unused_mask_value
+    unused_mask = x0 == self.unused_token
 
     # compute one-hot encoding of x0
     x0_oh = jax.nn.one_hot(x0[..., 0], self.process_num_categories)
@@ -234,8 +240,8 @@ class SimplicialProcess(CorruptionProcess):
         'logits': logits,  # Float[*b K] one-hot encoding of x0.
     }
 
-    # Replace the unused probabilities with the unused_mask_value.
-    xt = jnp.where(unused_mask, self.unused_mask_value, xt)
+    # Replace the unused probabilities with the unused_token.
+    xt = jnp.where(unused_mask, self.unused_token, xt)
 
     return xt, target_info
 
@@ -273,7 +279,7 @@ class SimplicialProcess(CorruptionProcess):
       cls,
       schedule: SimplicialSchedule,
       num_categories: int,
-      unused_mask_value: int = -1,
+      unused_token: int = UNUSED_TOKEN,
       temperature: float = 1.0,
       mode: SamplingPrecisionMode = SamplingPrecisionMode.HIGH,
       safety_epsilon: float = 1e-6,
@@ -289,7 +295,7 @@ class SimplicialProcess(CorruptionProcess):
         schedule=schedule,
         invariant_probs=invariant_probs,
         num_categories=num_categories,
-        unused_mask_value=unused_mask_value,
+        unused_token=unused_token,
         temperature=temperature,
         mode=mode,
         safety_epsilon=safety_epsilon,
@@ -300,7 +306,7 @@ class SimplicialProcess(CorruptionProcess):
       cls,
       schedule: SimplicialSchedule,
       num_categories: int,
-      unused_mask_value: int = -1,
+      unused_token: int = UNUSED_TOKEN,
       temperature: float = 1.0,
       mode: SamplingPrecisionMode = SamplingPrecisionMode.HIGH,
       safety_epsilon: float = 1e-6,
@@ -315,7 +321,7 @@ class SimplicialProcess(CorruptionProcess):
         schedule=schedule,
         invariant_probs=invariant_probs,
         num_categories=num_categories,
-        unused_mask_value=unused_mask_value,
+        unused_token=unused_token,
         temperature=temperature,
         mode=mode,
         safety_epsilon=safety_epsilon,

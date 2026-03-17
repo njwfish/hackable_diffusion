@@ -96,56 +96,144 @@ class DiscreteLossTest(parameterized.TestCase):
     self.assertEqual(loss.shape, (self.bsz,))
     self.assertFalse(jnp.isnan(loss).any())
 
-  def test_masking_and_normalization(self):
-    """Tests NoWeightDiscreteLoss with masking and normalization options."""
-    # Setup: Create logits and labels such that CE loss = -log(0.5) = log(2)
-    # for every element if label is 0 and logits are [1, 1].
-    logits = jnp.array([[[1.0, 1.0], [1.0, 1.0], [1.0, 1.0], [1.0, 1.0]]])
-    labels = jnp.array([[[0], [0], [0], [0]]])
-    # For mask: False means "include in loss", True means "exclude from loss"
-    # This is because the loss function uses `where=jnp.invert(mask)`.
-    mask = jnp.array([[[False], [False], [True], [True]]])
+  @parameterized.named_parameters(
+      ('normalize_by_mask', True),
+      ('do_not_normalize_by_mask', False),
+  )
+  def test_masks_extract_individual_losses(self, normalize_by_mask: bool):
+    logits_a = 0.3
+    logits_b = 0.7
+    logits = jnp.array([[(logits_a, logits_b) for _ in range(3)]])
+    labels = jnp.array([[[0], [1], [0]]])
+
+    masks_1 = jnp.array([[[1], [0], [0]]])
+    masks_2 = jnp.array([[[0], [1], [0]]])
+    masks_3 = jnp.array([[[0], [0], [1]]])
+
+    masks = [masks_1, masks_2, masks_3]
+
     time = jnp.array([0.5])
-    log2 = jnp.log(2.0)
+
+    log_softmax_a = -jnp.log(
+        jnp.exp(logits_a) / (jnp.exp(logits_a) + jnp.exp(logits_b))
+    )
+    log_softmax_b = -jnp.log(
+        jnp.exp(logits_b) / (jnp.exp(logits_a) + jnp.exp(logits_b))
+    )
+
+    expected_individual_losses = [log_softmax_a, log_softmax_b, log_softmax_a]
+    if not normalize_by_mask:
+      expected_individual_losses = [l / 3.0 for l in expected_individual_losses]
 
     preds = {'logits': logits}
-    targets = {'x0': labels, 'test_mask': mask}
-
-    # Case 1: use_mask=True, normalize_by_mask=True
-    # Loss is computed on 2 elements, sum is 2*log2, count is 2.
-    # Expected: (2*log2) / 2 = log2
-    loss1 = discrete.NoWeightDiscreteLoss(
-        use_mask=True, mask_key='test_mask', normalize_by_mask=True
+    loss = discrete.NoWeightDiscreteLoss(
+        use_mask=True, mask_key='test_mask', normalize_by_mask=normalize_by_mask
     )
-    res1 = loss1(preds=preds, targets=targets, time=time)
-    chex.assert_trees_all_close(res1, jnp.array([log2]))
 
-    # Case 2: use_mask=True, normalize_by_mask=False
-    # Loss is computed on 2 elements, sum is 2*log2, count is 4.
-    # Expected: (2*log2) / 4 = 0.5*log2
-    loss2 = discrete.NoWeightDiscreteLoss(
-        use_mask=True, mask_key='test_mask', normalize_by_mask=False
-    )
-    res2 = loss2(preds=preds, targets=targets, time=time)
-    chex.assert_trees_all_close(res2, jnp.array([0.5 * log2]))
+    for exp_loss, mask in zip(expected_individual_losses, masks):
+      targets = {'x0': labels, 'test_mask': mask}
+      res = loss(preds=preds, targets=targets, time=time)
+      chex.assert_trees_all_close(res, jnp.array([exp_loss]))
 
-    # Case 3: use_mask=False, normalize_by_mask=True
-    # Mask is ignored, all 4 elements are used. Sum is 4*log2, count is 4.
-    # Expected: (4*log2) / 4 = log2
-    loss3 = discrete.NoWeightDiscreteLoss(
-        use_mask=False, mask_key='test_mask', normalize_by_mask=True
-    )
-    res3 = loss3(preds=preds, targets=targets, time=time)
-    chex.assert_trees_all_close(res3, jnp.array([log2]))
+  @parameterized.named_parameters(
+      ('normalize_by_mask', True),
+      ('do_not_normalize_by_mask', False),
+  )
+  def tests_masks_no_effect_when_use_mask_is_false(
+      self, normalize_by_mask: bool
+  ):
+    logits_a = 0.3
+    logits_b = 0.7
+    logits = jnp.array([[(logits_a, logits_b) for _ in range(3)]])
+    labels = jnp.array([[[0], [1], [0]]])
 
-    # Case 4: use_mask=False, normalize_by_mask=False
-    # Mask is ignored, all 4 elements are used. Sum is 4*log2, count is 4.
-    # Expected: (4*log2) / 4 = log2
-    loss4 = discrete.NoWeightDiscreteLoss(
-        use_mask=False, mask_key='test_mask', normalize_by_mask=False
+    masks_1 = jnp.array([[[1], [0], [0]]])
+    masks_2 = jnp.array([[[0], [1], [0]]])
+    masks_3 = jnp.array([[[0], [0], [1]]])
+
+    masks = [masks_1, masks_2, masks_3]
+
+    time = jnp.array([0.5])
+
+    log_softmax_a = -jnp.log(
+        jnp.exp(logits_a) / (jnp.exp(logits_a) + jnp.exp(logits_b))
     )
-    res4 = loss4(preds=preds, targets=targets, time=time)
-    chex.assert_trees_all_close(res4, jnp.array([log2]))
+    log_softmax_b = -jnp.log(
+        jnp.exp(logits_b) / (jnp.exp(logits_a) + jnp.exp(logits_b))
+    )
+    expected_loss = (log_softmax_a + log_softmax_b + log_softmax_a) / 3.0
+
+    preds = {'logits': logits}
+    loss = discrete.NoWeightDiscreteLoss(
+        use_mask=False,
+        mask_key='test_mask',
+        normalize_by_mask=normalize_by_mask,
+    )
+
+    for mask in masks:
+      targets = {'x0': labels, 'test_mask': mask}
+      res = loss(preds=preds, targets=targets, time=time)
+      chex.assert_trees_all_close(res, jnp.array([expected_loss]))
+
+  @parameterized.named_parameters(
+      ('normalize_by_mask', True),
+      ('do_not_normalize_by_mask', False),
+  )
+  def test_mask_gives_expected_results(self, normalize_by_mask: bool):
+    logits_a = 0.3
+    logits_b = 0.7
+    logits = jnp.array([[(logits_a, logits_b) for _ in range(3)]])
+    labels = jnp.array([[[0], [1], [0]]])
+
+    masks_1 = jnp.array([[[1], [0], [0]]])  # log_softmax_a
+    masks_2 = jnp.array([[[0], [1], [0]]])  # log_softmax_b
+    masks_3 = jnp.array([[[0], [0], [1]]])  # log_softmax_a
+    masks_4 = jnp.array([[[1], [1], [1]]])  # 2 * log_softmax_a + log_softmax_b
+    masks_5 = jnp.array([[[1], [1], [0]]])  # log_softmax_a + log_softmax_b
+    masks_6 = jnp.array([[[1], [0], [1]]])  # 2 * log_softmax_a
+    masks_7 = jnp.array([[[0], [1], [1]]])  # log_softmax_b + log_softmax_a
+
+    masks = [masks_1, masks_2, masks_3, masks_4, masks_5, masks_6, masks_7]
+
+    time = jnp.array([0.5])
+
+    log_softmax_a = -jnp.log(
+        jnp.exp(logits_a) / (jnp.exp(logits_a) + jnp.exp(logits_b))
+    )
+    log_softmax_b = -jnp.log(
+        jnp.exp(logits_b) / (jnp.exp(logits_a) + jnp.exp(logits_b))
+    )
+
+    if normalize_by_mask:
+      expected_losses = [
+          log_softmax_a,
+          log_softmax_b,
+          log_softmax_a,
+          (2.0 * log_softmax_a + log_softmax_b) / 3.0,
+          (log_softmax_a + log_softmax_b) / 2.0,
+          (2.0 * log_softmax_a) / 2.0,
+          (log_softmax_b + log_softmax_a) / 2.0,
+      ]
+    else:
+      expected_losses = [
+          log_softmax_a / 3.0,
+          log_softmax_b / 3.0,
+          log_softmax_a / 3.0,
+          (2.0 * log_softmax_a + log_softmax_b) / 3.0,
+          (log_softmax_a + log_softmax_b) / 3.0,
+          (2.0 * log_softmax_a) / 3.0,
+          (log_softmax_b + log_softmax_a) / 3.0,
+      ]
+
+    preds = {'logits': logits}
+    loss = discrete.NoWeightDiscreteLoss(
+        use_mask=True, mask_key='test_mask', normalize_by_mask=normalize_by_mask
+    )
+
+    for exp_loss, mask in zip(expected_losses, masks):
+      targets = {'x0': labels, 'test_mask': mask}
+      res = loss(preds=preds, targets=targets, time=time)
+      chex.assert_trees_all_close(res, jnp.array([exp_loss]))
 
 
 if __name__ == '__main__':

@@ -225,12 +225,15 @@ class SimplicialProcessTest(parameterized.TestCase):
     with self.assertRaises(KeyError):
       self.process.convert_predictions(prediction, xt, time)
 
-  def test_non_valid_unused_mask_value(self):
-    with self.assertRaises(ValueError):
+  def test_non_valid_unused_token_raises_error(self):
+    with self.assertRaisesRegex(
+        ValueError,
+        'unused_token must be outside of the range of the vocabulary.',
+    ):
       simplicial.SimplicialProcess.uniform_process(
           schedule=self.schedule,
           num_categories=self.num_categories,
-          unused_mask_value=0,
+          unused_token=0,
       )
 
   @parameterized.named_parameters(
@@ -266,11 +269,11 @@ class SimplicialProcessTest(parameterized.TestCase):
     self.assertTrue(jnp.allclose(process.invariant_probs_vec, expected_probs))
 
   def test_factory_methods_raise_for_invalid_num_categories(self):
-    with self.assertRaises(ValueError):
+    with self.assertRaisesRegex(ValueError, 'num_categories must be positive'):
       simplicial.SimplicialProcess.uniform_process(
           schedule=self.schedule, num_categories=0
       )
-    with self.assertRaises(ValueError):
+    with self.assertRaisesRegex(ValueError, 'num_categories must be positive'):
       simplicial.SimplicialProcess.masking_process(
           schedule=self.schedule, num_categories=0
       )

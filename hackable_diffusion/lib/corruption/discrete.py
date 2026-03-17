@@ -32,7 +32,7 @@ import jax.numpy as jnp
 # MARK: Constants
 ################################################################################
 
-UNUSED_MASK_VALUE = -1
+UNUSED_TOKEN = -1
 
 ################################################################################
 # MARK: Type Aliases
@@ -141,10 +141,14 @@ class CategoricalProcess(CorruptionProcess):
     num_categories: The number of categories in the distribution. Note that this
       might be different from the length of invariant_probs, which might contain
       K+1 elements in the case of masking.
-    unused_mask_value: If a token is unused then it should have this value. Note
-      that we require that this unused_mask_value is not in the range of the
-      vocabulary, i,e., unused_mask_value < 0 or unused_mask_value >=
-      len(invariant_probs) (which is the same as process_num_categories).
+    unused_token: If a token is unused then it should have this value. Note that
+      we require that this `unused_token` is not in the range of the vocabulary,
+      i,e., unused_token < 0 or unused_token >= len(invariant_probs) (which is
+      the same as process_num_categories). Note that in the case of text
+      diffusion, this token is NOT a padding token, because we do want to have
+      padding token inside the vocabulary. An example where this token appears
+      is graph adjacency matrices diffusion where we would like to forbid
+      certain subset of edges, which corresponds to a form of padding.
     post_corruption_fn: The projection function to use for the corruption
       process. This is a function applied at the end of the corruption process.
       It projects the labels on a new space. For instance in the case of the
@@ -159,18 +163,18 @@ class CategoricalProcess(CorruptionProcess):
   schedule: DiscreteSchedule
   invariant_probs: Sequence[float]
   num_categories: int
-  unused_mask_value: int = UNUSED_MASK_VALUE
+  unused_token: int = UNUSED_TOKEN
   post_corruption_fn: PostCorruptionFn = IdentityPostCorruptionFn()
   mode: SamplingPrecisionMode = SamplingPrecisionMode.HIGH
 
   def __post_init__(self):
     if (
-        self.unused_mask_value >= 0
-        and self.unused_mask_value < self.process_num_categories
+        self.unused_token >= 0
+        and self.unused_token < self.process_num_categories
     ):
       raise ValueError(
-          'unused_mask_value must be outside of the range of the vocabulary.'
-          f' Got: {self.unused_mask_value=} and {self.num_categories=}'
+          'unused_token must be outside of the range of the vocabulary.'
+          f' Got: {self.unused_token=} and {self.num_categories=}'
       )
 
   ##############################################################################
@@ -245,7 +249,15 @@ class CategoricalProcess(CorruptionProcess):
 
     Returns:
       xt: The corrupted data.
-      target_info: The target info for the corrupted data.
+      target_info: The target info for the corrupted data. Target info contains
+        `x0` which is uncorrupted data, `logits` which is a one-hot encoding
+        of the `x0`. The shape of `x0` is (*b, 1) and the shape of `logits` is
+        (*b, K), where K is the number of categories.
+        Moreover, it contains different masks which can be useful
+        for computing the loss. First, `is_unused` is a mask which is True if a
+        token is unused and False otherwise. Second, `is_corrupted` is a mask
+        which is True if the token is corrupted and not equal to the
+        `unused_token`, False otherwise. The shape of both masks is (*b, 1).
     """
     # Broadcast the time to a shape compatible with x0.
     time = utils.bcast_right(time, x0.ndim)
@@ -253,35 +265,43 @@ class CategoricalProcess(CorruptionProcess):
     # compute alpha
     alpha = self.schedule.alpha(time)
 
-    # get the unused mask
-    unused_mask = x0 == self.unused_mask_value
-    # The mask is True if the token is unused.
+    # The unused mask is True if the token is unused.
+    unused_mask = x0 == self.unused_token
 
     # corrupt x0 with probability alpha
     # We must have alpha of the same shape as x0, since each pixel can be
     # corrupted independently.
     alpha_bcast = jnp.broadcast_to(alpha, x0.shape)
     assert alpha_bcast.shape == x0.shape
-    mask = jax.random.bernoulli(key, p=alpha_bcast, mode=self.mode)
+    # Get the mask of the corruption process.  It is true if the token is not
+    # corrupted and False if it is corrupted.
+    is_not_corrupted = jax.random.bernoulli(key, p=alpha_bcast, mode=self.mode)
     key, _ = jax.random.split(key)
 
     # compute noise vector
     noise = self.sample_from_invariant(key, data_spec=x0)
 
     # noise x0 with probability alpha
-    xt = jnp.where(mask, x0, noise)  # mask = (xt == x0)
+    xt = jnp.where(is_not_corrupted, x0, noise)  # is_not_corrupted = (xt == x0)
     xt = self.post_corruption_fn(xt)
 
     logits = jax.nn.one_hot(x0[..., 0], self.num_categories)
+
+    xt = jnp.where(unused_mask, self.unused_token, xt)
+
+    is_corrupted = jnp.logical_not(is_not_corrupted)
+
+    # The masks on unused tokens should always be False.
+    is_corrupted = jnp.where(unused_mask, False, is_corrupted)
+
     target_info = {
         'x0': x0,  # Int[*b 1]; Uncorrupted input data.
         'logits': logits,  # Float[*b K] one-hot encoding of x0.
-        'mask': mask,  # Bool[*b 1] mask of the corruption.
-        'unused_mask': unused_mask,  # Bool[*b 1] mask of the unused tokens.
+        'is_corrupted': (
+            is_corrupted
+        ),  # Bool[*b 1] mask of the corrupted tokens.
+        'is_unused': unused_mask,  # Bool[*b 1] mask of the unused tokens.
     }
-
-    # Replace the unused tokens with the unused_mask_value.
-    xt = jnp.where(unused_mask, self.unused_mask_value, xt)
 
     return xt, target_info
 
@@ -319,7 +339,7 @@ class CategoricalProcess(CorruptionProcess):
       cls,
       schedule: DiscreteSchedule,
       num_categories: int,
-      unused_mask_value: int = UNUSED_MASK_VALUE,
+      unused_token: int = UNUSED_TOKEN,
       post_corruption_fn: PostCorruptionFn = IdentityPostCorruptionFn(),
       mode: SamplingPrecisionMode = SamplingPrecisionMode.HIGH,
   ) -> CategoricalProcess:
@@ -334,7 +354,7 @@ class CategoricalProcess(CorruptionProcess):
         schedule=schedule,
         invariant_probs=invariant_probs,
         num_categories=num_categories,
-        unused_mask_value=unused_mask_value,
+        unused_token=unused_token,
         post_corruption_fn=post_corruption_fn,
         mode=mode,
     )
@@ -344,7 +364,7 @@ class CategoricalProcess(CorruptionProcess):
       cls,
       schedule: DiscreteSchedule,
       num_categories: int,
-      unused_mask_value: int = UNUSED_MASK_VALUE,
+      unused_token: int = UNUSED_TOKEN,
       post_corruption_fn: PostCorruptionFn = IdentityPostCorruptionFn(),
       mode: SamplingPrecisionMode = SamplingPrecisionMode.HIGH,
   ) -> CategoricalProcess:
@@ -358,7 +378,7 @@ class CategoricalProcess(CorruptionProcess):
         schedule=schedule,
         invariant_probs=invariant_probs,
         num_categories=num_categories,
-        unused_mask_value=unused_mask_value,
+        unused_token=unused_token,
         post_corruption_fn=post_corruption_fn,
         mode=mode,
     )

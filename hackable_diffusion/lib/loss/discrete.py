@@ -46,7 +46,7 @@ def compute_discrete_diffusion_loss(
     *,
     schedule: DiscreteSchedule | None = None,
     use_mask: bool = False,
-    mask_key: str = 'mask',
+    mask_key: str = 'is_corrupted',
     weight_fn: base.WeightFn | None = None,
     normalize_by_mask: bool = True,
 ) -> LossOutput:
@@ -67,16 +67,14 @@ def compute_discrete_diffusion_loss(
     mask = jnp.squeeze(targets[mask_key], axis=-1)
     mask = mask.astype(jnp.bool_)
     # Remove trailing dimension of the mask.
-    # Mask is True if xt is not masked. This is to stay consistent with
-    # the conditioning mask.
+    # Mask is True if xt is corrupted and False otherwise.
   else:
-    mask = jnp.zeros_like(labels, dtype=jnp.bool_)
+    mask = jnp.ones_like(labels, dtype=jnp.bool_)
 
-  inverted_mask = jnp.invert(mask)
   neg_xentropy = -optax.softmax_cross_entropy_with_integer_labels(
       logits=preds['logits'],
       labels=labels,
-      where=inverted_mask,
+      where=mask,
   )
 
   if neg_xentropy.shape != labels.shape:
@@ -88,7 +86,7 @@ def compute_discrete_diffusion_loss(
   # Sum and normalize.
   reduce_axes = tuple(range(1, neg_xentropy.ndim))
   if normalize_by_mask:
-    denominator = jnp.sum(inverted_mask, axis=reduce_axes, keepdims=True)
+    denominator = jnp.sum(mask, axis=reduce_axes, keepdims=True)
   else:
     denominator = jnp.sum(
         jnp.ones_like(neg_xentropy), axis=reduce_axes, keepdims=True
@@ -134,7 +132,7 @@ class NoWeightDiscreteLoss(base.DiffusionLoss):
   """Discrete loss without weight."""
 
   use_mask: bool = False
-  mask_key: str = 'mask'
+  mask_key: str = 'is_corrupted'
   normalize_by_mask: bool = True
 
   @typechecked
@@ -163,7 +161,7 @@ class MD4Loss(base.DiffusionLoss):
 
   schedule: DiscreteSchedule
   use_mask: bool = False
-  mask_key: str = 'mask'
+  mask_key: str = 'is_corrupted'
   normalize_by_mask: bool = True
 
   @typechecked

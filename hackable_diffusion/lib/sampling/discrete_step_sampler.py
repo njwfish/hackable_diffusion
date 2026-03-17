@@ -263,8 +263,8 @@ class UnMaskingStep(SamplerStep):
     return self.corruption_process.num_categories - 1
 
   @property
-  def unused_mask_value(self) -> int:
-    return self.corruption_process.unused_mask_value
+  def unused_token(self) -> int:
+    return self.corruption_process.unused_token
 
   @property
   def post_corruption_fn(self) -> discrete.PostCorruptionFn:
@@ -303,7 +303,7 @@ class UnMaskingStep(SamplerStep):
     current_step_info = current_step.step_info
     xt = current_step.xt
 
-    unused_mask = xt == self.unused_mask_value
+    unused_mask = xt == self.unused_token
     # The mask is True if the token is unused.
 
     time = current_step_info.time
@@ -360,8 +360,8 @@ class UnMaskingStep(SamplerStep):
     new_xt = jnp.where(to_remask, noise_sample, new_xt)
     new_xt = self.post_corruption_fn(new_xt)
 
-    # Replace the unused tokens with the unused_mask_value.
-    new_xt = jnp.where(unused_mask, self.unused_mask_value, new_xt)
+    # Replace the unused tokens with the unused_token.
+    new_xt = jnp.where(unused_mask, self.unused_token, new_xt)
 
     return DiffusionStep(
         xt=new_xt,
@@ -433,8 +433,8 @@ class DiscreteDDIMStep(SamplerStep):
     return self.corruption_process.num_categories - 1
 
   @property
-  def unused_mask_value(self) -> int:
-    return self.corruption_process.unused_mask_value
+  def unused_token(self) -> int:
+    return self.corruption_process.unused_token
 
   @property
   def post_corruption_fn(self) -> discrete.PostCorruptionFn:
@@ -479,7 +479,7 @@ class DiscreteDDIMStep(SamplerStep):
     current_step_info = current_step.step_info
     xt = current_step.xt
 
-    unused_mask = xt == self.unused_mask_value
+    unused_mask = xt == self.unused_token
     # The mask is True if the token is unused.
 
     time = current_step_info.time
@@ -535,8 +535,8 @@ class DiscreteDDIMStep(SamplerStep):
     new_xt = jax.random.categorical(key=key, logits=total_logit)[..., None]
     new_xt = self.post_corruption_fn(new_xt)
 
-    # Replace the unused tokens with the unused_mask_value.
-    new_xt = jnp.where(unused_mask, self.unused_mask_value, new_xt)
+    # Replace the unused tokens with the unused_token.
+    new_xt = jnp.where(unused_mask, self.unused_token, new_xt)
 
     return DiffusionStep(
         xt=new_xt,
@@ -624,8 +624,8 @@ class IntegratedDiscreteDDIMStep(SamplerStep):
     return self.corruption_process.num_categories - 1
 
   @property
-  def unused_mask_value(self) -> int:
-    return self.corruption_process.unused_mask_value
+  def unused_token(self) -> int:
+    return self.corruption_process.unused_token
 
   @property
   def post_corruption_fn(self) -> discrete.PostCorruptionFn:
@@ -668,7 +668,7 @@ class IntegratedDiscreteDDIMStep(SamplerStep):
   ) -> DiffusionStep:
 
     xt = current_step.xt
-    unused_mask = xt == self.unused_mask_value
+    unused_mask = xt == self.unused_token
 
     time = utils.bcast_right(current_step.step_info.time, xt.ndim)
     next_time = utils.bcast_right(next_step_info.time, xt.ndim)
@@ -728,8 +728,8 @@ class IntegratedDiscreteDDIMStep(SamplerStep):
     new_xt = jax.random.categorical(key=key, logits=total_logit)[..., None]
     new_xt = self.post_corruption_fn(new_xt)
 
-    # Replace the unused tokens with the unused_mask_value.
-    new_xt = jnp.where(unused_mask, self.unused_mask_value, new_xt)
+    # Replace the unused tokens with the unused_token.
+    new_xt = jnp.where(unused_mask, self.unused_token, new_xt)
 
     return DiffusionStep(
         xt=new_xt,

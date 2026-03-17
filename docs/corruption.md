@@ -157,10 +157,17 @@ probability `1 - alpha(t)`.
 
 Key configuration parameters:
 
-  * `schedule`: A `DiscreteSchedule` that defines `alpha(t)`.
-  * `invariant_probs`: The probability distribution of the "noise" tokens that
+*   `schedule`: A `DiscreteSchedule` that defines `alpha(t)`.
+*   `invariant_probs`: The probability distribution of the "noise" tokens that
     replace the original ones.
-  * `num_categories`: The number of valid categories in the data.
+*   `num_categories`: The number of valid categories in the data.
+*   `unused_token`: This corresponds to a value of a token which should not be
+    modelled by the diffusion process and which is not part of the vocabulary.
+    Note that in the text diffusion, this is not typically a padding token,
+    because it is a part of vocabulary and is modelled by diffusion. An example
+    of such a token is in graph diffusion of adjacency matrix where this token
+    can essentially put some structure on this matrix and forbid some dimensions
+    to be unmasked. It can be interpreted as a form of padding in this context.
 
 The library provides convenient factory methods for common use cases:
 
@@ -169,6 +176,15 @@ The library provides convenient factory methods for common use cases:
   * `CategoricalProcess.masking_process`: Corrupts tokens by replacing them with
     a special "mask" token. This requires `num_categories` to be the vocabulary
     size, and the mask token will be integer `num_categories`.
+
+The `corrupt` function returns `target_info` which contains `x0`, `logits`, as
+well as different masks such as `is_corrupted` and `is_unused`. The mask
+`is_corrupted` is true for all tokens which are corrupted and not unused (a
+token which is `unused_token` has mask equal to False). The mask `is_unused` is
+only true for tokens which value is equal to `unused_token`. The mask
+`is_corrupted` is used in the loss function to compute it only on the corrupted
+tokens. The mask `is_unused` could be used in case if the loss needs to be
+computed on all but unused tokens.
 
 ### Example Usage (Masking)
 
