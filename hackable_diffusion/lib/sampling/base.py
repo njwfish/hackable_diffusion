@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# pylint: disable=line-too-long
+# pylint: disable=line-too-long,g-docstring-first-line-too-long
 """This module defines the core data structures and protocols for a diffusion sampling loop.
 
 The `InferenceFn` (pure update function) is visible from the `SamplerStep`
@@ -61,11 +61,11 @@ The `InferenceFn` (pure update function) is visible from the `SamplerStep`
  is called to produce the final clean output sample.
 """
 import dataclasses
-from typing import Protocol
+from typing import Any, Protocol
 import flax.struct
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 import jax
+import kauldron.ktyping as kt
 
 
 #################################################################################
@@ -103,7 +103,7 @@ class StepInfo:
   rng: PRNGKey
 
 
-StepInfoTree = PyTree[StepInfo, 'T']
+StepInfoTree = PyTree[StepInfo]
 
 # MARK: DiffusionStep Data Structure
 
@@ -124,7 +124,9 @@ class DiffusionStep:
   aux: PyTree
 
 
-DiffusionStepTree = PyTree[DiffusionStep, 'T']
+# TODO(b/493013032): Revert to PyTree[DiffusionStep] once ktyping supports
+# PyTree structure bindings without traversing into registered JAX PyTree nodes.
+DiffusionStepTree = Any
 
 ################################################################################
 # MARK: Protocols
@@ -139,7 +141,7 @@ class SamplerStep(Protocol):
       initial_noise: DataTree,
       initial_step_info: StepInfoTree,
   ) -> DiffusionStepTree:
-    """Initializes the first `DiffusionStep` from a starting state (e.g., pure noise)."""
+    """Initializes the `DiffusionStep` (e.g. from pure noise)."""
     ...
 
   def update(
@@ -172,7 +174,7 @@ class NestedSamplerStep(SamplerStep):
 
   sampler_steps: PyTree[SamplerStep]
 
-  @typechecked
+  @kt.typechecked
   def initialize(
       self,
       initial_noise: DataTree,
@@ -188,7 +190,7 @@ class NestedSamplerStep(SamplerStep):
         initial_step_info,
     )
 
-  @typechecked
+  @kt.typechecked
   def update(
       self,
       prediction: TargetInfoTree,
@@ -207,7 +209,7 @@ class NestedSamplerStep(SamplerStep):
         next_step_info,
     )
 
-  @typechecked
+  @kt.typechecked
   def finalize(
       self,
       prediction: TargetInfoTree,

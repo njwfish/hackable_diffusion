@@ -40,9 +40,9 @@ from typing import Protocol
 
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import utils
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 import jax
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Type Aliases
@@ -171,7 +171,7 @@ class UniformTimeSampler(TimeSampler):
     span = get_sampling_time_interval(self.time_range, self.safety_epsilon)
     object.__setattr__(self, "span", span)
 
-  @typechecked
+  @kt.typechecked
   def __call__(self, key: PRNGKey, data_spec: DataArray) -> TimeArray:
     shape = utils.get_broadcastable_shape(data_spec.shape, self.axes)
     minval, maxval = self.span
@@ -221,7 +221,7 @@ class LogitNormalTimeSampler(TimeSampler):
     span = get_sampling_time_interval(self.time_range, self.safety_epsilon)
     object.__setattr__(self, "span", span)
 
-  @typechecked
+  @kt.typechecked
   def __call__(self, key: PRNGKey, data_spec: DataArray) -> TimeArray:
     shape = utils.get_broadcastable_shape(data_spec.shape, self.axes)
     minval, maxval = self.span
@@ -259,7 +259,7 @@ class UniformStratifiedTimeSampler(TimeSampler):
     span = get_sampling_time_interval(self.time_range, self.safety_epsilon)
     object.__setattr__(self, "span", span)
 
-  @typechecked
+  @kt.typechecked
   def __call__(self, key: PRNGKey, data_spec: DataArray) -> TimeArray:
     shape = utils.get_broadcastable_shape(data_spec.shape, self.axes)
     tensor_dim = math.prod(shape)
@@ -295,7 +295,7 @@ class UnbalancedTimestepSampler(TimeSampler):
 
   p_equal: float = 0.5
 
-  @typechecked
+  @kt.typechecked
   def __call__(self, key: PRNGKey, data_spec: DataTree) -> TimeTree:
     # Check that the keys match the data.
     if set(data_spec.keys()) != {self.key1, self.key2}:
@@ -348,7 +348,7 @@ class NestedTimeSampler(TimeSampler):
 
   samplers: PyTree[TimeSampler]
 
-  @typechecked
+  @kt.typechecked
   def __call__(self, key: PRNGKey, data_spec: DataTree) -> TimeTree:
     def _call_sampler(key, sampler, data_spec):
       return sampler(key, data_spec)
@@ -384,7 +384,7 @@ class JointNestedTimeSampler(TimeSampler):
 
   samplers: PyTree[TimeSampler]
 
-  @typechecked
+  @kt.typechecked
   def __call__(self, key: PRNGKey, data_spec: DataTree) -> TimeTree:
     def _call_sampler(sampler, data_spec):
       return sampler(key, data_spec)

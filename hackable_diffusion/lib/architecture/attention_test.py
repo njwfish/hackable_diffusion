@@ -20,6 +20,7 @@ from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import attention
 import jax
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 import numpy as np
 
 from absl.testing import absltest
@@ -94,12 +95,6 @@ class AttentionTest(parameterized.TestCase):
   def test_attention_dims_factory_raises_error_on_non_positive_args(
       self, num_heads: int, head_dim: int
   ):
-    """Tests that the factory raises errors for non-positive num_heads and head_dim.
-
-    Args:
-      num_heads: The number of heads.
-      head_dim: The head dimension.
-    """
     with self.assertRaisesRegex(
         ValueError,
         "(Head dimension|Number of heads) must be positive or INVALID_INT.",
@@ -383,8 +378,7 @@ class AttentionTest(parameterized.TestCase):
           pass_context=True,
           invalid_seq_len=42,
           expected_regex=(
-              r"In cross-attention, mask shape \(\d+, \d+\) does not match"
-              r" expected shape \(\d+, \d+\)"
+              "is not shape-compatible with 'batch sequence1|sequence2'"
           ),
       ),
       dict(
@@ -409,7 +403,9 @@ class AttentionTest(parameterized.TestCase):
     invalid_mask = jnp.ones((self.batch_size, invalid_seq_len), dtype=jnp.bool_)
 
     # Verify that calling the module with this mask triggers the shape exception
-    with self.assertRaisesRegex(ValueError, expected_regex):
+    with self.assertRaisesRegex(
+        (ValueError, kt.KTypeCheckError), expected_regex
+    ):
       module.init(self.rng, self.x, c, mask=invalid_mask)
 
 

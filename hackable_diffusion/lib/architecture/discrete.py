@@ -20,8 +20,8 @@ from flax import linen as nn
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.architecture import arch_typing
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Type Aliases
@@ -73,7 +73,7 @@ class TokenEmbedder(BaseTokenEmbedder):
   dtype: DType = jnp.float32
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self, x: Int['batch *other_input 1'], is_training: bool
   ) -> Float['batch *other_embedding F']:
@@ -151,7 +151,7 @@ class DenseProjector(BaseProjector):
   dtype: DType = jnp.float32
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self, x: Float['batch *other_embedding F'], is_training: bool
   ) -> Float['batch *other_input V']:
@@ -208,7 +208,7 @@ class ConditionalDiscreteBackbone(ConditionalBackbone):
       )
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       x: Int['batch *other 1'],

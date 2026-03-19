@@ -24,9 +24,9 @@ from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.corruption import base
 from hackable_diffusion.lib.corruption import schedules
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 import jax
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Constants
@@ -211,7 +211,7 @@ class CategoricalProcess(CorruptionProcess):
   # MARK: Methods
   ##############################################################################
 
-  @typechecked
+  @kt.typechecked
   def sample_from_invariant(
       self,
       key: PRNGKey,
@@ -226,7 +226,7 @@ class CategoricalProcess(CorruptionProcess):
         mode=self.mode,
     )
 
-  @typechecked
+  @kt.typechecked
   def corrupt(
       self,
       key: PRNGKey,
@@ -305,7 +305,7 @@ class CategoricalProcess(CorruptionProcess):
 
     return xt, target_info
 
-  @typechecked
+  @kt.typechecked
   def convert_predictions(
       self,
       prediction: TargetInfo,
@@ -325,7 +325,7 @@ class CategoricalProcess(CorruptionProcess):
         'logits': logits,  # Float[*b K]; Raw logits
     }
 
-  @typechecked
+  @kt.typechecked
   def get_schedule_info(self, time: TimeArray) -> dict[str, TimeArray]:
     """Get the schedule info for the given time."""
     return self.schedule.evaluate(time)

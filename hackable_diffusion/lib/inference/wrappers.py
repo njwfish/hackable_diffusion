@@ -21,9 +21,9 @@ import flax.linen as nn
 from flax.nnx import bridge
 from hackable_diffusion.lib import diffusion_network
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 from hackable_diffusion.lib.inference import base
 import jax
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Type Aliases
@@ -52,7 +52,7 @@ class FlaxLinenInferenceFn(InferenceFn):
   network: BaseDiffusionNetwork
   params: PyTree
 
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       time: TimeTree,
@@ -100,7 +100,7 @@ class FlaxNNXInferenceFn(InferenceFn):
 
   nnx_network: ConvertedNNXDiffusionNetwork
 
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       time: TimeTree,

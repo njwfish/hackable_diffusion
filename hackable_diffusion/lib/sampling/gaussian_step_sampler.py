@@ -36,11 +36,11 @@ import dataclasses
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.corruption import gaussian
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 from hackable_diffusion.lib.sampling import base
 from hackable_diffusion.lib.sampling import time_scheduling
 import jax
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Type Aliases
@@ -77,7 +77,7 @@ class SdeStep(SamplerStep):
   churn: float
   stochastic_last_step: bool = False
 
-  @typechecked
+  @kt.typechecked
   def initialize(
       self,
       initial_noise: DataArray,
@@ -89,7 +89,7 @@ class SdeStep(SamplerStep):
         aux=dict(),
     )
 
-  @typechecked
+  @kt.typechecked
   def update(
       self,
       prediction: TargetInfo,
@@ -137,7 +137,7 @@ class SdeStep(SamplerStep):
         aux=dict(),
     )
 
-  @typechecked
+  @kt.typechecked
   def finalize(
       self,
       prediction: TargetInfo,
@@ -171,7 +171,7 @@ class AdjustedDDIMStep(SamplerStep):
 
   corruption_process: GaussianProcess
 
-  @typechecked
+  @kt.typechecked
   def initialize(
       self,
       initial_noise: DataArray,
@@ -183,7 +183,7 @@ class AdjustedDDIMStep(SamplerStep):
         aux=dict(),
     )
 
-  @typechecked
+  @kt.typechecked
   def update(
       self,
       prediction: TargetInfo,
@@ -228,7 +228,7 @@ class AdjustedDDIMStep(SamplerStep):
         aux=dict(),
     )
 
-  @typechecked
+  @kt.typechecked
   def finalize(
       self,
       prediction: TargetInfo,
@@ -264,7 +264,7 @@ class DDIMStep(SamplerStep):
   stoch_coeff: float
   stochastic_last_step: bool = False
 
-  @typechecked
+  @kt.typechecked
   def initialize(
       self,
       initial_noise: DataArray,
@@ -276,7 +276,7 @@ class DDIMStep(SamplerStep):
         aux=dict(),
     )
 
-  @typechecked
+  @kt.typechecked
   def update(
       self,
       prediction: TargetInfo,
@@ -330,7 +330,7 @@ class DDIMStep(SamplerStep):
         aux=dict(),
     )
 
-  @typechecked
+  @kt.typechecked
   def finalize(
       self,
       prediction: TargetInfo,
@@ -361,7 +361,7 @@ class VelocityStep(SamplerStep):
   corruption_process: GaussianProcess
   epsilon: float
 
-  @typechecked
+  @kt.typechecked
   def initialize(
       self,
       initial_noise: DataArray,
@@ -373,7 +373,7 @@ class VelocityStep(SamplerStep):
         aux=dict(),
     )
 
-  @typechecked
+  @kt.typechecked
   def update(
       self,
       prediction: TargetInfo,
@@ -417,7 +417,7 @@ class VelocityStep(SamplerStep):
         aux=dict(),
     )
 
-  @typechecked
+  @kt.typechecked
   def finalize(
       self,
       prediction: TargetInfo,
@@ -478,7 +478,7 @@ class HeunStep(SamplerStep):
     all_step_infos = self._get_all_step_infos(rng=rng, data_spec=data_spec)
     return jax.tree.map(lambda x: x[step], all_step_infos)
 
-  @typechecked
+  @kt.typechecked
   def initialize(
       self,
       initial_noise: DataArray,
@@ -528,7 +528,7 @@ class HeunStep(SamplerStep):
         ),
     )
 
-  @typechecked
+  @kt.typechecked
   def first_step(
       self,
       prediction: TargetInfo,
@@ -594,7 +594,7 @@ class HeunStep(SamplerStep):
         aux=aux,
     )
 
-  @typechecked
+  @kt.typechecked
   def second_step(
       self,
       prediction: TargetInfo,
@@ -660,7 +660,7 @@ class HeunStep(SamplerStep):
         aux=aux,
     )
 
-  @typechecked
+  @kt.typechecked
   def update(
       self,
       prediction: TargetInfo,
@@ -689,7 +689,7 @@ class HeunStep(SamplerStep):
         next_step_info,
     )
 
-  @typechecked
+  @kt.typechecked
   def finalize(
       self,
       prediction: TargetInfo,

@@ -15,9 +15,10 @@
 """Common typing definitions."""
 
 from collections.abc import Mapping  # pylint: disable=g-multiple-import,g-importing-member
+import kauldron.ktyping as kt
 # pylint: disable=g-multiple-import,g-importing-member, unused-import
-from hackable_diffusion.lib.array_annotations import (
-    check_type,
+from kauldron.ktyping import (
+    Array,
     BFloat16,
     Bool,
     Complex,
@@ -26,24 +27,25 @@ from hackable_diffusion.lib.array_annotations import (
     Float32,
     Float64,
     Int,
-    Int32,
-    Int64,
     Int8,
     Int16,
-    Array,
+    Int32,
+    Int64,
     Num,
+    PRNGKey,
+    PyTree,
+    Scalar,
     SInt,
     UInt,
-    UInt64,
-    UInt32,
-    UInt16,
     UInt8,
-    typechecked,
-    PRNGKey,
-    Scalar,
+    UInt16,
+    UInt32,
+    UInt64,
 )
 # pylint: enable=g-multiple-import,g-importing-member, unused-import
-from jaxtyping import PyTree, DTypeLike  # pylint: disable=g-multiple-import,g-importing-member
+
+typechecked = kt.typechecked
+check_type = kt.check_type
 
 
 # MARK: Data Structure
@@ -55,19 +57,23 @@ from jaxtyping import PyTree, DTypeLike  # pylint: disable=g-multiple-import,g-i
 # Array described the batched data.
 DataArray = Array['batch *#data_shape']
 # PyTree of the shape and structure of the input data.
-# Note: the ? prefix means that the data_shape can be different for different
-# leaves of the PyTree.
-DataTree = PyTree[Array['batch *?#data_shape'], 'TD']
+# Note: the _ prefix means that the data_shape can be different for different
+# leaves of the PyTree (non-binding dim). This replaces jaxtyping's `?#`
+# combined prefix which ktyping does not support.
+
+DataTree = PyTree[Array['batch *_data_shape'], '$T']
 
 
 # Array of the shape and structure of the time parameter.
 # '*#data_shape' means broadcastable to the shape of the data.
 # So (B, 1, 1, 1) would be ok assuming overall shape is (B, H, W, C).
-TimeArray = Array['#batch *#data_shape']
+# TODO(b/493016456): TimeArray should use `*#data_shape` like DataArray, but
+# time sometimes has shape (B,) instead of (B, 1, 1, 1), so we use non-binding.
+TimeArray = Array['#batch *_data_shape']
 # Corresponding PyTree for the time array.
-TimeTree = PyTree[Array['#batch *?#data_shape'], 'TD']
+TimeTree = PyTree[Array['_batch *_data_shape'], '$T']
 # Corresponding schedule tree.
-ScheduleInfoTree = PyTree[dict[str, Array['batch *?#data_shape']], 'TD']
+ScheduleInfoTree = PyTree[dict[str, Array['batch *_data_shape']], '$T']
 
 # A dictionary containing the different training targets. Same structure as
 # DataArray for every different target (e.g. x0, epsilon, score, velocity,
@@ -75,8 +81,8 @@ ScheduleInfoTree = PyTree[dict[str, Array['batch *?#data_shape']], 'TD']
 # NOTE: The # in data_shape is there because in the discrete case the targets
 # are usually labels (x0 : Int["batch 1"]) while the predictions are
 # logits (x0 : Float["batch K"]).
-TargetInfo = dict[str, Array['batch *#data_shape']]
-TargetInfoTree = PyTree[dict[str, Array['batch *?#data_shape']], 'TD']
+TargetInfo = dict[str, Array['batch *_data_shape']]
+TargetInfoTree = PyTree[Array['batch *_data_shape']]
 
 # Conditioning structures.
 Conditioning = Mapping[str, Array['batch *cond_shape']]
@@ -87,10 +93,10 @@ ShapeTree = PyTree[Shape]
 ConditioningShape = dict[str, Shape]
 
 # Type related structures.
-DType = DTypeLike
-DTypeTree = PyTree[DType, 'TD']
+DType = kt.DType
+DTypeTree = PyTree[DType, '$T']
 
 
 # Loss related structures.
 LossOutput = Float['batch']
-LossOutputTree = PyTree[LossOutput, 'TD']
+LossOutputTree = PyTree[LossOutput, '$T']

@@ -21,9 +21,9 @@ from typing import Protocol
 
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import utils
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 import jax
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 
 ################################################################################
@@ -59,25 +59,25 @@ class GaussianSchedule(abc.ABC, Schedule):
   def sigma(self, time: TimeArray) -> TimeArray:
     """The sigma parameter for xt = alpha * x0 + sigma * epsilon."""
 
-  @typechecked
+  @kt.typechecked
   def logsnr(self, time: TimeArray) -> TimeArray:
     """The log signal-to-noise ratio at time t."""
     return 2.0 * (jnp.log(self.alpha(time)) - jnp.log(self.sigma(time)))
 
-  @typechecked
+  @kt.typechecked
   def inverse_logsnr(self, logsnr: TimeArray) -> TimeArray:
     """The inverse of the logsnr, i.e., inverse_logsnr(logsnr(t))=t."""
     raise NotImplementedError()
 
-  @typechecked
+  @kt.typechecked
   def f(self, time: TimeArray) -> TimeArray:
     return utils.egrad(self.alpha)(time) / self.alpha(time)
 
-  @typechecked
+  @kt.typechecked
   def g(self, time: TimeArray) -> TimeArray:
     return self.sigma(time) * jnp.sqrt(-utils.egrad(self.logsnr)(time))
 
-  @typechecked
+  @kt.typechecked
   def evaluate(self, time: TimeArray) -> dict[str, TimeArray]:
     return {
         'time': time,
@@ -94,7 +94,7 @@ class DiscreteSchedule(abc.ABC, Schedule):
   def alpha(self, time: TimeArray) -> TimeArray:
     """The probability of keeping the original value."""
 
-  @typechecked
+  @kt.typechecked
   def evaluate(self, time: TimeArray) -> dict[str, TimeArray]:
     return {
         'time': time,
@@ -117,15 +117,15 @@ SimplicialSchedule = DiscreteSchedule
 class RFSchedule(GaussianSchedule):
   """Rectified Flow schedule."""
 
-  @typechecked
+  @kt.typechecked
   def inverse_logsnr(self, logsnr: TimeArray) -> TimeArray:
     return jax.nn.sigmoid(-0.5 * logsnr)
 
-  @typechecked
+  @kt.typechecked
   def alpha(self, time: TimeArray) -> TimeArray:
     return 1.0 - time
 
-  @typechecked
+  @kt.typechecked
   def sigma(self, time: TimeArray) -> TimeArray:
     return time
 
@@ -133,15 +133,15 @@ class RFSchedule(GaussianSchedule):
 class CosineSchedule(GaussianSchedule):
   """Cosine diffusion schedule."""
 
-  @typechecked
+  @kt.typechecked
   def inverse_logsnr(self, logsnr: TimeArray) -> TimeArray:
     return (2 / jnp.pi) * jnp.arctan(jnp.exp(-0.5 * logsnr))
 
-  @typechecked
+  @kt.typechecked
   def alpha(self, time: TimeArray) -> TimeArray:
     return jnp.cos(0.5 * jnp.pi * time)
 
-  @typechecked
+  @kt.typechecked
   def sigma(self, time: TimeArray) -> TimeArray:
     return jnp.sin(0.5 * jnp.pi * time)
 
@@ -150,7 +150,7 @@ class InverseCosineSchedule(GaussianSchedule):
   """Inverse Cosine diffusion schedule from https://arxiv.org/abs/2311.17901."""
 
   @utils.CustomGradient
-  @typechecked
+  @kt.typechecked
   def alpha(self, time: TimeArray) -> TimeArray:
     """Shift and scale the inverse cosine function."""
     return jnp.sqrt(self._v(time) / jnp.pi)
@@ -161,7 +161,7 @@ class InverseCosineSchedule(GaussianSchedule):
     return -1.0 / (2.0 * jnp.sqrt(jnp.pi * v) * self._sqrt_t_m_t2(time))
 
   @utils.CustomGradient
-  @typechecked
+  @kt.typechecked
   def sigma(self, time: TimeArray) -> TimeArray:
     return jnp.sqrt(1.0 - jnp.square(self.alpha(time)))
 
@@ -172,20 +172,20 @@ class InverseCosineSchedule(GaussianSchedule):
     denom = 2.0 * jnp.sqrt(jnp.pi * (jnp.pi - v)) * self._sqrt_t_m_t2(t)
     return 1.0 / denom
 
-  @typechecked
+  @kt.typechecked
   def inverse_logsnr(self, logsnr: TimeArray) -> TimeArray:
     return (jnp.cos(jnp.pi * jax.scipy.special.expit(logsnr)) + 1.0) * 0.5
 
-  @typechecked
+  @kt.typechecked
   def logsnr(self, time: TimeArray) -> TimeArray:
     u = self._v(time) / jnp.pi
     return jax.scipy.special.logit(u)
 
-  @typechecked
+  @kt.typechecked
   def f(self, time: TimeArray) -> TimeArray:
     return -1.0 / (2.0 * self._v(time) * self._sqrt_t_m_t2(time))
 
-  @typechecked
+  @kt.typechecked
   def g(self, time: TimeArray) -> TimeArray:
     t = time
     denominator = jnp.sqrt(self._v(t) * self._sqrt_t_m_t2(t))
@@ -212,7 +212,7 @@ class LinearDiffusionSchedule(GaussianSchedule):
     return self.beta_max - self.beta_min
 
   @utils.CustomGradient
-  @typechecked
+  @kt.typechecked
   def alpha(self, time: TimeArray) -> TimeArray:
     return jnp.exp(
         -0.5 * (self.beta_min * time + 0.5 * jnp.square(time) * self.beta_diff)
@@ -224,7 +224,7 @@ class LinearDiffusionSchedule(GaussianSchedule):
     return self.alpha(time) * r
 
   @utils.CustomGradient
-  @typechecked
+  @kt.typechecked
   def sigma(self, time: TimeArray) -> TimeArray:
     return jnp.sqrt(1.0 - jnp.square(self.alpha(time)))
 
@@ -232,7 +232,7 @@ class LinearDiffusionSchedule(GaussianSchedule):
   def sigma_der(self, time: TimeArray) -> TimeArray:
     return -self.alpha_der(time) * self.alpha(time) / self.sigma(time)
 
-  @typechecked
+  @kt.typechecked
   def inverse_logsnr(self, logsnr: TimeArray) -> TimeArray:
     """Inverse of logsnr."""
 
@@ -243,7 +243,7 @@ class LinearDiffusionSchedule(GaussianSchedule):
     denominator = self.beta_diff
     return numerator / denominator
 
-  @typechecked
+  @kt.typechecked
   def logsnr(self, time: TimeArray) -> TimeArray:
     return -jnp.log(
         jnp.expm1(
@@ -251,11 +251,11 @@ class LinearDiffusionSchedule(GaussianSchedule):
         )
     )
 
-  @typechecked
+  @kt.typechecked
   def f(self, time: TimeArray) -> TimeArray:
     return -0.5 * (self.beta_min + time * self.beta_diff)
 
-  @typechecked
+  @kt.typechecked
   def g(self, time: TimeArray) -> TimeArray:
     return jnp.sqrt(self.beta_min + time * self.beta_diff)
 
@@ -274,12 +274,12 @@ class GeometricSchedule(GaussianSchedule):
   def log_ratio(self) -> float:
     return math.log(self.sigma_max) - math.log(self.sigma_min)
 
-  @typechecked
+  @kt.typechecked
   def alpha(self, time: TimeArray) -> TimeArray:
     return jnp.ones_like(time)
 
   @utils.CustomGradient
-  @typechecked
+  @kt.typechecked
   def sigma(self, time: TimeArray) -> TimeArray:
     return self.sigma_min * jnp.exp(time * self.log_ratio)
 
@@ -287,17 +287,17 @@ class GeometricSchedule(GaussianSchedule):
   def sigma_der(self, time: TimeArray) -> TimeArray:
     return self.log_ratio * self.sigma(time)
 
-  @typechecked
+  @kt.typechecked
   def inverse_logsnr(self, logsnr: TimeArray) -> TimeArray:
     numerator = logsnr + 2 * jnp.log(self.sigma_min)
     denominator = 2 * self.log_ratio
     return -numerator / denominator
 
-  @typechecked
+  @kt.typechecked
   def logsnr(self, time: TimeArray) -> TimeArray:
     return -2.0 * jnp.log(self.sigma_min) - 2.0 * time * self.log_ratio
 
-  @typechecked
+  @kt.typechecked
   def g(self, time: TimeArray) -> TimeArray:
     return jnp.sqrt(2.0 * self.sigma(time) * self.sigma_der(time))
 
@@ -344,7 +344,7 @@ class ShiftedSchedule(GaussianSchedule):
     """The maximum time for the original schedule."""
     return self.original_schedule.inverse_logsnr(jnp.array([self.logsnr_min]))
 
-  @typechecked
+  @kt.typechecked
   def logsnr(self, time: TimeArray) -> TimeArray:
     """Map time to logSNR of the shifted schedule."""
     rescaled_time = time * (self.tmax - self.tmin) + self.tmin
@@ -352,7 +352,7 @@ class ShiftedSchedule(GaussianSchedule):
     rescaled_shifted_logsnr = rescaled_logsnr + self.logsnr_shift
     return rescaled_shifted_logsnr
 
-  @typechecked
+  @kt.typechecked
   def inverse_logsnr(self, logsnr: TimeArray) -> TimeArray:
     """Map logSNR of the shifted schedule to time."""
     shifted_logsnr = logsnr - self.logsnr_shift
@@ -360,7 +360,7 @@ class ShiftedSchedule(GaussianSchedule):
     rescaled_shifted_time = (shifted_time - self.tmin) / (self.tmax - self.tmin)
     return rescaled_shifted_time
 
-  @typechecked
+  @kt.typechecked
   def time_change(self, time: TimeArray) -> TimeArray:
     """Time change from shifted to original process.
 
@@ -378,16 +378,16 @@ class ShiftedSchedule(GaussianSchedule):
     """
     return self.original_schedule.inverse_logsnr(self.logsnr(time))
 
-  @typechecked
+  @kt.typechecked
   def inverse_time_change(self, time: TimeArray) -> TimeArray:
     """Time change from original to shifted process."""
     return self.inverse_logsnr(self.original_schedule.logsnr(time))
 
-  @typechecked
+  @kt.typechecked
   def alpha(self, time: TimeArray) -> TimeArray:
     return self.original_schedule.alpha(self.time_change(time))
 
-  @typechecked
+  @kt.typechecked
   def sigma(self, time: TimeArray) -> TimeArray:
     return self.original_schedule.sigma(self.time_change(time))
 
@@ -398,7 +398,7 @@ class ShiftedSchedule(GaussianSchedule):
 class LinearDiscreteSchedule(DiscreteSchedule):
   """Linear schedule for alpha for discrete corruption processes."""
 
-  @typechecked
+  @kt.typechecked
   def alpha(self, time: TimeArray) -> TimeArray:
     return 1.0 - time
 
@@ -406,7 +406,7 @@ class LinearDiscreteSchedule(DiscreteSchedule):
 class CosineDiscreteSchedule(DiscreteSchedule):
   """Cosine schedule for alpha for discrete corruption processes."""
 
-  @typechecked
+  @kt.typechecked
   def alpha(self, time: TimeArray) -> TimeArray:
     return jnp.cos(0.5 * jnp.pi * time)
 
@@ -425,7 +425,7 @@ class SquareCosineDiscreteSchedule(DiscreteSchedule):
 
   s: float = 0.0
 
-  @typechecked
+  @kt.typechecked
   def alpha(self, time: TimeArray) -> TimeArray:
     out = jnp.square(jnp.cos(0.5 * jnp.pi * (time + self.s) / (1.0 + self.s)))
     return out / jnp.square(jnp.cos(0.5 * jnp.pi * self.s / (1.0 + self.s)))
@@ -441,7 +441,7 @@ class GeometricDiscreteSchedule(DiscreteSchedule):
   beta_min: float
   beta_max: float
 
-  @typechecked
+  @kt.typechecked
   def alpha(self, time: TimeArray) -> TimeArray:
     return jnp.exp(-self.beta_min ** (1 - time) * self.beta_max**time)
 
@@ -452,6 +452,6 @@ class PolynomialDiscreteSchedule(DiscreteSchedule):
 
   degree: float = 1.0
 
-  @typechecked
+  @kt.typechecked
   def alpha(self, time: TimeArray) -> TimeArray:
     return 1 - time**self.degree

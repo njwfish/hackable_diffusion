@@ -25,9 +25,9 @@ from hackable_diffusion.lib import random_utils
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.corruption import base
 from hackable_diffusion.lib.corruption import schedules
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 import jax
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Constants
@@ -172,7 +172,7 @@ class SimplicialProcess(CorruptionProcess):
   # MARK: h-function
   ##############################################################################
 
-  @typechecked
+  @kt.typechecked
   def h(self, time: TimeArray) -> TimeArray:
     """Returns the h-function of the process."""
     denominator = 1.0 - self.schedule.alpha(time) + self.safety_epsilon
@@ -182,7 +182,7 @@ class SimplicialProcess(CorruptionProcess):
   # MARK: Methods
   ##############################################################################
 
-  @typechecked
+  @kt.typechecked
   def sample_from_invariant(
       self,
       key: PRNGKey,
@@ -197,7 +197,7 @@ class SimplicialProcess(CorruptionProcess):
         key, alpha=invariant_dirichlet_params, shape=data_spec.shape[:-1]
     )
 
-  @typechecked
+  @kt.typechecked
   def corrupt(
       self,
       key: PRNGKey,
@@ -245,7 +245,7 @@ class SimplicialProcess(CorruptionProcess):
 
     return xt, target_info
 
-  @typechecked
+  @kt.typechecked
   def convert_predictions(
       self,
       prediction: TargetInfo,
@@ -265,7 +265,7 @@ class SimplicialProcess(CorruptionProcess):
         'logits': logits,  # Float[*b K]; Raw logits
     }
 
-  @typechecked
+  @kt.typechecked
   def get_schedule_info(self, time: TimeArray) -> dict[str, TimeArray]:
     """Get the schedule info for the given time."""
     return self.schedule.evaluate(time)

@@ -38,10 +38,10 @@ from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.corruption import discrete
 from hackable_diffusion.lib.corruption import schedules
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 from hackable_diffusion.lib.sampling import base
 import jax
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Type Aliases
@@ -86,7 +86,7 @@ class RemaskingFn(Protocol):
 class NoRemaskingFn(RemaskingFn):
   """No remasking strategy."""
 
-  @typechecked
+  @kt.typechecked
   def __call__(self, s: TimeArray, t: TimeArray) -> TimeArray:
     return jnp.zeros_like(s)
 
@@ -122,7 +122,7 @@ class MaxCappedRemaskingFn(RemaskingFn):
     if self.max_cap < 0.0:
       raise ValueError(f'max_cap must be non-negative, got {self.max_cap}')
 
-  @typechecked
+  @kt.typechecked
   def __call__(self, s: TimeArray, t: TimeArray) -> TimeArray:
     alpha_s = self.schedule.alpha(s)
     alpha_t = self.schedule.alpha(t)
@@ -166,7 +166,7 @@ class RescaledRemaskingFn(RemaskingFn):
   switch_min: float = 0.0
   switch_max: float = 1.0
 
-  @typechecked
+  @kt.typechecked
   def __call__(self, s: TimeArray, t: TimeArray) -> TimeArray:
     alpha_s = self.schedule.alpha(s)
     alpha_t = self.schedule.alpha(t)
@@ -198,7 +198,7 @@ class CorruptedMaskFn(Protocol):
 class AllCorruptedMaskFn(CorruptedMaskFn):
   """Assume all tokens are corrupted."""
 
-  @typechecked
+  @kt.typechecked
   def __call__(self, xt: DataArray) -> DataArray:
     return jnp.ones_like(xt, dtype=jnp.bool_)
 
@@ -219,7 +219,7 @@ class MaskValueCorruptedMaskFn(CorruptedMaskFn):
           'MaskValueCorruptedMaskFn only supports masking processes.'
       )
 
-  @typechecked
+  @kt.typechecked
   def __call__(self, xt: DataArray) -> DataArray:
     mask_value = self.process.process_num_categories - 1
     return xt == mask_value
@@ -270,7 +270,7 @@ class UnMaskingStep(SamplerStep):
   def post_corruption_fn(self) -> discrete.PostCorruptionFn:
     return self.corruption_process.post_corruption_fn
 
-  @typechecked
+  @kt.typechecked
   def initialize(
       self,
       initial_noise: DataArray,
@@ -292,7 +292,7 @@ class UnMaskingStep(SamplerStep):
         },
     )
 
-  @typechecked
+  @kt.typechecked
   def update(
       self,
       prediction: TargetInfo,
@@ -371,7 +371,7 @@ class UnMaskingStep(SamplerStep):
     # `logits` need to be passed in `aux` dictionary to a performance
     # bug when using TPU. Needs to be investigated.
 
-  @typechecked
+  @kt.typechecked
   def finalize(
       self,
       prediction: TargetInfo,
@@ -448,7 +448,7 @@ class DiscreteDDIMStep(SamplerStep):
   def process_num_categories(self) -> int:
     return self.corruption_process.process_num_categories
 
-  @typechecked
+  @kt.typechecked
   def initialize(
       self,
       initial_noise: DataArray,
@@ -468,7 +468,7 @@ class DiscreteDDIMStep(SamplerStep):
     # `logits` need to be passed in `aux` dictionary to a performance
     # bug when using TPU. Needs to be investigated.
 
-  @typechecked
+  @kt.typechecked
   def update(
       self,
       prediction: TargetInfo,
@@ -546,7 +546,7 @@ class DiscreteDDIMStep(SamplerStep):
     # `logits` need to be passed in `aux` dictionary to a performance
     # bug when using TPU. Needs to be investigated.
 
-  @typechecked
+  @kt.typechecked
   def finalize(
       self,
       prediction: TargetInfo,
@@ -639,7 +639,7 @@ class IntegratedDiscreteDDIMStep(SamplerStep):
   def process_num_categories(self) -> int:
     return self.corruption_process.process_num_categories
 
-  @typechecked
+  @kt.typechecked
   def initialize(
       self,
       initial_noise: DataArray,
@@ -659,7 +659,7 @@ class IntegratedDiscreteDDIMStep(SamplerStep):
     # `logits` need to be passed in `aux` dictionary to a performance
     # bug when using TPU. Needs to be investigated.
 
-  @typechecked
+  @kt.typechecked
   def update(
       self,
       prediction: TargetInfo,
@@ -739,7 +739,7 @@ class IntegratedDiscreteDDIMStep(SamplerStep):
     # `logits` need to be passed in `aux` dictionary to a performance
     # bug when using TPU. Needs to be investigated.
 
-  @typechecked
+  @kt.typechecked
   def finalize(
       self,
       prediction: TargetInfo,

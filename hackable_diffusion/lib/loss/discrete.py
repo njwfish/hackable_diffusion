@@ -18,9 +18,9 @@ import dataclasses
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.corruption import schedules
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 from hackable_diffusion.lib.loss import base
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 import optax
 
 ################################################################################
@@ -38,7 +38,7 @@ DiscreteSchedule = schedules.DiscreteSchedule
 ################################################################################
 
 
-@typechecked
+@kt.typechecked
 def compute_discrete_diffusion_loss(
     preds: TargetInfo,
     targets: TargetInfo,
@@ -135,7 +135,7 @@ class NoWeightDiscreteLoss(base.DiffusionLoss):
   mask_key: str = 'is_corrupted'
   normalize_by_mask: bool = True
 
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       preds: TargetInfo,
@@ -164,7 +164,7 @@ class MD4Loss(base.DiffusionLoss):
   mask_key: str = 'is_corrupted'
   normalize_by_mask: bool = True
 
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       preds: TargetInfo,

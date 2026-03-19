@@ -21,8 +21,8 @@ from typing import Protocol
 
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import utils
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 import jax
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Type Aliases
@@ -87,7 +87,7 @@ class NestedProcess(CorruptionProcess):
 
   processes: PyTree[CorruptionProcess]
 
-  @typechecked
+  @kt.typechecked
   def sample_from_invariant(
       self,
       key: PRNGKey,
@@ -101,7 +101,7 @@ class NestedProcess(CorruptionProcess):
         data_spec,
     )
 
-  @typechecked
+  @kt.typechecked
   def corrupt(
       self,
       key: PRNGKey,
@@ -131,7 +131,7 @@ class NestedProcess(CorruptionProcess):
     )
     return xt, target_info
 
-  @typechecked
+  @kt.typechecked
   def convert_predictions(
       self,
       prediction: TargetInfoTree,
@@ -149,7 +149,7 @@ class NestedProcess(CorruptionProcess):
         time,
     )
 
-  @typechecked
+  @kt.typechecked
   def get_schedule_info(self, time: TimeTree) -> ScheduleInfoTree:
     """Get the schedule info for the given time."""
     return jax.tree.map(

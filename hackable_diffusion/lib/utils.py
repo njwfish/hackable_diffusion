@@ -19,9 +19,9 @@ from types import FunctionType  # pylint: disable=g-importing-member
 from typing import Any, Callable, cast
 import zlib
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 import jax
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 import numpy as np
 
 ################################################################################
@@ -94,7 +94,7 @@ def lenient_map(
   return jax.tree.map(fn, tree, *restructured_rest)
 
 
-@typechecked
+@kt.typechecked
 def tree_map_with_key(
     fn: Callable[..., Any],
     key: PRNGKey,
@@ -170,7 +170,7 @@ def egrad(g):
   return wrapped
 
 
-@typechecked
+@kt.typechecked
 def flatten_non_batch_dims(x: Array["batch ..."]):
   """Reshapes the array with `B` as the first dimension to (B, ...).
 
@@ -186,7 +186,7 @@ def flatten_non_batch_dims(x: Array["batch ..."]):
   return x.reshape((x.shape[0], -1))
 
 
-@typechecked
+@kt.typechecked
 def bcast_right(value: Array["*shape"], ndim: int) -> Array["*out_shape"]:
   """Broadcast by adding singleton axes to the right, instead of to the left."""
   if value.ndim > ndim:
@@ -426,7 +426,7 @@ def get_dummy_batch(
 ################################################################################
 
 
-@typechecked
+@kt.typechecked
 def jax_randint(
     key: PRNGKey,
     minval: int = 0,

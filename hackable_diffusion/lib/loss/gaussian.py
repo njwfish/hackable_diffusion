@@ -24,11 +24,11 @@ from typing import Literal
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.corruption import schedules
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 from hackable_diffusion.lib.loss import base
 import immutabledict
 import jax
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Type Aliases
@@ -46,7 +46,7 @@ GaussianSchedule = schedules.GaussianSchedule
 ################################################################################
 
 
-@typechecked
+@kt.typechecked
 def compute_continuous_diffusion_loss(
     preds: TargetInfo,
     targets: TargetInfo,
@@ -180,7 +180,7 @@ class NoWeightGaussianLoss(base.DiffusionLoss):
 
   prediction_type: GaussianPredictionType | None = None
 
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       preds: TargetInfo,
@@ -209,7 +209,7 @@ class SiD2Loss(base.DiffusionLoss):
   prediction_type: GaussianPredictionType | None = None
   schedule: GaussianSchedule
 
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       preds: TargetInfo,

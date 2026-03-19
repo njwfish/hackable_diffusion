@@ -16,10 +16,10 @@
 
 import dataclasses
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 from hackable_diffusion.lib.inference import base
 from hackable_diffusion.lib.inference import guidance
 from hackable_diffusion.lib.inference import projection
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Type Aliases
@@ -45,7 +45,7 @@ class GuidedDiffusionInferenceFn(InferenceFn):
   guidance_fn: guidance.GuidanceFn = guidance.ScalarGuidanceFn()
   projection_fn: projection.ProjectionFn = projection.IdentityProjectionFn()
 
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       time: TimeTree,

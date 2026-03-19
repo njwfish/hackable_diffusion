@@ -19,9 +19,9 @@ from typing import Sequence
 import flax.linen as nn
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib.architecture import arch_typing
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 import jax
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 import numpy as np
 
 
@@ -52,7 +52,7 @@ class SinusoidalSequenceEmbedding(nn.Module):
       raise ValueError("Number of features must be positive.")
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self, inputs: Num["batch *#data_shape"]
   ) -> Float["batch num_features"]:
@@ -92,7 +92,7 @@ class RandomFourierSequenceEmbedding(nn.Module):
     )
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self, inputs: Num["batch *#data_shape"]
   ) -> Float["batch num_features"]:
@@ -115,7 +115,7 @@ class RoPESequenceEmbedding(nn.Module):
   rope_position_type: RoPEPositionType = RoPEPositionType.SQUARE
   max_rotary_wavelength: int = 10_000
 
-  @typechecked
+  @kt.typechecked
   def _get_positions(
       self, x: Float["*batch sequence dim"]
   ) -> Sequence[Int["*batch sequence"]]:
@@ -151,7 +151,7 @@ class RoPESequenceEmbedding(nn.Module):
       raise ValueError(f"Unknown RoPE position type: {self.rope_position_type}")
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self, x: Float["*batch sequence dim"]
   ) -> Float["*batch sequence dim"]:

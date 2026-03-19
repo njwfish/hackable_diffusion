@@ -30,10 +30,10 @@ from typing import Protocol
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import time_sampling
 from hackable_diffusion.lib import utils
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 from hackable_diffusion.lib.sampling import base as sampling_base
 import jax
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Type Aliases
@@ -109,7 +109,7 @@ class TimeScheduleBaseClass(ABC, TimeSchedule):
 class UniformTimeSchedule(TimeScheduleBaseClass):
   """Creates a schedule with uniformly spaced time steps in [ε, 1-ε]."""
 
-  @typechecked
+  @kt.typechecked
   def all_step_infos(
       self, rng: PRNGKey, num_steps: int, data_spec: DataArray
   ) -> StepInfo:
@@ -158,7 +158,7 @@ class EDMTimeSchedule(TimeScheduleBaseClass):
 
   rho: float = 1.0
 
-  @typechecked
+  @kt.typechecked
   def all_step_infos(
       self, rng: PRNGKey, num_steps: int, data_spec: DataArray
   ) -> StepInfo:
@@ -212,7 +212,7 @@ class NestedTimeSchedule(TimeSchedule):
 
   time_schedules: PyTree[TimeSchedule]
 
-  @typechecked
+  @kt.typechecked
   def all_step_infos(
       self,
       rng: PRNGKey,

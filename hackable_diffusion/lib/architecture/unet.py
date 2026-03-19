@@ -22,9 +22,9 @@ from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import arch_utils
 from hackable_diffusion.lib.architecture import normalization
 from hackable_diffusion.lib.architecture import unet_blocks
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 import jax
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Common types
@@ -159,7 +159,7 @@ class Unet(ConditionalBackbone):
     )
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       x: Float["batch height width channels"],

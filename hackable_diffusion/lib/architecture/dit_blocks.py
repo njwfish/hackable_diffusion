@@ -21,8 +21,8 @@ from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import attention
 from hackable_diffusion.lib.architecture import mlp_blocks
 from hackable_diffusion.lib.architecture import normalization
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Type Aliases
@@ -50,7 +50,7 @@ class PositionalEmbedding(nn.Module):
   init_stddev: float = 0.02
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(self, x: Num["batch *data_shape"]) -> Float["batch *data_shape"]:
     pos_embed = self.param(
         "PositionalEmbeddingTensor",
@@ -134,7 +134,7 @@ class DiTBlockAdaLNZero(nn.Module):
         use_scale=False,
     ).conditional_norm_factory()
 
-  @typechecked
+  @kt.typechecked
   @nn.compact
   def __call__(
       self,
@@ -204,7 +204,7 @@ class Patchify(nn.Module):
   embedding_dim: int
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self, x: Float["*batch height width channels"]
   ) -> Float["*batch seq_dim emb_dim"]:
@@ -258,7 +258,7 @@ class DePatchify(nn.Module):
     ).conditional_norm_factory()
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self, x: Float["*batch seq_dim emb_dim"], cond: Float["*#batch cond_dim"]
   ) -> Float["*batch height width channels"]:

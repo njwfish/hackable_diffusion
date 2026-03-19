@@ -21,9 +21,9 @@ import flax.linen as nn
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import sequence_embedders
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 import jax
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 
 ################################################################################
@@ -97,7 +97,7 @@ def attention_dims_factory(
     raise ValueError("Either head_dim or num_heads must be INVALID_INT.")
 
 
-@typechecked
+@kt.typechecked
 def _stable_softmax(
     logits: Float["*sequence dim"],
 ) -> Float["*sequence dim"]:
@@ -119,7 +119,7 @@ def _stable_softmax(
   return output
 
 
-@typechecked
+@kt.typechecked
 def _dot_product_attention(
     q: Float["batch head sequence_query dim"],
     k: Float["batch head sequence_key dim"],
@@ -219,13 +219,13 @@ class MultiHeadAttention(nn.Module):
     )
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       x: Float["batch sequence1 dim1"],
       c: Float["batch sequence2 dim2"] | None,
       *,
-      mask: Bool["batch sequence1"] | Bool["batch sequence2"] | None = None,
+      mask: Bool["batch sequence1|sequence2"] | None = None,
   ) -> Float["batch sequence1 dim1"]:
     """Computes multi-head attention.
 

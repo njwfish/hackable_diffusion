@@ -23,9 +23,9 @@ from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import conditioning_encoder
 from hackable_diffusion.lib.corruption import schedules
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 import jax
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Type Aliases
@@ -152,7 +152,7 @@ class DiffusionNetwork(BaseDiffusionNetwork):
     )
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       time: TimeArray,
@@ -299,7 +299,7 @@ class MultiModalDiffusionNetwork(BaseDiffusionNetwork):
     )
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       xt: DataTree,
@@ -374,7 +374,7 @@ class LogSnrTimeRescaler(TimeRescaler):
   schedule: GaussianSchedule
   postprocess_fn: Callable[[TimeArray], TimeArray] | None = None
 
-  @typechecked
+  @kt.typechecked
   def __call__(self, time: TimeArray) -> TimeArray:
     """Returns the time rescaled by the logsnr of the process."""
     if self.postprocess_fn is None:
@@ -395,7 +395,7 @@ class MagnitudeScheduleInputRescaler(InputRescaler):
 
   schedule: GaussianSchedule
 
-  @typechecked
+  @kt.typechecked
   def __call__(self, time: TimeArray, inputs: DataArray) -> DataArray:
     """Returns the inputs rescaled by the magnitude of the schedule."""
     alpha_t = self.schedule.alpha(time)

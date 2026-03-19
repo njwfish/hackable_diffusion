@@ -38,10 +38,10 @@ from hackable_diffusion.lib import random_utils
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.corruption import simplicial
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 from hackable_diffusion.lib.sampling import base
 import jax
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Type Aliases
@@ -73,7 +73,7 @@ class SimplicialDDIMStep(SamplerStep):
 
   corruption_process: SimplicialProcess
 
-  @typechecked
+  @kt.typechecked
   def initialize(
       self,
       initial_noise: DataArray,
@@ -87,7 +87,7 @@ class SimplicialDDIMStep(SamplerStep):
     # `logits` need to be passed in `aux` dictionary to a performance
     # bug when using TPU. Needs to be investigated.
 
-  @typechecked
+  @kt.typechecked
   def update(
       self,
       prediction: TargetInfo,
@@ -150,7 +150,7 @@ class SimplicialDDIMStep(SamplerStep):
     # `logits` need to be passed in `aux` dictionary to a performance
     # bug when using TPU. Needs to be investigated.
 
-  @typechecked
+  @kt.typechecked
   def finalize(
       self,
       prediction: TargetInfo,

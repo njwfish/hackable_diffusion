@@ -29,9 +29,9 @@ from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import mlp_blocks
 from hackable_diffusion.lib.architecture import sequence_embedders
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 import jax
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Type Aliases
@@ -121,7 +121,7 @@ class SinusoidalTimeEmbedder(BaseTimeEmbedder):
     self.init_output = nn.linear.default_kernel_init
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(self, time: hd_typing.TimeArray) -> Float['batch num_features']:
     t_emb = sequence_embedders.SinusoidalSequenceEmbedding(self.embedding_dim)(
         time
@@ -154,7 +154,7 @@ class ZeroTimeEmbedder(BaseTimeEmbedder):
 
   num_features: int
 
-  @typechecked
+  @kt.typechecked
   def __call__(self, time: hd_typing.TimeArray) -> Float['batch num_features']:
     return jnp.zeros((time.shape[0], self.num_features))
 
@@ -162,7 +162,7 @@ class ZeroTimeEmbedder(BaseTimeEmbedder):
 class IdentityTimeEmbedder(BaseTimeEmbedder):
   """Time embedder that returns time without any transformation."""
 
-  @typechecked
+  @kt.typechecked
   def __call__(self, time: hd_typing.TimeArray) -> hd_typing.TimeArray:
     return time
 
@@ -173,7 +173,7 @@ class NestedTimeEmbedder(BaseTimeEmbedder):
   time_embedders: PyTree[BaseTimeEmbedder]
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(self, time: hd_typing.TimeTree) -> Float['batch ...']:
     # lenient alternative to jax.tree.map
     t_emb_tree = utils.lenient_map(
@@ -214,7 +214,7 @@ class LabelEmbedder(BaseEmbedder):
     return (self.num_features,)
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       conditioning: hd_typing.Conditioning,
@@ -256,7 +256,7 @@ class LinearEmbedder(BaseEmbedder):
     return (self.num_features,)
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       conditioning: hd_typing.Conditioning,
@@ -304,7 +304,7 @@ class MLPEmbedder(BaseEmbedder):
     return (self.num_features,)
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       conditioning: hd_typing.Conditioning,
@@ -350,7 +350,7 @@ class FieldSelector(BaseEmbedder):
     return self.data_spec
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       conditioning: hd_typing.Conditioning,
@@ -447,7 +447,7 @@ class ConditioningEncoder(BaseConditioningEncoder):
       )
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       time: hd_typing.TimeTree,

@@ -16,14 +16,13 @@
 
 from typing import Literal
 import flax.linen as nn
-from hackable_diffusion.lib import array_annotations
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import arch_utils
 from hackable_diffusion.lib.architecture import attention
 from hackable_diffusion.lib.architecture import normalization
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Common types and aliases
@@ -68,7 +67,7 @@ class InputConvBlock(nn.Module):
   dtype: DType = jnp.float32
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(self, x: BaseInput) -> BaseOutput:
     x = Conv3x3(
         padding="SAME",
@@ -107,7 +106,7 @@ class OutputConvBlock(nn.Module):
       self.output_conv = Conv3x3  # default kernel init
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(self, x: BaseInput) -> BaseOutput:
     """Projects the output tensor."""
 
@@ -165,7 +164,7 @@ class ConvResidualBlock(nn.Module):
     self.init_output = nn.initializers.zeros_init()
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       x: Float["batch height width channels"],
@@ -209,11 +208,11 @@ class ConvResidualBlock(nn.Module):
 
     # check types
     if self.downsample_fn is not None:
-      array_annotations.check_type(x, DownsampleOutput)
+      kt.check_type(x, DownsampleOutput)
     elif self.upsample_fn is not None:
-      array_annotations.check_type(x, UpsampleOutput)
+      kt.check_type(x, UpsampleOutput)
     else:
-      array_annotations.check_type(x, BaseOutput)
+      kt.check_type(x, BaseOutput)
 
     return x
 
@@ -261,7 +260,7 @@ class AttentionResidualBlock(nn.Module):
     self.unconditional_norm = self.norm_factory.unconditional_norm_factory()
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       x: Float["batch height width channels"],

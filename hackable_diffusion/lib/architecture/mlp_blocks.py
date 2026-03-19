@@ -17,8 +17,8 @@
 from typing import Sequence
 from flax import linen as nn
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Type Aliases
@@ -44,7 +44,7 @@ class MLP(nn.Module):
   zero_init_output: bool = False
 
   @nn.compact
-  @typechecked
+  @kt.typechecked
   def __call__(
       self, x: Float['batch *other_dims num_inputs'], *, is_training: bool
   ) -> Float['batch *other_dims num_features']:

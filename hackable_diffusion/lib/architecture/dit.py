@@ -19,8 +19,8 @@ from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import normalization
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Constants
@@ -95,7 +95,7 @@ class DiT(ConditionalBackbone):
         use_scale=False,
     ).conditional_norm_factory()
 
-  @typechecked
+  @kt.typechecked
   @nn.compact
   def __call__(
       self,

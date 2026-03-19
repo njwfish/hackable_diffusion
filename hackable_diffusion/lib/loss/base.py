@@ -18,8 +18,8 @@ import dataclasses
 from typing import Protocol
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib.corruption import schedules
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 import jax
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Type Aliases
@@ -93,7 +93,7 @@ class NestedDiffusionLoss(DiffusionLoss):
 
   losses: PyTree[DiffusionLoss]
 
-  @typechecked
+  @kt.typechecked
   def __call__(
       self,
       preds: TargetInfoTree,

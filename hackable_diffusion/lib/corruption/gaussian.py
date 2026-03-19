@@ -148,10 +148,10 @@ from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.corruption import base
 from hackable_diffusion.lib.corruption import schedules
-from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
 import immutabledict
 import jax
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 
 ################################################################################
@@ -186,7 +186,7 @@ class GaussianProcess(CorruptionProcess):
 
   schedule: GaussianSchedule
 
-  @typechecked
+  @kt.typechecked
   def sample_from_invariant(
       self,
       key: PRNGKey,
@@ -195,7 +195,7 @@ class GaussianProcess(CorruptionProcess):
     """Sample from the invariant distribution."""
     return jax.random.normal(key, shape=data_spec.shape)
 
-  @typechecked
+  @kt.typechecked
   def corrupt(
       self,
       key: PRNGKey,
@@ -219,7 +219,7 @@ class GaussianProcess(CorruptionProcess):
 
     return xt, target_info
 
-  @typechecked
+  @kt.typechecked
   def convert_predictions(
       self,
       prediction: TargetInfo,
@@ -248,12 +248,12 @@ class GaussianProcess(CorruptionProcess):
         for pred_type, converter in converters.items()
     }
 
-  @typechecked
+  @kt.typechecked
   def get_schedule_info(self, time: TimeArray) -> dict[str, TimeArray]:
     """Get the schedule info for the given time."""
     return self.schedule.evaluate(time)
 
-  @typechecked
+  @kt.typechecked
   def _get_alpha_sigma_and_der(
       self, time: TimeArray
   ) -> tuple[TimeArray, TimeArray, TimeArray, TimeArray]:

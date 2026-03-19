@@ -25,7 +25,7 @@ from flax.core import frozen_dict
 from hackable_diffusion.lib import utils
 import jax
 import jax.numpy as jnp
-from jaxtyping import PyTree  # pylint: disable=g-multiple-import,g-importing-member
+from kauldron.ktyping import PyTree  # pylint: disable=g-multiple-import,g-importing-member
 
 from absl.testing import absltest
 from absl.testing import parameterized
