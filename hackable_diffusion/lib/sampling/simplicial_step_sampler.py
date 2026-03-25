@@ -60,11 +60,55 @@ SamplerStep = base.SamplerStep
 SimplicialProcess = simplicial.SimplicialProcess
 SimplicialSchedule = schedules.SimplicialSchedule
 
+
+################################################################################
+# MARK: Beta Shrinkage
+################################################################################
+
+
+@kt.typechecked
+def log_beta_shrinkage(
+    key: jax.Array,
+    log_x: jax.Array,
+    concentration: jax.Array,
+    kappa: float,
+) -> jax.Array:
+  """Beta shrinkage of a Dirichlet sample.
+
+  Let log(X) such that X ~ Dir(concentration) and kappa in [0, 1]. Then this
+  function returns log(Y) such that Y ~ Dir(kappa * concentration).
+
+  To do so we leverage the following identity.
+  Let B ~ Beta(a, b) with a = kappa * concentration and b = (1 - kappa) *
+  concentration.
+  Then B X / sum(B X) has the same distribution as Dir(kappa * concentration).
+  We call this process "Beta-shrinkage".
+
+  Args:
+    key: the random key.
+    log_x: the log-Dirichlet sample of shape (..., num_categories).
+    concentration: the concentration scalar or array.
+    kappa: the shrinkage parameter in [0, 1].
+
+  Returns:
+    the shrunk log-sample.
+  """
+  if kappa == 1.0:
+    return log_x
+  alpha_vec = jnp.broadcast_to(concentration, log_x.shape)
+
+  log_b, _ = random_utils.sample_log_beta_joint(
+      key, kappa * alpha_vec, (1.0 - kappa) * alpha_vec, shape=alpha_vec.shape
+  )
+
+  log_y = log_b + log_x
+  log_y = log_y - jax.nn.logsumexp(log_y, axis=-1, keepdims=True)
+  return log_y
+
+
 ################################################################################
 # MARK: DDIM Step
 ################################################################################
-
-# TODO(vdebortoli): Add support for churn.
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
@@ -72,6 +116,7 @@ class SimplicialDDIMStep(SamplerStep):
   """This is the simplicial version of the DDIM step."""
 
   corruption_process: SimplicialProcess
+  churn: float = 1.0
 
   @kt.typechecked
   def initialize(
@@ -84,8 +129,6 @@ class SimplicialDDIMStep(SamplerStep):
         step_info=initial_step_info,
         aux={'logits': initial_noise},
     )
-    # `logits` need to be passed in `aux` dictionary to a performance
-    # bug when using TPU. Needs to be investigated.
 
   @kt.typechecked
   def update(
@@ -114,31 +157,63 @@ class SimplicialDDIMStep(SamplerStep):
     )['logits']
 
     # Sample hard token
-    sample_key, beta_key = jax.random.split(key)
+    key, sample_key = jax.random.split(key)
     sample_idx = jax.random.categorical(key=sample_key, logits=logits)
     num_cats = self.corruption_process.process_num_categories
     one_hot_mask = jax.nn.one_hot(sample_idx, num_cats, dtype=log_xt.dtype)
     log_sample_oh = jnp.where(one_hot_mask > 0.5, 0.0, -1e30)
 
-    # Compute Beta shape parameters
+    # Compute parameters
+    eps = self.corruption_process.temperature
     alpha_t = self.corruption_process.schedule.alpha(time)
     alpha_s = self.corruption_process.schedule.alpha(next_time)
 
-    shape_0 = self.corruption_process.temperature / (1.0 - alpha_t)
-    shape_1 = self.corruption_process.temperature / (1.0 - alpha_s) - shape_0
+    bar_beta_t = eps / (1.0 - alpha_t)
+    bar_beta_s = eps / (1.0 - alpha_s)
 
-    # Broadcasting
     target_shape = log_xt.shape[:-1] + (1,)
-    shape_0 = jnp.broadcast_to(shape_0, target_shape)
-    shape_1 = jnp.broadcast_to(shape_1, target_shape)
 
-    # Sample from Beta(shape_0, shape_1)
-    log_w, log_1_minus_w = random_utils.sample_log_beta_joint(
-        beta_key, shape_0, shape_1, shape=shape_0.shape
-    )
+    if self.churn == 0.0:
+      # Regular DDIM step
+      shape_0 = bar_beta_t
+      shape_1 = bar_beta_s - shape_0
 
-    term_1 = log_w + log_xt
-    term_2 = log_1_minus_w + log_sample_oh
+      _, beta_key = jax.random.split(key)
+      log_w, log_1_minus_w = random_utils.sample_log_beta_joint(
+          beta_key, shape_0, shape_1, shape=target_shape
+      )
+
+      term_1 = log_w + log_xt
+      term_2 = log_1_minus_w + log_sample_oh
+    else:
+      # Churn step
+      pi = self.corruption_process.invariant_probs_vec
+      h_t = alpha_t / (1.0 - alpha_t)
+      h_s = alpha_s / (1.0 - alpha_s)
+
+      key, f_key = jax.random.split(key)
+      log_pt_kappa = log_beta_shrinkage(
+          f_key, log_x=log_xt, concentration=bar_beta_t, kappa=1.0 - self.churn
+      )
+
+      key, v_key = jax.random.split(key)
+      alpha_v = (
+          self.churn * eps * pi
+          + (eps * h_s - (1.0 - self.churn) * eps * h_t) * one_hot_mask
+      )
+      log_v = random_utils.log_dirichlet_fast(v_key, alpha=alpha_v, shape=())
+
+      # Sample W from Beta(kappa * bar_beta_t, bar_beta_s - kappa * bar_beta_t)
+      _, beta_key = jax.random.split(key)
+      log_w, log_1_minus_w = random_utils.sample_log_beta_joint(
+          beta_key,
+          (1.0 - self.churn) * bar_beta_t,
+          bar_beta_s - (1.0 - self.churn) * bar_beta_t,
+          shape=target_shape,
+      )
+
+      term_1 = log_w + log_pt_kappa
+      term_2 = log_1_minus_w + log_v
 
     new_xt = jnp.logaddexp(term_1, term_2)
 
@@ -147,8 +222,6 @@ class SimplicialDDIMStep(SamplerStep):
         step_info=next_step_info,
         aux={'logits': logits},
     )
-    # `logits` need to be passed in `aux` dictionary to a performance
-    # bug when using TPU. Needs to be investigated.
 
   @kt.typechecked
   def finalize(
