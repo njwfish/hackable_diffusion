@@ -184,7 +184,7 @@ class MD4Loss(base.DiffusionLoss):
       alpha_der = utils.egrad(schedule.alpha)(time)
       alpha = utils.flatten_non_batch_dims(alpha)
       alpha_der = utils.flatten_non_batch_dims(alpha_der)
-      weight = -1.0 * alpha_der / jnp.clip(1.0 - alpha, a_min=1e-12)
+      weight = -1.0 * alpha_der / jnp.clip(1.0 - alpha, min=1e-12)
       return weight
 
     return compute_discrete_diffusion_loss(

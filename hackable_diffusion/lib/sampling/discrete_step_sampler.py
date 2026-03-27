@@ -708,7 +708,7 @@ class IntegratedDiscreteDDIMStep(SamplerStep):
     # (bsz, *seq_len, M)
 
     # Calculate integration weights: W(x_0) = p(x_0 | x_t) / q(x_t | x_0).
-    w_x0 = p_x0 / jnp.clip(q_xt_given_x0, a_min=1e-12)
+    w_x0 = p_x0 / jnp.clip(q_xt_given_x0, min=1e-12)
     # (bsz, *seq_len, M)
     sum_w = jnp.sum(w_x0, axis=-1, keepdims=True)
     # (bsz, *seq_len, 1)
@@ -722,7 +722,7 @@ class IntegratedDiscreteDDIMStep(SamplerStep):
     # (bsz, *seq_len, M)
 
     # Convert back to logits for safe categorical sampling
-    total_logit = jnp.log(jnp.clip(p_xs, a_min=1e-12))
+    total_logit = jnp.log(jnp.clip(p_xs, min=1e-12))
 
     # Sample and format the new state
     new_xt = jax.random.categorical(key=key, logits=total_logit)[..., None]
