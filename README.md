@@ -25,10 +25,16 @@ The `notebooks/` directory contains several tutorials to get you started:
 ## Installation
 
 To install the necessary dependencies, you can use pip with the provided
-`requirements.txt` file:
+`pyproject.toml` file:
 
 ```bash
-pip install -r requirements.txt
+pip install -e .
+```
+
+To install development dependencies (for running tests), use:
+
+```bash
+pip install -e .[dev]
 ```
 
 This will install libraries such as JAX, Flax, and other utilities required to

@@ -1,0 +1,87 @@
+[project]
+name = "hackable_diffusion"
+description = "Hackable Diffusion is a library for custom diffusion models."
+readme = "README.md"
+requires-python = ">=3.13"
+license = {file = "LICENSE"}
+authors = [{name = "hackable_diffusion authors"}]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "License :: OSI Approved :: Apache Software License",
+    "Intended Audience :: Science/Research",
+]
+keywords = []
+
+# pip dependencies of the project
+dependencies = [
+    "absl-py",
+    "aiofiles",
+    "chex",
+    "einops",
+    "etils",
+    "flax",
+    "fsspec",
+    "humanize",
+    "immutabledict",
+    "importlib_resources",
+    "jax",
+    "jaxtyping",
+    "markdown-it-py",
+    "mdurl",
+    "ml_dtypes",
+    "mock",
+    "msgpack",
+    "nest-asyncio",
+    "numpy",
+    "opt_einsum",
+    "optax",
+    "orbax-checkpoint",
+    "protobuf",
+    "psutil",
+    "pygments",
+    "pyyaml",
+    "rich",
+    "scipy",
+    "simplejson",
+    "tensorstore",
+    "toolz",
+    "treescope",
+    "typeguard",
+    "typing_extensions",
+    "wadler_lindig",
+    "zipp",
+    "kauldron>=1.4.1",
+]
+
+# This is set automatically by flit using `hackable_diffusion.__version__`
+dynamic = ["version"]
+
+[project.urls]
+homepage = "https://github.com/google-research/hackable_diffusion"
+repository = "https://github.com/google-research/hackable_diffusion"
+
+[project.optional-dependencies]
+# Development deps (unittest, linting, formating,...)
+dev = [
+    "pytest",
+    "pytest-xdist",
+    "hypothesis==6.80.0",
+    "pylint>=2.6.0",
+    "pyink",
+]
+
+[build-system]
+requires = ["flit_core >=3.8,<4"]
+build-backend = "flit_core.buildapi"
+
+[tool.pyink]
+line-length = 80
+preview = true
+pyink-indentation = 2
+pyink-use-majority-quotes = true
+
+[tool.flit.sdist]
+exclude = [
+  "**/*_test.py",
+]
