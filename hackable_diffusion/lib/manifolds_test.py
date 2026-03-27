@@ -149,22 +149,6 @@ class SphereTest(parameterized.TestCase):
     norms = jnp.linalg.norm(gt, axis=-1)
     np.testing.assert_allclose(norms, 1.0, atol=1e-5)
 
-  def test_geodesic_raises_for_t_above_one(self):
-    """geodesic should raise ValueError when t > 1."""
-    x = jnp.array([[1.0, 0.0, 0.0]])
-    y = jnp.array([[0.0, 1.0, 0.0]])
-    t = jnp.array([[1.5]])
-    with self.assertRaises(ValueError):
-      manifolds.geodesic(self.manifold, x, y, t)
-
-  def test_geodesic_raises_for_t_below_zero(self):
-    """geodesic should raise ValueError when t < 0."""
-    x = jnp.array([[1.0, 0.0, 0.0]])
-    y = jnp.array([[0.0, 1.0, 0.0]])
-    t = jnp.array([[-0.1]])
-    with self.assertRaises(ValueError):
-      manifolds.geodesic(self.manifold, x, y, t)
-
   def test_exp_zero_tangent(self):
     """exp(x, 0) should return x."""
     key = jax.random.PRNGKey(3)

@@ -22,6 +22,7 @@ from hackable_diffusion.lib.corruption.discrete import IdentityPostCorruptionFn
 from hackable_diffusion.lib.corruption.discrete import PostCorruptionFn
 from hackable_diffusion.lib.corruption.discrete import SymmetricPostCorruptionFn
 from hackable_diffusion.lib.corruption.gaussian import GaussianProcess
+from hackable_diffusion.lib.corruption.riemannian import RiemannianProcess
 from hackable_diffusion.lib.corruption.schedules import CosineDiscreteSchedule
 from hackable_diffusion.lib.corruption.schedules import CosineSchedule
 from hackable_diffusion.lib.corruption.schedules import DiscreteSchedule
@@ -31,8 +32,10 @@ from hackable_diffusion.lib.corruption.schedules import GeometricSchedule
 from hackable_diffusion.lib.corruption.schedules import InverseCosineSchedule
 from hackable_diffusion.lib.corruption.schedules import LinearDiffusionSchedule
 from hackable_diffusion.lib.corruption.schedules import LinearDiscreteSchedule
+from hackable_diffusion.lib.corruption.schedules import LinearRiemannianSchedule
 from hackable_diffusion.lib.corruption.schedules import PolynomialDiscreteSchedule
 from hackable_diffusion.lib.corruption.schedules import RFSchedule
+from hackable_diffusion.lib.corruption.schedules import RiemannianSchedule
 from hackable_diffusion.lib.corruption.schedules import Schedule
 from hackable_diffusion.lib.corruption.schedules import ShiftedSchedule
 from hackable_diffusion.lib.corruption.schedules import SquareCosineDiscreteSchedule

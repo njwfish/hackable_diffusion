@@ -110,6 +110,59 @@ SimplicialSchedule = DiscreteSchedule
 
 
 ################################################################################
+# MARK: Riemannian Schedules
+################################################################################
+
+
+class RiemannianSchedule(abc.ABC, Schedule):
+  """Base class for Riemannian schedules.
+
+  Controls the geodesic interpolation via alpha(t):
+    x_t = geodesic(x_0, x_1, alpha(t))
+    v_t = alpha'(t) * velocity(x_0, x_1, alpha(t))
+
+  Subclasses must implement `alpha`.
+  """
+
+  @abc.abstractmethod
+  def alpha(self, time: TimeArray) -> TimeArray:
+    """The geodesic interpolation parameter at time t."""
+
+  def alpha_dot(self, time: TimeArray) -> TimeArray:
+    """Time derivative of alpha. Defaults to autodiff."""
+    return utils.egrad(self.alpha)(time)
+
+  @kt.typechecked
+  def evaluate(self, time: TimeArray) -> dict[str, TimeArray]:
+    return {
+        'time': time,
+        'alpha': self.alpha(time),
+        'alpha_dot': self.alpha_dot(time),
+    }
+
+
+class LinearRiemannianSchedule(RiemannianSchedule):
+  """Linear Riemannian schedule: alpha(t) = 1.0 - t.
+
+  This is the standard flow matching schedule where the geodesic interpolation
+  parameter equals time directly.
+  Note that contrary to the original Riemannian Flow Matching, we assume that at
+  time t=0, the process is close to the data distribution, and at time t=1,
+  the process is close to the target distribution.
+  Hence, we use alpha(t) = 1.0 - t, and alpha_dot(t) = -1.0m instead of
+  alpha(t) = t, and alpha_dot(t) = 1.0.
+  """
+
+  @kt.typechecked
+  def alpha(self, time: TimeArray) -> TimeArray:
+    return 1.0 - time
+
+  @kt.typechecked
+  def alpha_dot(self, time: TimeArray) -> TimeArray:
+    return -jnp.ones_like(time)
+
+
+################################################################################
 # MARK: Gaussian Schedules
 ################################################################################
 
