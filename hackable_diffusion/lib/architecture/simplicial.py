@@ -36,7 +36,7 @@ simplex vertices. So, in practice, we have:
   * Simplicial: `V = process.process_num_categories`
 """
 
-import abc
+from typing import Protocol
 import einops
 from flax import linen as nn
 from hackable_diffusion.lib import hd_typing
@@ -65,19 +65,18 @@ BaseProjector = discrete.BaseProjector
 ################################################################################
 
 
-class BaseLogitEmbedder(nn.Module, abc.ABC):
-  """Base class for probability embedders."""
+class BaseLogitEmbedder(Protocol):
+  """Protocol for probability embedders."""
 
   embedding_dim: int
 
-  @abc.abstractmethod
   def __call__(
       self, x: Float['batch *other_input V'], is_training: bool
   ) -> Float['batch *other_embedding F']:
     ...
 
 
-class DenseEmbedder(BaseLogitEmbedder):
+class DenseEmbedder(nn.Module, BaseLogitEmbedder):
   """Probability embedder that uses a dense layer.
 
   Attributes:
@@ -132,7 +131,7 @@ class DenseEmbedder(BaseLogitEmbedder):
 ################################################################################
 
 
-class ConditionalSimplicialBackbone(ConditionalBackbone):
+class ConditionalSimplicialBackbone(nn.Module, ConditionalBackbone):
   """Conditional simplicial backbone for diffusion models.
 
   Attributes:

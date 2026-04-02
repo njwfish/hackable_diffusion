@@ -45,7 +45,7 @@ ConditioningMechanism = arch_typing.ConditioningMechanism
 ################################################################################
 
 
-class Unet(ConditionalBackbone):
+class Unet(nn.Module, ConditionalBackbone):
   """A U-Net architecture backbone with conditional signals.
 
   Based on:

@@ -49,7 +49,7 @@ GaussianProcess = gaussian.GaussianProcess
 ################################################################################
 
 
-class IdentityBackbone(arch_typing.ConditionalBackbone):
+class IdentityBackbone(nn.Module, arch_typing.ConditionalBackbone):
 
   @nn.compact
   def __call__(

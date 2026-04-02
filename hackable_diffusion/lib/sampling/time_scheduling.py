@@ -23,7 +23,6 @@ step and t=1 to the first time step. This in accordance with the notation in
 the diffusion literature.
 """
 
-import abc
 import dataclasses
 from typing import Protocol
 
@@ -38,7 +37,6 @@ import kauldron.ktyping as kt
 ################################################################################
 # MARK: Type Aliases
 ################################################################################
-ABC = abc.ABC
 PRNGKey = hd_typing.PRNGKey
 PyTree = hd_typing.PyTree
 
@@ -84,7 +82,7 @@ class TimeSchedule(Protocol):
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class TimeScheduleBaseClass(ABC, TimeSchedule):
+class TimeScheduleBaseClass(TimeSchedule):
   """Base class for time schedules."""
   # Creates a time schedule in
   # [min_time + safety_epsilon, max_time-safety_epsilon].

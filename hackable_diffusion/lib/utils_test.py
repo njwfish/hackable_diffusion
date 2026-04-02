@@ -14,7 +14,6 @@
 
 """Tests for utils."""
 
-import abc
 import dataclasses
 import itertools
 from typing import Any, Protocol
@@ -282,20 +281,19 @@ class UtilsTest(parameterized.TestCase):
 
   def test_nested_base_for_nn_module(self):
 
-    class BaseEmbedder(nn.Module, abc.ABC):
+    class BaseEmbedder(Protocol):
 
-      @abc.abstractmethod
       def __call__(self, x):
         ...
 
-    class DenseEmbedder(BaseEmbedder):
+    class DenseEmbedder(nn.Module, BaseEmbedder):
       num_features: int
 
       @nn.compact
       def __call__(self, x):
         return nn.Dense(features=self.num_features)(x)
 
-    class NestedEmbedder(BaseEmbedder):
+    class NestedEmbedder(nn.Module, BaseEmbedder):
       embedders: PyTree[BaseEmbedder]
 
       @nn.compact

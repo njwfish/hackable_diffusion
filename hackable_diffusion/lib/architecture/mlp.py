@@ -44,7 +44,7 @@ ConditioningMechanism = arch_typing.ConditioningMechanism
 ################################################################################
 
 
-class ConditionalMLP(ConditionalBackbone):
+class ConditionalMLP(nn.Module, ConditionalBackbone):
   """Conditional MLP backbone for diffusion models.
 
   Receives `x`, rocess them first separately using `hidden_sizes_preprocess`

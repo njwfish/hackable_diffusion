@@ -14,7 +14,6 @@
 
 """Schedules used in corruption processes."""
 
-import abc
 import dataclasses
 import math
 from typing import Protocol
@@ -48,26 +47,25 @@ class Schedule(Protocol):
 ################################################################################
 
 
-class GaussianSchedule(abc.ABC, Schedule):
-  """Base class for Gaussian schedules (alpha, sigma, logsnr)."""
+class GaussianSchedule(Schedule, Protocol):
+  """Protocol for Gaussian schedules (alpha, sigma, logsnr)."""
 
-  @abc.abstractmethod
   def alpha(self, time: TimeArray) -> TimeArray:
     """The alpha parameter for xt = alpha * x0 + sigma * epsilon."""
+    ...
 
-  @abc.abstractmethod
   def sigma(self, time: TimeArray) -> TimeArray:
     """The sigma parameter for xt = alpha * x0 + sigma * epsilon."""
+    ...
 
   @kt.typechecked
   def logsnr(self, time: TimeArray) -> TimeArray:
     """The log signal-to-noise ratio at time t."""
     return 2.0 * (jnp.log(self.alpha(time)) - jnp.log(self.sigma(time)))
 
-  @kt.typechecked
   def inverse_logsnr(self, logsnr: TimeArray) -> TimeArray:
     """The inverse of the logsnr, i.e., inverse_logsnr(logsnr(t))=t."""
-    raise NotImplementedError()
+    ...
 
   @kt.typechecked
   def f(self, time: TimeArray) -> TimeArray:
@@ -87,12 +85,12 @@ class GaussianSchedule(abc.ABC, Schedule):
     }
 
 
-class DiscreteSchedule(abc.ABC, Schedule):
-  """Base class for discrete schedules (just an alpha)."""
+class DiscreteSchedule(Schedule, Protocol):
+  """Protocol for discrete schedules (just an alpha)."""
 
-  @abc.abstractmethod
   def alpha(self, time: TimeArray) -> TimeArray:
     """The probability of keeping the original value."""
+    ...
 
   @kt.typechecked
   def evaluate(self, time: TimeArray) -> dict[str, TimeArray]:
@@ -114,8 +112,8 @@ SimplicialSchedule = DiscreteSchedule
 ################################################################################
 
 
-class RiemannianSchedule(abc.ABC, Schedule):
-  """Base class for Riemannian schedules.
+class RiemannianSchedule(Schedule, Protocol):
+  """Protocol for Riemannian schedules.
 
   Controls the geodesic interpolation via alpha(t):
     x_t = geodesic(x_0, x_1, alpha(t))
@@ -124,9 +122,9 @@ class RiemannianSchedule(abc.ABC, Schedule):
   Subclasses must implement `alpha`.
   """
 
-  @abc.abstractmethod
   def alpha(self, time: TimeArray) -> TimeArray:
     """The geodesic interpolation parameter at time t."""
+    ...
 
   def alpha_dot(self, time: TimeArray) -> TimeArray:
     """Time derivative of alpha. Defaults to autodiff."""

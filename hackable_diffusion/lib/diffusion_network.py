@@ -14,9 +14,8 @@
 
 """Diffusion network."""
 
-import abc
 import dataclasses
-from typing import Callable, Protocol
+from typing import Callable, Protocol, cast
 import flax.linen as nn
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import utils
@@ -73,10 +72,9 @@ class TimeRescaler(Protocol):
 ################################################################################
 
 
-class BaseDiffusionNetwork(nn.Module, abc.ABC):
+class BaseDiffusionNetwork(Protocol):
   """Base diffusion network."""
 
-  @abc.abstractmethod
   def __call__(
       self,
       time: TimeTree,
@@ -87,7 +85,7 @@ class BaseDiffusionNetwork(nn.Module, abc.ABC):
     ...
 
 
-class DiffusionNetwork(BaseDiffusionNetwork):
+class DiffusionNetwork(nn.Module, BaseDiffusionNetwork):
   """Diffusion network.
 
   This class is responsible for orchestrating the different components of the
@@ -173,7 +171,7 @@ class DiffusionNetwork(BaseDiffusionNetwork):
 
     # Encode conditioning.
 
-    conditioning_embeddings = self.conditioning_encoder.copy(
+    conditioning_embeddings = cast(nn.Module, self.conditioning_encoder).copy(
         name='ConditioningEncoder'
     )(
         time=time_rescaled,
@@ -181,7 +179,9 @@ class DiffusionNetwork(BaseDiffusionNetwork):
         is_training=is_training,
     )
     # Run backbone.
-    backbone_outputs = self.backbone_network.copy(name='Backbone')(
+    backbone_outputs = cast(nn.Module, self.backbone_network).copy(
+        name='Backbone'
+    )(
         x=xt_rescaled,
         conditioning_embeddings=conditioning_embeddings,
         is_training=is_training,
@@ -195,7 +195,7 @@ class DiffusionNetwork(BaseDiffusionNetwork):
 ################################################################################
 
 
-class MultiModalDiffusionNetwork(BaseDiffusionNetwork):
+class MultiModalDiffusionNetwork(nn.Module, BaseDiffusionNetwork):
   """Multi-modal diffusion network.
 
   This DiffusionNetwork is a generalization of the DiffusionNetwork to
@@ -336,7 +336,7 @@ class MultiModalDiffusionNetwork(BaseDiffusionNetwork):
 
     # Encode conditioning.
 
-    conditioning_embeddings = self.conditioning_encoder.copy(
+    conditioning_embeddings = cast(nn.Module, self.conditioning_encoder).copy(
         name='ConditioningEncoder'
     )(
         time=time_rescaled,
@@ -345,7 +345,9 @@ class MultiModalDiffusionNetwork(BaseDiffusionNetwork):
     )
 
     # Run backbone.
-    backbone_outputs = self.backbone_network.copy(name='Backbone')(
+    backbone_outputs = cast(nn.Module, self.backbone_network).copy(
+        name='Backbone'
+    )(
         x=xt_rescaled,
         conditioning_embeddings=conditioning_embeddings,
         is_training=is_training,

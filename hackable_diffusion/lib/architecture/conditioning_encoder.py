@@ -21,8 +21,7 @@ These modules do not cover all possible usecases, but rather provide a reference
  implementation for new encoders.
 """
 
-import abc
-from typing import Sequence
+from typing import Protocol, Sequence, cast
 import flax.linen as nn
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import utils
@@ -50,33 +49,29 @@ EmbeddingMergeMethod = arch_typing.EmbeddingMergeMethod
 ################################################################################
 
 
-class BaseTimeEmbedder(nn.Module, abc.ABC):
-  """Abstract base class for the time embedder."""
+class BaseTimeEmbedder(Protocol):
+  """Protocol for a time embedder."""
 
-  @abc.abstractmethod
   def __call__(self, time: hd_typing.TimeTree) -> Float['batch ...']:
     ...
 
 
-class BaseEmbedder(nn.Module, abc.ABC):
-  """Abstract base class for conditioning embedders."""
+class BaseEmbedder(Protocol):
+  """Protocol for a conditioning embedder."""
 
   @property
-  @abc.abstractmethod
   def output_shape(self) -> tuple[int, ...]:
     ...
 
-  @abc.abstractmethod
   def __call__(
       self, conditioning: hd_typing.Conditioning
   ) -> Float['batch ...']:
     ...
 
 
-class BaseConditioningEncoder(nn.Module, abc.ABC):
-  """Abstract base class for the conditioning encoder."""
+class BaseConditioningEncoder(Protocol):
+  """Protocol for a conditioning encoder."""
 
-  @abc.abstractmethod
   def __call__(
       self,
       time: hd_typing.TimeArray,
@@ -91,7 +86,7 @@ class BaseConditioningEncoder(nn.Module, abc.ABC):
 ################################################################################
 
 
-class SinusoidalTimeEmbedder(BaseTimeEmbedder):
+class SinusoidalTimeEmbedder(nn.Module, BaseTimeEmbedder):
   """Sinusoidal time embedder.
 
   This module encodes the time step `t` into a dense embedding.
@@ -143,7 +138,7 @@ class SinusoidalTimeEmbedder(BaseTimeEmbedder):
     return t_emb
 
 
-class ZeroTimeEmbedder(BaseTimeEmbedder):
+class ZeroTimeEmbedder(nn.Module, BaseTimeEmbedder):
   """Time embedder that returns zeros.
 
   This allows to train models without time conditioning.
@@ -159,7 +154,7 @@ class ZeroTimeEmbedder(BaseTimeEmbedder):
     return jnp.zeros((time.shape[0], self.num_features))
 
 
-class IdentityTimeEmbedder(BaseTimeEmbedder):
+class IdentityTimeEmbedder(nn.Module, BaseTimeEmbedder):
   """Time embedder that returns time without any transformation."""
 
   @kt.typechecked
@@ -167,7 +162,7 @@ class IdentityTimeEmbedder(BaseTimeEmbedder):
     return time
 
 
-class NestedTimeEmbedder(BaseTimeEmbedder):
+class NestedTimeEmbedder(nn.Module, BaseTimeEmbedder):
   """Wrapper for a pytree of time embedders mapped over the time tree."""
 
   time_embedders: PyTree[BaseTimeEmbedder]
@@ -177,7 +172,7 @@ class NestedTimeEmbedder(BaseTimeEmbedder):
   def __call__(self, time: hd_typing.TimeTree) -> Float['batch ...']:
     # lenient alternative to jax.tree.map
     t_emb_tree = utils.lenient_map(
-        lambda x, time_embedder: time_embedder.copy()(x),
+        lambda x, time_embedder: cast(nn.Module, time_embedder).copy()(x),
         time,
         self.time_embedders,
     )
@@ -192,7 +187,7 @@ class NestedTimeEmbedder(BaseTimeEmbedder):
 ################################################################################
 
 
-class LabelEmbedder(BaseEmbedder):
+class LabelEmbedder(nn.Module, BaseEmbedder):
   """Embedder for integer labels.
 
   Attributes:
@@ -233,7 +228,7 @@ class LabelEmbedder(BaseEmbedder):
     )(integer_inputs)
 
 
-class LinearEmbedder(BaseEmbedder):
+class LinearEmbedder(nn.Module, BaseEmbedder):
   """Linear embedding.
 
   This module encodes an input into a dense embedding by applying a linear
@@ -279,7 +274,7 @@ class LinearEmbedder(BaseEmbedder):
     )(inputs)
 
 
-class MLPEmbedder(BaseEmbedder):
+class MLPEmbedder(nn.Module, BaseEmbedder):
   """MLP embedding.
 
   This module encodes an input into a dense embedding by applying a MLP.
@@ -333,7 +328,7 @@ class MLPEmbedder(BaseEmbedder):
     return mlp_module(all_inputs, is_training=False)
 
 
-class FieldSelector(BaseEmbedder):
+class FieldSelector(nn.Module, BaseEmbedder):
   """Identity embedder.
 
   This module returns one input without any transformation.
@@ -368,7 +363,7 @@ class FieldSelector(BaseEmbedder):
 ################################################################################
 
 
-class ConditioningEncoder(BaseConditioningEncoder):
+class ConditioningEncoder(nn.Module, BaseConditioningEncoder):
   """Encodes and combines time and conditioning signals for a diffusion model.
 
   This module orchestrates the transformation of raw time and a dictionary
@@ -472,7 +467,7 @@ class ConditioningEncoder(BaseConditioningEncoder):
     """
 
     # Embed time.
-    t_emb = self.time_embedder.copy(name='TimeEmbedder')(time)
+    t_emb = cast(nn.Module, self.time_embedder).copy(name='TimeEmbedder')(time)
     batch_size = t_emb.shape[0]
 
     # Encode other conditioning info.
@@ -483,7 +478,7 @@ class ConditioningEncoder(BaseConditioningEncoder):
     if conditioning is not None:
       for embedder_name in self.embedders_names:
         embedder = self.conditioning_embedders[embedder_name]
-        cond_embs[embedder_name] = embedder.copy(
+        cond_embs[embedder_name] = cast(nn.Module, embedder).copy(
             name=f'Embedder_{embedder_name}'
         )(conditioning)
     else:

@@ -19,7 +19,7 @@ from typing import Protocol
 from flax import nnx
 import flax.linen as nn
 from flax.nnx import bridge
-from hackable_diffusion.lib import diffusion_network
+
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib.inference import base
 import jax
@@ -38,7 +38,6 @@ TimeTree = hd_typing.TimeTree
 
 InferenceFn = base.InferenceFn
 
-BaseDiffusionNetwork = diffusion_network.BaseDiffusionNetwork
 
 ################################################################################
 # MARK: FlaxLinenInferenceFn
@@ -49,7 +48,7 @@ BaseDiffusionNetwork = diffusion_network.BaseDiffusionNetwork
 class FlaxLinenInferenceFn(InferenceFn):
   """Inference function protocol with a diffusion network given by nn.Module."""
 
-  network: BaseDiffusionNetwork
+  network: nn.Module
   params: PyTree
 
   @kt.typechecked

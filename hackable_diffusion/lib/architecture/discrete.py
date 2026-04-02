@@ -14,7 +14,7 @@
 
 """Backbones for discrete data."""
 
-import abc
+from typing import Protocol
 import einops
 from flax import linen as nn
 from hackable_diffusion.lib import hd_typing
@@ -39,23 +39,23 @@ ConditioningMechanism = arch_typing.ConditioningMechanism
 ################################################################################
 
 
-class BaseTokenEmbedder(nn.Module, abc.ABC):
-  """Base class for token embedders."""
+class BaseTokenEmbedder(Protocol):
+  """Protocol for token embedders."""
 
   embedding_dim: int
 
-  @abc.abstractmethod
   def __call__(
       self, x: Int['batch *other_input 1'], is_training: bool
   ) -> Float['batch *other_embedding F']:
     ...
 
 
-class TokenEmbedder(BaseTokenEmbedder):
+class TokenEmbedder(nn.Module, BaseTokenEmbedder):
   """Token embedder that uses a dense layer.
 
   Attributes:
     process_num_categories: The number of categories in the discrete process.
+    embedding_dim: The embedding dimension of the discrete model.
     adapt_to_image_like_data: Whether to adapt the discrete model to image-like
       data. If True, the input data is expected to have the shape <B, H, W, C,
       1>, which is then embedded via `token_embedder` into <B, H, W, C, F>, and
@@ -65,10 +65,12 @@ class TokenEmbedder(BaseTokenEmbedder):
       projected to <B, H, W, C, V> and the backbone outputs will be projected
       to the vocabulary size. If `False`, it simply uses token_embedder,
       followed by the base backbone, and then projects to the vocabulary size.
+
     dtype: The dtype to use for the discrete model.
   """
 
   process_num_categories: int
+  embedding_dim: int
   adapt_to_image_like_data: bool = False
   dtype: DType = jnp.float32
 
@@ -118,24 +120,23 @@ class TokenEmbedder(BaseTokenEmbedder):
 ################################################################################
 
 
-class BaseProjector(nn.Module, abc.ABC):
-  """Base class for projectors."""
+class BaseProjector(Protocol):
+  """Protocol for projectors."""
 
   embedding_dim: int
 
-  @abc.abstractmethod
   def __call__(
       self, x: Float['batch *other_embedding F'], is_training: bool
   ) -> Float['batch *other_input V']:
-
     ...
 
 
-class DenseProjector(BaseProjector):
+class DenseProjector(nn.Module, BaseProjector):
   """Projector that uses a dense layer.
 
   Attributes:
     num_categories: The vocabulary size of the model.
+    embedding_dim: The embedding dimension of the discrete model.
     adapt_to_image_like_data: Whether to adapt the model to image-like
       data. If True, the input data is expected to have the shape <B, H, W, C>
       (this means that the channel dimension has been collapsed), which is then
@@ -147,6 +148,7 @@ class DenseProjector(BaseProjector):
   """
 
   num_categories: int
+  embedding_dim: int
   adapt_to_image_like_data: bool = False
   dtype: DType = jnp.float32
 
@@ -183,7 +185,7 @@ class DenseProjector(BaseProjector):
 ################################################################################
 
 
-class ConditionalDiscreteBackbone(ConditionalBackbone):
+class ConditionalDiscreteBackbone(nn.Module, ConditionalBackbone):
   """Conditional discrete backbone for diffusion models.
 
   Attributes:

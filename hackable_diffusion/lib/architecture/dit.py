@@ -47,7 +47,7 @@ NormalizationType = arch_typing.NormalizationType
 ################################################################################
 
 
-class DiT(ConditionalBackbone):
+class DiT(nn.Module, ConditionalBackbone):
   """DiT model.
 
   A Diffusion Transformer backbone based on https://arxiv.org/abs/2212.09748.

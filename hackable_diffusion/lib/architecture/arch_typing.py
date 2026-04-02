@@ -18,10 +18,8 @@ Please refer to individual modules for more detailed documentation and
 definitions of the components.
 """
 
-import abc
 import enum
 from typing import Callable, Protocol
-import flax.linen as nn
 from hackable_diffusion.lib import hd_typing
 import jax
 
@@ -103,10 +101,9 @@ class SkipConnectionMethod(enum.StrEnum):
 ActivationFn = Callable[[jax.Array], jax.Array]
 
 
-class ConditionalBackbone(nn.Module, abc.ABC):
-  """An abstract class for a conditional backbone."""
+class ConditionalBackbone(Protocol):
+  """Protocol for a conditional backbone."""
 
-  @abc.abstractmethod
   def __call__(
       self,
       x: DataTree,
