@@ -24,6 +24,7 @@ from hackable_diffusion.lib.sampling.base import StepInfoTree
 from hackable_diffusion.lib.sampling.discrete_step_sampler import AllCorruptedMaskFn
 from hackable_diffusion.lib.sampling.discrete_step_sampler import CorruptedMaskFn
 from hackable_diffusion.lib.sampling.discrete_step_sampler import DiscreteDDIMStep
+from hackable_diffusion.lib.sampling.discrete_step_sampler import DiscreteFlowMatchingStep
 from hackable_diffusion.lib.sampling.discrete_step_sampler import IntegratedDiscreteDDIMStep
 from hackable_diffusion.lib.sampling.discrete_step_sampler import MaskValueCorruptedMaskFn
 from hackable_diffusion.lib.sampling.discrete_step_sampler import MaxCappedRemaskingFn

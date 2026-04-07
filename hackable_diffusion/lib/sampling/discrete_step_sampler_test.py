@@ -534,5 +534,138 @@ class IntegratedDiscreteDDIMStepTest(absltest.TestCase):
       )
 
 
+class DiscreteFlowMatchingStepTest(absltest.TestCase):
+  """Tests for the DiscreteFlowMatchingStep sampler."""
+
+  def setUp(self):
+    super().setUp()
+    self.schedule = schedules.LinearDiscreteSchedule()
+    self.num_categories = 4
+    self.process = CategoricalProcess.uniform_process(
+        schedule=self.schedule, num_categories=self.num_categories
+    )
+    key = jax.random.PRNGKey(0)
+    self.initial_noise = jax.random.randint(
+        key, (2, 4, 1), 0, self.process.process_num_categories
+    )
+    self.dfm_step = discrete_step_sampler.DiscreteFlowMatchingStep(
+        corruption_process=self.process
+    )
+
+  def _dummy_inference_fn(self, xt, conditioning, time):
+    del conditioning, time
+    # Return logits that will deterministically sample category 1.
+    logits = jnp.zeros(xt.shape[:-1] + (self.process.num_categories,))
+    logits = logits.at[..., 1].set(10.0)
+    return {'logits': logits}
+
+  def test_initialize(self):
+    initial_step_info = StepInfo(
+        step=0,
+        time=jnp.array([1.0, 1.0])[:, None, None],
+        rng=jax.random.PRNGKey(0),
+    )
+    initial_step = self.dfm_step.initialize(
+        initial_noise=self.initial_noise,
+        initial_step_info=initial_step_info,
+    )
+    init_logits = jnp.repeat(
+        self.initial_noise, self.process.num_categories, axis=-1
+    )
+    init_logits = jnp.zeros_like(init_logits, dtype=jnp.float32) - jnp.inf
+
+    chex.assert_trees_all_equal(
+        initial_step,
+        DiffusionStep(
+            xt=self.initial_noise,
+            step_info=initial_step_info,
+            aux={'logits': init_logits},
+        ),
+    )
+
+  def test_update(self):
+    initial_step_info = StepInfo(
+        step=0,
+        time=jnp.array([0.5, 0.5])[:, None, None],
+        rng=jax.random.PRNGKey(0),
+    )
+    initial_step = self.dfm_step.initialize(
+        initial_noise=self.initial_noise,
+        initial_step_info=initial_step_info,
+    )
+    prediction = self._dummy_inference_fn(
+        xt=initial_step.xt,
+        conditioning={},
+        time=initial_step.step_info.time,
+    )
+
+    # Test case 1: Full unmasking (alpha_s=1.0, alpha_t=0.5 -> prob_jump=1.0)
+    next_step_info_full = StepInfo(
+        step=1,
+        time=jnp.array([0.0, 0.0])[:, None, None],
+        rng=jax.random.PRNGKey(1),
+    )
+    next_step_full = self.dfm_step.update(
+        prediction=prediction,
+        current_step=initial_step,
+        next_step_info=next_step_info_full,
+    )
+    expected_xt_full = jnp.ones_like(self.initial_noise)
+    chex.assert_trees_all_equal(next_step_full.xt, expected_xt_full)
+
+    # Test case 2: No jump (alpha_s=0.5, alpha_t=0.5 -> prob_jump=0.0)
+    next_step_info_no = StepInfo(
+        step=1,
+        time=jnp.array([0.5, 0.5])[:, None, None],
+        rng=jax.random.PRNGKey(1),
+    )
+    next_step_no = self.dfm_step.update(
+        prediction=prediction,
+        current_step=initial_step,
+        next_step_info=next_step_info_no,
+    )
+    chex.assert_trees_all_equal(next_step_no.xt, initial_step.xt)
+
+  def test_update_with_gamma(self):
+    num_samples = 10
+    initial_step_info = StepInfo(
+        step=0,
+        time=jnp.array([[0.5]] * num_samples)[:, :, None],
+        rng=jax.random.PRNGKey(0),
+    )
+    # Start with more samples to ensure noise jump is detected.
+    initial_xt = jnp.ones((num_samples, 4, 1), dtype=jnp.int32)
+    initial_step = self.dfm_step.initialize(
+        initial_noise=initial_xt,
+        initial_step_info=initial_step_info,
+    )
+
+    # Predict category 1 (same as current).
+    prediction = self._dummy_inference_fn(
+        xt=initial_step.xt,
+        conditioning={},
+        time=initial_step.step_info.time,
+    )
+
+    # Use gamma that won't clip.
+    dfm_step_gamma = discrete_step_sampler.DiscreteFlowMatchingStep(
+        corruption_process=self.process, gamma=1.0
+    )
+
+    next_step_info = StepInfo(
+        step=1,
+        time=jnp.array([[0.4]] * num_samples)[:, :, None],
+        rng=jax.random.PRNGKey(1),
+    )
+    next_step = dfm_step_gamma.update(
+        prediction=prediction,
+        current_step=initial_step,
+        next_step_info=next_step_info,
+    )
+
+    # Some tokens should have changed to noise (not 1).
+    self.assertTrue(jnp.any(next_step.xt != 1))
+
+
 if __name__ == '__main__':
   absltest.main()
