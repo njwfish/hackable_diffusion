@@ -13,11 +13,11 @@ experimentation with new research ideas.
 
 This is achieved through several key principles:
 
-  * **Composition over Configuration**: Instead of large configuration files,
+*   **Composition over Configuration**: Instead of large configuration files,
     the library encourages building models and training loops by composing
     small, well-defined Python objects. For example, a sampler is constructed by
     combining a `TimeSchedule`, a `SamplerStep` algorithm, and an `InferenceFn`.
-  * **Clear Separation of Concerns**: The codebase is organized into logical
+*   **Clear Separation of Concerns**: The codebase is organized into logical
     sub-libraries, each responsible for a distinct part of the diffusion model
     pipeline.
 
@@ -32,10 +32,10 @@ parameters.
 This is achieved through a consistent "Nested" pattern. Most core components
 have a `Nested` wrapper:
 
-  * `NestedProcess` (`lib/corruption/base.py`)
-  * `NestedDiffusionLoss` (`lib/loss/base.py`)
-  * `NestedTimeSchedule` (`lib/sampling/time_scheduling.py`)
-  * `NestedSamplerStep` (`lib/sampling/base.py`)
+*   `NestedProcess` (`lib/corruption/base.py`)
+*   `NestedDiffusionLoss` (`lib/loss/base.py`)
+*   `NestedTimeSchedule` (`lib/sampling/time_scheduling.py`)
+*   `NestedSamplerStep` (`lib/sampling/base.py`)
 
 These wrappers take a PyTree (e.g., a dictionary) of component instances that
 matches the structure of your data. When a method is called on the `Nested`
@@ -66,7 +66,8 @@ system for encoding and injecting conditioning signals via
 
 This module defines the **forward process** of diffusion. It includes
 implementations for corrupting data with noise, such as `GaussianProcess` for
-continuous data, `CategoricalProcess` for discrete data, and `RiemannianProcess`
+continuous data, `CategoricalProcess` for discrete data, `SimplicialProcess` for
+simplex-valued categorical data with Dirichlet noise, and `RiemannianProcess`
 for data on Riemannian manifolds (e.g., Sphere, SO(3), Torus). It also defines
 the noise `schedules` that govern the corruption over time.
 
@@ -93,8 +94,8 @@ includes highly configurable weighted MSE losses for Gaussian processes (like
 
 This module handles the **reverse process**—generating new data. It provides a
 generic sampling loop (`DiffusionSampler`) that orchestrates a `TimeSchedule`
-and a `SamplerStep` algorithm (e.g., `DDIMStep`, `SdeStep`) to iteratively
-denoise a sample.
+and a `SamplerStep` algorithm (e.g., `DDIMStep`, `SdeStep`,
+`SimplicialDDIMStep`) to iteratively denoise a sample.
 
 ## Tutorials and Notebooks
 

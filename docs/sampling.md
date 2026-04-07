@@ -69,7 +69,8 @@ all `StepInfo` objects for the entire trajectory.
 ## Sampler Step Algorithms
 
 (`lib/sampling/gaussian_step_sampler.py`,
-`lib/sampling/discrete_step_sampler.py`)
+`lib/sampling/discrete_step_sampler.py`,
+`lib/sampling/simplicial_step_sampler.py`)
 
 The `SamplerStep` protocol defines the actual sampling algorithm. It
 encapsulates the mathematical formula for taking one step of the reverse
@@ -134,6 +135,119 @@ the `HeunStep`. In the case of that second order update we alternate between
 
 Implementations for **Discrete** processes use different logic to sample tokens
 based on predicted logits.
+
+### `SimplicialDDIMStep`
+
+(`lib/sampling/simplicial_step_sampler.py`)
+
+The simplicial DDIM step implements the reverse process for the
+`SimplicialProcess`. Unlike the Gaussian DDIM which manipulates continuous
+vectors, or the discrete DDIM which overwrites integer tokens, the simplicial
+DDIM operates on **probability vectors on the simplex**. It takes a noisy
+log-probability distribution `P_t` and denoises it to `P_s` for `s < t`.
+
+#### The backward transition
+
+Given the current state `P_t` at time `t` and a predicted clean token `x̂_0`,
+the backward transition produces `P_s` at time `s < t` via:
+
+```
+P_s = W · P_t^κ + (1 - W) · V
+```
+
+where:
+
+*   **`W`** is a Beta-distributed mixing weight: `W ~ Beta(κ·ε/(1-α_t),
+    ε/(1-α_s) - κ·ε/(1-α_t))`
+*   **`P_t^κ`** is the Beta-shrunk version of `P_t` (see below)
+*   **`V`** is a fresh Dirichlet sample: `V ~ Dir((1-κ)·ε·π + (ε·h_s -
+    κ·ε·h_t)·δ(x̂_0))`
+
+The mixture is computed in log-space via `logaddexp(log_w + log_pt_kappa,
+log_1_minus_w + log_v)`.
+
+#### Beta-shrinkage (`log_beta_shrinkage`)
+
+Beta-shrinkage is the key building block that allows "partial forgetting" of
+information from `P_t` without fully resampling. Given `X ~ Dir(α)`, it produces
+`Y ~ Dir(κ·α)` via the following identity:
+
+1.  For each category `i`, sample `B_i ~ Beta(κ·α_i, (1-κ)·α_i)` independently.
+2.  Compute `Y_i = B_i · X_i / Σ_j B_j · X_j`.
+
+Then `Y ~ Dir(κ·α)`. This "shrinks" the concentration parameter by a factor `κ`,
+making the distribution more diffuse. The implementation adds a `safety_epsilon`
+to both Beta shape parameters to handle the degenerate case `κ → 0`.
+
+#### The `churn` parameter
+
+The `churn` attribute controls the stochasticity of the reverse step. It is
+related to the theoretical parameter `κ` by `κ = 1 - churn`:
+
+| `churn` | `κ`   | Behaviour                                                  |
+| ------- | ----- | ---------------------------------------------------------- |
+| `0.0`   | `1`   | **Deterministic DDIM**: maximum trust in `P_t`, no         |
+:         :       : shrinkage. `P_s = W·P_t + (1-W)·δ(x̂_0)`. Fastest, least   :
+:         :       : diverse.                                                   :
+| `0.5`   | `0.5` | **Balanced**: `P_t` is partially shrunk, then mixed with a |
+:         :       : fresh Dirichlet sample.                                    :
+| `1.0`   | `0`   | **Fully stochastic**: ignores `P_t` entirely. `W → 0`,     |
+:         :       : `P_s ≈ V ~ Dir(β_s)`. Most diverse, slowest convergence.   :
+
+The `churn=0` case uses a fast path that skips both the Beta-shrinkage and the
+Dirichlet sampling for `V`.
+
+#### Configuration
+
+*   `corruption_process`: The `SimplicialProcess` used during training. The
+    sampler reads the schedule, invariant distribution, temperature, and
+    post-corruption function from it.
+*   `churn`: Float in `[0, 1]` (default `1.0`). Controls stochasticity.
+*   `safety_epsilon`: Small constant for numerical stability at `churn=1.0`
+    (default `1e-6`).
+
+#### Example Usage
+
+```python
+from hackable_diffusion.lib.sampling.simplicial_step_sampler import (
+    SimplicialDDIMStep,
+)
+from hackable_diffusion.lib.sampling.sampling import DiffusionSampler
+from hackable_diffusion.lib.sampling.time_scheduling import UniformTimeSchedule
+from hackable_diffusion.lib.corruption.simplicial import SimplicialProcess
+from hackable_diffusion.lib.corruption.schedules import CosineDiscreteSchedule
+
+# 1. Define the corruption process (must match training)
+corruption_process = SimplicialProcess.uniform_process(
+    schedule=CosineDiscreteSchedule(),
+    num_categories=5,
+    temperature=1.0,
+)
+
+# 2. Create the sampler step
+stepper = SimplicialDDIMStep(
+    corruption_process=corruption_process,
+    churn=0.0,  # Deterministic DDIM
+)
+
+# 3. Create the full sampler
+sampler = DiffusionSampler(
+    time_schedule=UniformTimeSchedule(),
+    stepper=stepper,
+    num_steps=100,
+)
+
+# 4. Sample (assuming inference_fn is defined)
+# initial_noise = corruption_process.sample_from_invariant(key, data_spec)
+# final_step, trajectory = sampler(
+#     inference_fn=inference_fn,
+#     rng=key,
+#     initial_noise=initial_noise,
+#     conditioning=None,
+# )
+# generated_logits = final_step.xt  # shape (batch, ..., K), log-probs
+# generated_tokens = jnp.argmax(generated_logits, axis=-1)
+```
 
 ## The Main Sampling Loop: `DiffusionSampler`
 

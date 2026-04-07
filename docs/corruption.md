@@ -22,8 +22,9 @@ The main components are:
     time `t`.
 *   **Process Implementations**: Concrete classes like `GaussianProcess` for
     continuous data (e.g., images), `CategoricalProcess` for discrete data
-    (e.g., labels, tokens), and `RiemannianProcess` for data on Riemannian
-    manifolds.
+    (e.g., labels, tokens), `SimplicialProcess` for simplex-valued categorical
+    data (e.g., graph edges with Dirichlet noise), and `RiemannianProcess` for
+    data on Riemannian manifolds..
 
 ## `CorruptionProcess` Protocol
 
@@ -32,15 +33,15 @@ The main components are:
 The `CorruptionProcess` is a protocol (an interface) that all corruption
 processes must implement. It defines the following key methods:
 
-  * `corrupt(key, x0, time)`: Takes clean data `x0` and a time `t`, and returns
+*   `corrupt(key, x0, time)`: Takes clean data `x0` and a time `t`, and returns
     the corrupted data `xt` along with a dictionary of potential training
     targets and metadata (`target_info`).
-  * `sample_from_invariant(key, data_spec)`: Samples from the invariant
+*   `sample_from_invariant(key, data_spec)`: Samples from the invariant
     distribution of the process (i.e., pure noise at `t=1`).
-  * `convert_predictions(prediction, xt, time)`: Takes a model's prediction
+*   `convert_predictions(prediction, xt, time)`: Takes a model's prediction
     (e.g., predicted epsilon) and converts it into all other possible target
     parameterizations (e.g., predicted `x0`, score, etc.).
-  * `get_schedule_info(time)`: Returns parameters of the schedule at a given
+*   `get_schedule_info(time)`: Returns parameters of the schedule at a given
     time.
 
 ### `NestedProcess`
@@ -62,19 +63,24 @@ interval `[0, 1]`.
 For Gaussian processes, schedules define `alpha(t)` and `sigma(t)`. Common
 implementations include:
 
-  * `CosineSchedule`: A popular choice where `alpha(t) = cos(0.5 * pi * t)`.
-  * `RFSchedule`: Rectified Flow schedule where `alpha(t) = 1 - t` and `sigma(t)
-    = t`.
-  * `LinearDiffusionSchedule`: The schedule from the original DDPM paper,
+*   `CosineSchedule`: A popular choice where `alpha(t) = cos(0.5 * pi * t)`.
+*   `RFSchedule`: Rectified Flow schedule where `alpha(t) = 1 - t` and
+    `sigma(t) = t`.
+*   `LinearDiffusionSchedule`: The schedule from the original DDPM paper,
     parameterized by `beta_min` and `beta_max`.
 
-### `DiscreteSchedule`
+### `DiscreteSchedule` / `SimplicialSchedule`
 
-For discrete processes, schedules define `alpha(t)`, which is the probability of
-*keeping* the original token at time `t`. Implementations include:
+For discrete and simplicial processes, schedules define `alpha(t)`, which
+controls the signal-to-noise ratio at time `t`. `SimplicialSchedule` is an alias
+for `DiscreteSchedule`; they share the same implementations:
 
-  * `LinearDiscreteSchedule`: `alpha(t) = 1 - t`.
-  * `CosineDiscreteSchedule`: `alpha(t) = cos(0.5 * pi * t)`.
+*   `LinearDiscreteSchedule`: `alpha(t) = 1 - t`.
+*   `CosineDiscreteSchedule`: `alpha(t) = cos(0.5 * pi * t)`.
+
+For discrete processes, `alpha(t)` is interpreted as the probability of
+*keeping* the original token. For simplicial processes, it parameterises the
+signal-to-noise ratio via `h(t) = alpha(t) / (1 - alpha(t))`.
 
 ## `GaussianProcess`
 
@@ -96,15 +102,15 @@ can switch between them.
 
 The supported parameterizations are:
 
-  * **`x0`**: Predict the original clean data.
-  * **`epsilon`**: Predict the noise that was added.
-  * **`score`**: Predict the score function (gradient of the log-density), which
+*   **`x0`**: Predict the original clean data.
+*   **`epsilon`**: Predict the noise that was added.
+*   **`score`**: Predict the score function (gradient of the log-density), which
     is `-epsilon / sigma(t)`.
-  * **`velocity`**: The velocity field using in Flow Matching
+*   **`velocity`**: The velocity field using in Flow Matching
     (<https://arxiv.org/abs/2210.02747>), Rectified Flow
     (<https://arxiv.org/abs/2209.03003>) and Stochastic Interpolants
     (<https://arxiv.org/abs/2303.08797>) implementations.
-  * **`v`**: The `v-prediction` first introduced in Progressive Distillation
+*   **`v`**: The `v-prediction` first introduced in Progressive Distillation
     (<https://arxiv.org/abs/2202.00512>).
 
 This flexibility allows you to train a model with one objective (e.g.,
@@ -172,9 +178,9 @@ Key configuration parameters:
 
 The library provides convenient factory methods for common use cases:
 
-  * `CategoricalProcess.uniform_process`: Corrupts tokens by replacing them with
+*   `CategoricalProcess.uniform_process`: Corrupts tokens by replacing them with
     a token drawn uniformly from all possible categories.
-  * `CategoricalProcess.masking_process`: Corrupts tokens by replacing them with
+*   `CategoricalProcess.masking_process`: Corrupts tokens by replacing them with
     a special "mask" token. This requires `num_categories` to be the vocabulary
     size, and the mask token will be integer `num_categories`.
 
@@ -226,9 +232,9 @@ print(f"Logits target shape: {target_info['logits'].shape}")
 
 **Assumptions**:
 
-  * Discrete data is expected to be integer arrays with a trailing dimension
+*   Discrete data is expected to be integer arrays with a trailing dimension
     of 1.
-  * The model prediction for discrete data is expected to be logits over the
+*   The model prediction for discrete data is expected to be logits over the
     categories. `convert_predictions` will then convert these logits to a
     predicted `x0` (via argmax).
 
@@ -374,4 +380,189 @@ time = jnp.array([0.5])
 xt, target_info = process.corrupt(subkey, x0, time)
 
 # target_info['velocity'] is the regression target u_t
+```
+
+## `SimplicialProcess`
+
+(`lib/corruption/simplicial.py`)
+
+The simplicial process is a corruption process for **categorical data on the
+probability simplex**. Instead of representing categorical states as integer
+tokens (as in `CategoricalProcess`), each data point is represented as a
+continuous probability vector on the (K-1)-simplex, and corruption adds
+Dirichlet noise.
+
+This has a key advantage called **intrinsic self-conditioning**: the corrupted
+state `P_t` is itself a probability distribution over categories. The model
+receives this soft distribution as input, giving it access to an implicit signal
+about the prediction — without requiring an explicit self-conditioning
+mechanism.
+
+### Mathematical framework
+
+The process is parameterised by three quantities:
+
+*   **Invariant distribution** `pi`: a probability vector of length K (or K+1
+    for masking). This is the target distribution at `t=1`.
+*   **Temperature** `epsilon` (`eps`): a positive scalar controlling the
+    concentration of the Dirichlet distribution — larger `eps` means softer
+    (more diffuse) distributions.
+*   **Schedule** `alpha(t)`: a monotonically decreasing function from
+    `alpha(0) = 1` to `alpha(1) = 0`.
+
+The **h-function** converts the schedule into a signal-to-noise ratio:
+
+```
+h(t) = alpha(t) / (1 - alpha(t))
+```
+
+At `t=0`, `h(0) = +inf` (clean data). At `t=1`, `h(1) = 0` (pure noise).
+
+The **forward corruption** at time `t` given clean data `x0` is:
+
+```
+P_t ~ Dir(eps * (pi + h(t) * delta(x0)))
+```
+
+where `delta(x0)` is the one-hot encoding of `x0`. This Dirichlet distribution
+concentrates on `delta(x0)` when `h(t)` is large (near `t=0`) and on `pi` when
+`h(t)` is small (near `t=1`).
+
+All computations are performed in **log-space** for numerical stability: the
+corrupted state `xt` stores `log(P_t)` rather than `P_t` directly. This is
+achieved using fast log-Gamma samplers followed by log-softmax normalization
+(see `random_utils.log_dirichlet_fast`).
+
+### Comparison with `CategoricalProcess`
+
+| Aspect                | `CategoricalProcess`    | `SimplicialProcess`        |
+| --------------------- | ----------------------- | -------------------------- |
+| Corrupted state type  | Integer token (hard)    | Probability vector on      |
+:                       :                         : simplex (soft)             :
+| Noise mechanism       | Replace token with prob | Sample from `Dir(eps*(pi + |
+:                       : `1-alpha(t)`            : h(t)*delta(x0)))`          :
+| Model input           | One-hot or embedding of | Log-probability vector     |
+:                       : integer                 :                            :
+| Self-conditioning     | Requires explicit       | Intrinsic (P_t is itself a |
+:                       : mechanism               : distribution)              :
+| Output representation | Integer array `[B, ..., | Log-prob array `[B, ...,   |
+:                       : 1]`                     : K]`                        :
+
+### Configuration
+
+Key attributes of `SimplicialProcess`:
+
+*   `schedule`: A `SimplicialSchedule` (alias for `DiscreteSchedule`) that
+    defines `alpha(t)`.
+*   `invariant_probs`: Tuple of floats defining `pi`. For uniform: `(1/K, ...,
+    1/K)`. For masking: `(0, ..., 0, 1)`.
+*   `num_categories`: The number of categories `K` in the data (may differ from
+    `len(invariant_probs)` for masking, where the mask adds one extra category).
+*   `temperature`: The Dirichlet temperature `eps` (default `1.0`).
+*   `unused_token`: Integer value for tokens that should not be modelled
+    (default `-1`).
+*   `safety_epsilon`: Small constant added to the denominator of `h(t)` to avoid
+    division by zero (default `1e-6`).
+*   `post_corruption_fn`: A projection applied after each corruption or sampling
+    step to enforce structural constraints (default: identity).
+
+### Factory methods
+
+```python
+from hackable_diffusion.lib.corruption.simplicial import SimplicialProcess
+from hackable_diffusion.lib.corruption.schedules import CosineDiscreteSchedule
+
+schedule = CosineDiscreteSchedule()
+
+# Uniform invariant distribution: pi = (1/K, ..., 1/K)
+process = SimplicialProcess.uniform_process(
+    schedule=schedule,
+    num_categories=5,
+    temperature=1.0,
+)
+
+# Masking invariant distribution: pi = (0, ..., 0, 1)
+process = SimplicialProcess.masking_process(
+    schedule=schedule,
+    num_categories=5,
+    temperature=1.0,
+)
+```
+
+### Example Usage
+
+```python
+import jax
+import jax.numpy as jnp
+from hackable_diffusion.lib.corruption.simplicial import SimplicialProcess
+from hackable_diffusion.lib.corruption.schedules import CosineDiscreteSchedule
+
+key = jax.random.PRNGKey(0)
+num_categories = 5
+
+# 1. Create a uniform simplicial process
+schedule = CosineDiscreteSchedule()
+process = SimplicialProcess.uniform_process(
+    schedule=schedule,
+    num_categories=num_categories,
+    temperature=1.0,
+)
+
+# 2. Data: integer tokens with trailing dim of 1
+x0 = jnp.array([0, 1, 2, 3]).reshape(1, 4, 1)
+time = jnp.array([0.5])
+
+# 3. Corrupt: xt is a log-probability array of shape (1, 4, 5)
+key, subkey = jax.random.split(key)
+xt, target_info = process.corrupt(subkey, x0, time)
+
+print(f"xt shape: {xt.shape}")       # (1, 4, 5)
+print(f"xt is log-probs: {jnp.exp(xt).sum(axis=-1)}")  # ≈ 1.0
+
+# 4. Sample from the invariant (pure noise)
+key, subkey = jax.random.split(key)
+noise = process.sample_from_invariant(subkey, x0)
+print(f"noise shape: {noise.shape}")  # (1, 4, 5)
+```
+
+### Post-Corruption Functions
+
+(`lib/corruption/simplicial.py`)
+
+Post-corruption functions are projections applied to the log-probability array
+after each forward-corruption step and after each reverse-diffusion step. They
+enforce structural constraints on the noisy state.
+
+The protocol is `SimplicialPostCorruptionFn`, which takes and returns a
+log-probability array.
+
+Implementations:
+
+*   **`IdentitySimplicialPostCorruptionFn`**: No-op (default). Returns the input
+    unchanged.
+
+*   **`SymmetricSimplicialPostCorruptionFn`**: For graph diffusion, enforces
+    that edge `(i, j)` and edge `(j, i)` share the same categorical
+    distribution, and zeroes out diagonal entries (no self-loops). This is the
+    simplicial analogue of `SymmetricPostCorruptionFn` from the discrete
+    process. Input shape must be `(batch, N, N, K)`.
+
+    The symmetrisation uses the same `triu + transpose` pattern as the discrete
+    version: extract the upper triangle, copy it to the lower triangle, and set
+    diagonal entries to a "no-edge" log-probability vector (all mass on category
+    0).
+
+```python
+from hackable_diffusion.lib.corruption.simplicial import (
+    SimplicialProcess,
+    SymmetricSimplicialPostCorruptionFn,
+)
+from hackable_diffusion.lib.corruption.schedules import CosineDiscreteSchedule
+
+# For graph diffusion with symmetric adjacency matrices
+process = SimplicialProcess.uniform_process(
+    schedule=CosineDiscreteSchedule(),
+    num_categories=3,  # e.g., no-edge, single, double bond
+    post_corruption_fn=SymmetricSimplicialPostCorruptionFn(),
+)
 ```
