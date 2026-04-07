@@ -49,6 +49,7 @@ from hackable_diffusion.lib.architecture.mlp import ConditionalMLP
 from hackable_diffusion.lib.architecture.mlp_blocks import MLP
 from hackable_diffusion.lib.architecture.normalization import NormalizationLayer
 from hackable_diffusion.lib.architecture.normalization import NormalizationLayerFactory
+from hackable_diffusion.lib.architecture.riemannian import RiemannianConditionalBackbone
 from hackable_diffusion.lib.architecture.sequence_embedders import RandomFourierSequenceEmbedding
 from hackable_diffusion.lib.architecture.sequence_embedders import RoPESequenceEmbedding
 from hackable_diffusion.lib.architecture.sequence_embedders import SinusoidalSequenceEmbedding

@@ -38,7 +38,7 @@ def _make_sampler(manifold):
 class RiemannianFlowSamplerStepTest(absltest.TestCase):
 
   def test_update_sphere(self):
-    """Euler step on S² moves along geodesic."""
+    """Euler step on S2 moves along geodesic."""
     manifold = manifolds.Sphere()
     sampler = _make_sampler(manifold)
     key = jax.random.PRNGKey(0)
@@ -69,7 +69,6 @@ class RiemannianFlowSamplerStepTest(absltest.TestCase):
     key = jax.random.PRNGKey(1)
 
     xt = jnp.eye(3)[None, ...]  # Identity rotation (1, 3, 3).
-    # Tangent vector at identity is a skew-symmetric matrix.
     v = jnp.array([[[0.0, -0.1, 0.0], [0.1, 0.0, 0.0], [0.0, 0.0, 0.0]]])
 
     current_step = base.DiffusionStep(
@@ -109,7 +108,6 @@ class RiemannianFlowSamplerStepTest(absltest.TestCase):
     # dt = 1.0, so next_xt = exp(xt, v) = (xt + v) % 1.0.
     expected_xt = jnp.array([[(0.9 + 0.5) % 1.0, (0.1 - 0.5) % 1.0, 0.5]])
     np.testing.assert_allclose(next_step.xt, expected_xt, atol=1e-5)
-    # Result stays in [0, 1).
     self.assertTrue(jnp.all(next_step.xt >= 0.0))
     self.assertTrue(jnp.all(next_step.xt < 1.0))
 

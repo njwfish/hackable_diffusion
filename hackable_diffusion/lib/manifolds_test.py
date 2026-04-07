@@ -73,7 +73,7 @@ class SphereTest(parameterized.TestCase):
     y = self.manifold.random_uniform(k2, (1, 3))
     t = jnp.array([[0.5]])
 
-    v_anal = self.manifold.velocity(x, y, t)
+    v_analytic = self.manifold.velocity(x=x, y=y, t=t)
 
     # Numerical derivative via central differences.
     eps = 1e-4
@@ -81,7 +81,7 @@ class SphereTest(parameterized.TestCase):
     xt_minus = _geodesic(self.manifold, x, y, t - eps)
     v_num = (xt_plus - xt_minus) / (2 * eps)
 
-    np.testing.assert_allclose(v_anal, v_num, atol=1e-3)
+    np.testing.assert_allclose(v_analytic, v_num, atol=1e-3)
 
   def test_dist(self):
     """Test shape and positivity of distance."""
@@ -200,6 +200,19 @@ class SphereTest(parameterized.TestCase):
     expected = jnp.array([[0.0, jnp.pi / 2, 0.0]])
     np.testing.assert_allclose(v, expected, atol=1e-5)
 
+  def test_velocity_asymmetry(self):
+    """velocity(x, y, t) should differ from velocity(y, x, t)."""
+    key = jax.random.PRNGKey(0)
+    k1, k2 = jax.random.split(key)
+    x = self.manifold.random_uniform(k1, (1, 3))
+    y = self.manifold.random_uniform(k2, (1, 3))
+    t = jnp.array([[0.5]])
+
+    v_xy = self.manifold.velocity(x=x, y=y, t=t)
+    v_yx = self.manifold.velocity(x=y, y=x, t=t)
+
+    self.assertFalse(jnp.allclose(v_xy, v_yx, atol=1e-3))
+
 
 ################################################################################
 # MARK: SO(3) tests
@@ -235,7 +248,7 @@ class SO3Test(parameterized.TestCase):
     p = self.manifold.random_uniform(k2, (1, 3, 3))
     t = jnp.array([[0.5]])
 
-    v_anal = self.manifold.velocity(r, p, t[..., None])
+    v_analytic = self.manifold.velocity(x=r, y=p, t=t[..., None])
 
     # Numerical derivative via central differences.
     eps = 1e-4
@@ -243,7 +256,7 @@ class SO3Test(parameterized.TestCase):
     xt_minus = _geodesic(self.manifold, r, p, (t - eps)[..., None])
     v_num = (xt_plus - xt_minus) / (2 * eps)
 
-    np.testing.assert_allclose(v_anal, v_num, atol=1e-3)
+    np.testing.assert_allclose(v_analytic, v_num, atol=1e-3)
 
   def test_dist(self):
     """Test shape and positivity of distance."""
@@ -395,6 +408,19 @@ class SO3Test(parameterized.TestCase):
     )
     np.testing.assert_allclose(v, expected, atol=1e-5)
 
+  def test_velocity_asymmetry(self):
+    """velocity(x, y, t) should differ from velocity(y, x, t)."""
+    key = jax.random.PRNGKey(0)
+    k1, k2 = jax.random.split(key)
+    x = self.manifold.random_uniform(k1, (1, 3, 3))
+    y = self.manifold.random_uniform(k2, (1, 3, 3))
+    t = jnp.array([[0.5]])
+
+    v_xy = self.manifold.velocity(x=x, y=y, t=t[..., None])
+    v_yx = self.manifold.velocity(x=y, y=x, t=t[..., None])
+
+    self.assertFalse(jnp.allclose(v_xy, v_yx, atol=1e-3))
+
 
 ################################################################################
 # MARK: Torus tests
@@ -479,9 +505,9 @@ class TorusTest(parameterized.TestCase):
     x = self.manifold.random_uniform(k1, (5, 2))
     y = self.manifold.random_uniform(k2, (5, 2))
 
-    v0 = self.manifold.velocity(x, y, jnp.zeros((5, 1)))
-    v_half = self.manifold.velocity(x, y, jnp.full((5, 1), 0.5))
-    v1 = self.manifold.velocity(x, y, jnp.ones((5, 1)))
+    v0 = self.manifold.velocity(x=x, y=y, t=jnp.zeros((5, 1)))
+    v_half = self.manifold.velocity(x=x, y=y, t=jnp.full((5, 1), 0.5))
+    v1 = self.manifold.velocity(x=x, y=y, t=jnp.ones((5, 1)))
 
     np.testing.assert_allclose(v0, v_half, atol=1e-7)
     np.testing.assert_allclose(v0, v1, atol=1e-7)
@@ -501,6 +527,19 @@ class TorusTest(parameterized.TestCase):
     v = self.manifold.log(x, y)
     # Shortest path wraps around: -0.2, not +0.8.
     np.testing.assert_allclose(v, jnp.array([[-0.2]]), atol=1e-5)
+
+  def test_velocity_asymmetry(self):
+    """velocity(x, y, t) should differ from velocity(y, x, t)."""
+    key = jax.random.PRNGKey(0)
+    k1, k2 = jax.random.split(key)
+    x = self.manifold.random_uniform(k1, (1, 2))
+    y = self.manifold.random_uniform(k2, (1, 2))
+    t = jnp.array([[0.5]])
+
+    v_xy = self.manifold.velocity(x=x, y=y, t=t)
+    v_yx = self.manifold.velocity(x=y, y=x, t=t)
+
+    self.assertFalse(jnp.allclose(v_xy, v_yx, atol=1e-3))
 
 
 if __name__ == "__main__":

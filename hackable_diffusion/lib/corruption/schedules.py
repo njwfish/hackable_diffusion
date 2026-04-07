@@ -116,8 +116,8 @@ class RiemannianSchedule(Schedule, Protocol):
   """Protocol for Riemannian schedules.
 
   Controls the geodesic interpolation via alpha(t):
-    x_t = geodesic(x_0, x_1, alpha(t))
-    v_t = alpha'(t) * velocity(x_0, x_1, alpha(t))
+    x_t = geodesic(x_1, x_0, alpha(t))
+    v_t = alpha'(t) * velocity(x_1, x_0, alpha(t))
 
   Subclasses must implement `alpha`.
   """

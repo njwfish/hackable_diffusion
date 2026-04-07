@@ -37,8 +37,8 @@ class RiemannianProcess(base.CorruptionProcess):
   This is based on https://arxiv.org/abs/2302.03660.
 
   Given a schedule with interpolation parameter alpha(t):
-    x_t = geodesic(x_0, x_1, alpha(t))
-    target = alpha'(t) * velocity(x_0, x_1, alpha(t))
+    x_t = geodesic(x_1, x_0, alpha(t))
+    target = alpha'(t) * velocity(x_1, x_0, alpha(t))
   """
 
   manifold: manifolds.Manifold
@@ -66,11 +66,11 @@ class RiemannianProcess(base.CorruptionProcess):
     alpha_t = utils.bcast_right(self.schedule.alpha(time), x0.ndim)
     alpha_dot_t = utils.bcast_right(self.schedule.alpha_dot(time), x0.ndim)
 
-    # x_t = geodesic(x0, x1, alpha(t)).
-    xt = self.manifold.exp(x0, alpha_t * self.manifold.log(x0, x1))
+    # x_t = geodesic(x1, x0, alpha(t)).
+    xt = manifolds.geodesic(self.manifold, x=x1, y=x0, t=alpha_t)
 
-    # By chain rule: d/dt x_t = alpha'(t) * velocity(x0, x1, alpha(t)).
-    vel = alpha_dot_t * self.manifold.velocity(x0, x1, alpha_t)
+    # By chain rule: d/dt x_t = alpha'(t) * velocity(x1, x0, alpha(t)).
+    vel = alpha_dot_t * self.manifold.velocity(x=x1, y=x0, t=alpha_t)
 
     target_info = {
         'x0': x0,

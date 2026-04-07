@@ -54,7 +54,7 @@ class SphereCorruptionTest(absltest.TestCase):
     np.testing.assert_allclose(inner_products, 0.0, atol=1e-5)
 
   def test_velocity_at_t1(self):
-    """At t=1, alpha=0 so xt = x0 and velocity = -log(x0, x1)."""
+    """At t=1, alpha=0 so xt = x1 and velocity = -log(x1, x0)."""
     manifold = manifolds.Sphere()
     process = _make_process(manifold)
     key = jax.random.PRNGKey(0)
@@ -62,12 +62,26 @@ class SphereCorruptionTest(absltest.TestCase):
     x0 = jnp.array([[1.0, 0.0, 0.0]])
     t1 = jnp.array([1.0])
     xt1, target1 = process.corrupt(key, x0, t1)
-    np.testing.assert_allclose(xt1, x0, atol=1e-5)
-
-    v1 = target1['velocity']
     x1_sampled = target1['x1']
-    v_log = manifold.log(x0, x1_sampled)
+    # At t=1, alpha=0: geodesic(x1, x0, 0) = x1.
+    np.testing.assert_allclose(xt1, x1_sampled, atol=1e-5)
+
+    # velocity = alpha_dot(1) * velocity(x1, x0, 0) = -1 * log(x1, x0).
+    v1 = target1['velocity']
+    v_log = manifold.log(x1_sampled, x0)
     np.testing.assert_allclose(v1, -v_log, atol=1e-5)
+
+  def test_identity_at_t0(self):
+    """At t=0, alpha=1 so xt = x0 (identity corruption)."""
+    manifold = manifolds.Sphere()
+    process = _make_process(manifold)
+    key = jax.random.PRNGKey(0)
+
+    x0 = jnp.array([[1.0, 0.0, 0.0]])
+    t0 = jnp.array([0.0])
+    xt0, _ = process.corrupt(key, x0, t0)
+    # At t=0, alpha=1: geodesic(x1, x0, 1) = x0.
+    np.testing.assert_allclose(xt0, x0, atol=1e-5)
 
 
 class SO3CorruptionTest(absltest.TestCase):
@@ -94,7 +108,7 @@ class SO3CorruptionTest(absltest.TestCase):
     self.assertEqual(vel.shape, (batch_size, 3, 3))
 
   def test_velocity_at_t1(self):
-    """At t=1, alpha=0 so xt = x0 and velocity = -log(x0, x1)."""
+    """At t=1, alpha=0 so xt = x1 and velocity = -log(x1, x0)."""
     manifold = manifolds.SO3()
     process = _make_process(manifold)
     key = jax.random.PRNGKey(1)
@@ -102,12 +116,26 @@ class SO3CorruptionTest(absltest.TestCase):
     x0 = jnp.eye(3)[None, ...]  # (1, 3, 3)
     t1 = jnp.array([1.0])
     xt1, target1 = process.corrupt(key, x0, t1)
-    np.testing.assert_allclose(xt1, x0, atol=1e-5)
-
-    v1 = target1['velocity']
     x1_sampled = target1['x1']
-    v_log = manifold.log(x0, x1_sampled)
+    # At t=1, alpha=0: geodesic(x1, x0, 0) = x1.
+    np.testing.assert_allclose(xt1, x1_sampled, atol=1e-5)
+
+    # velocity = alpha_dot(1) * velocity(x1, x0, 0) = -1 * log(x1, x0).
+    v1 = target1['velocity']
+    v_log = manifold.log(x1_sampled, x0)
     np.testing.assert_allclose(v1, -v_log, atol=1e-4)
+
+  def test_identity_at_t0(self):
+    """At t=0, alpha=1 so xt = x0 (identity corruption)."""
+    manifold = manifolds.SO3()
+    process = _make_process(manifold)
+    key = jax.random.PRNGKey(1)
+
+    x0 = jnp.eye(3)[None, ...]  # (1, 3, 3)
+    t0 = jnp.array([0.0])
+    xt0, _ = process.corrupt(key, x0, t0)
+    # At t=0, alpha=1: geodesic(x1, x0, 1) = x0.
+    np.testing.assert_allclose(xt0, x0, atol=1e-5)
 
 
 class TorusCorruptionTest(absltest.TestCase):
@@ -132,7 +160,7 @@ class TorusCorruptionTest(absltest.TestCase):
     self.assertEqual(vel.shape, (batch_size, dim))
 
   def test_velocity_at_t1(self):
-    """At t=1, alpha=0 so xt = x0 and velocity = -log(x0, x1)."""
+    """At t=1, alpha=0 so xt = x1 and velocity = -log(x1, x0)."""
     manifold = manifolds.Torus()
     process = _make_process(manifold)
     key = jax.random.PRNGKey(2)
@@ -140,12 +168,26 @@ class TorusCorruptionTest(absltest.TestCase):
     x0 = jnp.array([[0.1, 0.5, 0.9]])
     t1 = jnp.array([1.0])
     xt1, target1 = process.corrupt(key, x0, t1)
-    np.testing.assert_allclose(xt1, x0, atol=1e-5)
-
-    v1 = target1['velocity']
     x1_sampled = target1['x1']
-    v_log = manifold.log(x0, x1_sampled)
+    # At t=1, alpha=0: geodesic(x1, x0, 0) = x1.
+    np.testing.assert_allclose(xt1, x1_sampled, atol=1e-5)
+
+    # velocity = alpha_dot(1) * velocity(x1, x0, 0) = -1 * log(x1, x0).
+    v1 = target1['velocity']
+    v_log = manifold.log(x1_sampled, x0)
     np.testing.assert_allclose(v1, -v_log, atol=1e-5)
+
+  def test_identity_at_t0(self):
+    """At t=0, alpha=1 so xt = x0 (identity corruption)."""
+    manifold = manifolds.Torus()
+    process = _make_process(manifold)
+    key = jax.random.PRNGKey(2)
+
+    x0 = jnp.array([[0.1, 0.5, 0.9]])
+    t0 = jnp.array([0.0])
+    xt0, _ = process.corrupt(key, x0, t0)
+    # At t=0, alpha=1: geodesic(x1, x0, 1) = x0.
+    np.testing.assert_allclose(xt0, x0, atol=1e-5)
 
 
 if __name__ == '__main__':
