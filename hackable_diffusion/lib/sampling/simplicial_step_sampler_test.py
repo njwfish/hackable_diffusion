@@ -255,6 +255,228 @@ class SimplicialStepSamplerTest(parameterized.TestCase):
     diff = jnp.abs(next_step_ddim.xt - next_step_churn.xt).sum()
     self.assertGreater(diff, 0.0)
 
+  @parameterized.named_parameters(
+      ('ddim', 'ddim_step'),
+      ('churn', 'churn_step'),
+  )
+  def test_update_output_is_log_normalized(self, sampler_attr):
+    """The updated xt should remain a valid log-prob simplex (logsumexp == 0)."""
+    sampler = getattr(self, sampler_attr)
+    initial_step_info = StepInfo(
+        step=0,
+        time=jnp.array([0.8, 0.8])[:, None, None],
+        rng=jax.random.PRNGKey(0),
+    )
+    # Start from a proper log-prob distribution.
+    log_noise = jax.nn.log_softmax(
+        jax.random.normal(jax.random.PRNGKey(7), self.initial_noise.shape)
+    )
+    initial_step = sampler.initialize(
+        initial_noise=log_noise,
+        initial_step_info=initial_step_info,
+    )
+    prediction = self._dummy_inference_fn(
+        xt=initial_step.xt,
+        conditioning={},
+        time=initial_step.step_info.time,
+    )
+    next_step_info = StepInfo(
+        step=1,
+        time=jnp.array([0.3, 0.3])[:, None, None],
+        rng=jax.random.PRNGKey(1),
+    )
+    next_step = sampler.update(
+        prediction=prediction,
+        current_step=initial_step,
+        next_step_info=next_step_info,
+    )
+    log_sum = jax.nn.logsumexp(next_step.xt, axis=-1)
+    chex.assert_trees_all_close(log_sum, jnp.zeros_like(log_sum), atol=1e-4)
+
+  def test_update_aux_contains_logits(self):
+    """The update step should store predicted logits in aux['logits']."""
+    initial_step_info = StepInfo(
+        step=0,
+        time=jnp.array([0.5, 0.5])[:, None, None],
+        rng=jax.random.PRNGKey(0),
+    )
+    initial_step = self.ddim_step.initialize(
+        initial_noise=self.initial_noise,
+        initial_step_info=initial_step_info,
+    )
+    prediction = self._dummy_inference_fn(
+        xt=initial_step.xt,
+        conditioning={},
+        time=initial_step.step_info.time,
+    )
+    next_step_info = StepInfo(
+        step=1,
+        time=jnp.array([0.1, 0.1])[:, None, None],
+        rng=jax.random.PRNGKey(1),
+    )
+    next_step = self.ddim_step.update(
+        prediction=prediction,
+        current_step=initial_step,
+        next_step_info=next_step_info,
+    )
+    self.assertIn('logits', next_step.aux)
+    expected_logits_shape = self.initial_noise.shape[:-1] + (
+        self.num_categories,
+    )
+    self.assertEqual(next_step.aux['logits'].shape, expected_logits_shape)
+
+  def test_convergence_to_predicted_class_at_t0(self):
+    """With a fully confident model, the predicted logits peak on category 1.
+
+    Note: xt itself mixes logits with Beta-sampled weights so it won't be
+    exactly one-hot even at small t.  We therefore check aux['logits'], which
+    is the direct model output stored by update().
+    """
+    initial_step_info = StepInfo(
+        step=0,
+        time=jnp.array([0.5, 0.5])[:, None, None],
+        rng=jax.random.PRNGKey(0),
+    )
+    log_noise = jax.nn.log_softmax(
+        jax.random.normal(jax.random.PRNGKey(5), self.initial_noise.shape)
+    )
+    initial_step = self.ddim_step.initialize(
+        initial_noise=log_noise,
+        initial_step_info=initial_step_info,
+    )
+    prediction = self._dummy_inference_fn(
+        xt=initial_step.xt,
+        conditioning={},
+        time=initial_step.step_info.time,
+    )
+    next_step_info = StepInfo(
+        step=1,
+        time=jnp.array([0.1, 0.1])[:, None, None],
+        rng=jax.random.PRNGKey(1),
+    )
+    next_step = self.ddim_step.update(
+        prediction=prediction,
+        current_step=initial_step,
+        next_step_info=next_step_info,
+    )
+    # aux['logits'] is the direct model output — should always peak on 1.
+    argmax = jnp.argmax(next_step.aux['logits'], axis=-1)
+    self.assertTrue(jnp.all(argmax == 1))
+
+  def test_full_churn_step_is_stochastic(self):
+    """Verify that full churn is stochastic and produces valid outputs.
+
+    churn=1.0 (full stochasticity, κ=0) produces different results with
+    different keys, and the output remains a valid log-prob simplex.
+
+    This tests the safety_epsilon fix: without it, churn=1.0 causes
+    Beta(0, b) which is degenerate in JAX and produces NaN.
+    """
+    full_churn_step = SimplicialDDIMStep(
+        corruption_process=self.process, churn=1.0
+    )
+    initial_step_info = StepInfo(
+        step=0,
+        time=jnp.array([0.5, 0.5])[:, None, None],
+        rng=jax.random.PRNGKey(0),
+    )
+    log_noise = jax.nn.log_softmax(
+        jax.random.normal(jax.random.PRNGKey(3), self.initial_noise.shape)
+    )
+    initial_step = full_churn_step.initialize(
+        initial_noise=log_noise,
+        initial_step_info=initial_step_info,
+    )
+    prediction = self._dummy_inference_fn(
+        xt=initial_step.xt,
+        conditioning={},
+        time=initial_step.step_info.time,
+    )
+
+    # Two calls with different keys produce different outputs.
+    step_a = full_churn_step.update(
+        prediction=prediction,
+        current_step=initial_step,
+        next_step_info=StepInfo(
+            step=1,
+            time=jnp.array([0.1, 0.1])[:, None, None],
+            rng=jax.random.PRNGKey(10),
+        ),
+    )
+    step_b = full_churn_step.update(
+        prediction=prediction,
+        current_step=initial_step,
+        next_step_info=StepInfo(
+            step=1,
+            time=jnp.array([0.1, 0.1])[:, None, None],
+            rng=jax.random.PRNGKey(99),
+        ),
+    )
+    diff = jnp.abs(step_a.xt - step_b.xt).sum()
+    self.assertGreater(diff, 0.0)
+    # Output is still properly normalized.
+    log_sum = jax.nn.logsumexp(step_a.xt, axis=-1)
+    chex.assert_trees_all_close(log_sum, jnp.zeros_like(log_sum), atol=1e-4)
+
+  # ---------------------------------------------------------------------------
+  # MARK: post_corruption_fn tests
+  # ---------------------------------------------------------------------------
+
+  def test_update_applies_post_corruption_fn(self):
+    """SimplicialDDIMStep.update() must call post_corruption_fn on new_xt.
+
+    We use a SymmetricSimplicialPostCorruptionFn and an adjacency-style
+    (batch=1, N=3, N=3, K) input.  After each update() the output must satisfy
+    xt[b, i, j, :] == xt[b, j, i, :] for all off-diagonal (i, j).
+    """
+    schedule = schedules.LinearDiscreteSchedule()
+    post_fn = simplicial.SymmetricSimplicialPostCorruptionFn()
+    process = simplicial.SimplicialProcess.uniform_process(
+        schedule=schedule,
+        num_categories=self.num_categories,
+        post_corruption_fn=post_fn,
+    )
+    sampler = SimplicialDDIMStep(corruption_process=process, churn=0.5)
+
+    # Build a (1, 3, 3, K) log-noise by symmetrising random logits.
+    n = 3
+    k = process.process_num_categories
+    raw_logits = jax.random.normal(jax.random.PRNGKey(5), shape=(1, n, n, k))
+    log_noise = raw_logits - jax.nn.logsumexp(
+        raw_logits, axis=-1, keepdims=True
+    )
+    # Symmetrise the initial noise so initialize() is consistent.
+    log_noise = post_fn(log_noise)
+
+    initial_step = sampler.initialize(
+        initial_noise=log_noise,
+        initial_step_info=StepInfo(
+            step=0,
+            time=jnp.array([0.5]),
+            rng=jax.random.PRNGKey(0),
+        ),
+    )
+    # Dummy predictor: always predict uniform logits.
+    prediction = {'logits': jnp.zeros_like(log_noise)}
+    step = sampler.update(
+        prediction=prediction,
+        current_step=initial_step,
+        next_step_info=StepInfo(
+            step=1,
+            time=jnp.array([0.2]),
+            rng=jax.random.PRNGKey(1),
+        ),
+    )
+
+    xt = step.xt  # (1, 3, 3, K)
+    xt_transpose = jnp.swapaxes(xt, 1, 2)
+    off_diag_mask = ~jnp.eye(n, dtype=jnp.bool_)[None, :, :, None]
+    chex.assert_trees_all_close(
+        jnp.where(off_diag_mask, xt, 0.0),
+        jnp.where(off_diag_mask, xt_transpose, 0.0),
+        atol=1e-5,
+    )
+
 
 if __name__ == '__main__':
   absltest.main()

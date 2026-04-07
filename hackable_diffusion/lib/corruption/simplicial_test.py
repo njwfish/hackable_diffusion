@@ -21,11 +21,12 @@ distribution. Therefore, to obtain a token, we must convert the probability
 distribution to a token. Here we use the argmax function (we could have also
 used categorical sampling).
 
-Apart from this crucial difference, the tests are mostly identical with the
-difference that we do not allow for post-corruption projection in the simplicial
-corruption process.
+Apart from this crucial difference, the tests are mostly identical; and
+post-corruption projection functions (identity and symmetric) are supported
+for simplicial processes, mirroring the discrete case.
 """
 
+import chex
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.corruption import simplicial
 import jax
@@ -317,6 +318,278 @@ class SimplicialProcessTest(parameterized.TestCase):
       self.assertFalse(process.is_masking)
     else:
       raise ValueError(f'Unknown process type: {process_type}')
+
+  # ---------------------------------------------------------------------------
+  # MARK: h-function tests
+  # ---------------------------------------------------------------------------
+
+  @parameterized.named_parameters(
+      dict(testcase_name='t_half_linear', time=0.5, expected_h=1.0),
+      dict(
+          testcase_name='t_three_quarters_linear',
+          time=0.75,
+          expected_h=1.0 / 3.0,
+      ),
+      dict(testcase_name='t_quarter_linear', time=0.25, expected_h=3.0),
+  )
+  def test_h_function_values(self, time, expected_h):
+    """h(t) = alpha(t) / (1-alpha(t)) for linear schedule alpha(t)=1-t.
+
+    For the linear schedule alpha(t) = 1-t:
+      h(t) = (1-t) / t
+    so h(0.25)=3, h(0.5)=1, h(0.75)=1/3.
+
+    Args:
+      time: The time of the corruption.
+      expected_h: The expected value of the h-function.
+
+    Returns:
+      None
+    """
+    # h() requires at least a 1D array (ktyping constraint).
+    t = jnp.array([time])
+    h_val = self.process.h(t)
+    self.assertAlmostEqual(float(h_val[0]), expected_h, places=4)
+
+  def test_h_function_is_decreasing(self):
+    """h(t) must be a strictly decreasing function of t."""
+    times = jnp.linspace(0.01, 0.99, 20)
+    # h() expects a batch dimension; pass the whole array at once.
+    h_vals = self.process.h(times)
+    # Each step should be smaller than the previous.
+    diffs = jnp.diff(h_vals)
+    self.assertTrue(jnp.all(diffs < 0))
+
+  # ---------------------------------------------------------------------------
+  # MARK: sample_from_invariant tests
+  # ---------------------------------------------------------------------------
+
+  def test_sample_from_invariant_shape_and_normalization(self):
+    """sample_from_invariant should return valid log-probabilities."""
+    data_spec = jnp.zeros((self.batch_size, self.seq_len, 1))
+    log_samples = self.process.sample_from_invariant(
+        self.key, data_spec=data_spec
+    )
+    # Shape should be [B, T, K].
+    expected_shape = (self.batch_size, self.seq_len, self.num_categories)
+    self.assertEqual(log_samples.shape, expected_shape)
+    # Must be valid log-probabilities: logsumexp == 0.
+    log_sum = jax.nn.logsumexp(log_samples, axis=-1)
+    self.assertTrue(jnp.allclose(log_sum, jnp.zeros_like(log_sum), atol=1e-5))
+
+  def test_sample_from_invariant_masking_concentrates_on_mask(self):
+    """For masking process at t=1, invariant samples concentrate on mask token."""
+    process = simplicial.SimplicialProcess.masking_process(
+        schedule=self.schedule, num_categories=self.num_categories
+    )
+    data_spec = jnp.zeros((self.batch_size, self.seq_len, 1))
+    log_samples = process.sample_from_invariant(self.key, data_spec=data_spec)
+    # All mass should be on the last (mask) token.
+    argmax = jnp.argmax(log_samples, axis=-1)
+    self.assertTrue(jnp.all(argmax == self.num_categories))
+
+  # ---------------------------------------------------------------------------
+  # MARK: Unused-token passthrough tests
+  # (discrete_test has test_unused_mask_gives_always_false_on_other_masks)
+  # ---------------------------------------------------------------------------
+
+  @parameterized.named_parameters(
+      ('masking', 'masking'),
+      ('uniform', 'uniform'),
+  )
+  def test_unused_token_is_preserved_at_all_times(self, process_type):
+    """Positions with unused_token in x0 must be passed through unchanged."""
+    process = {
+        'masking': simplicial.SimplicialProcess.masking_process(
+            schedule=self.schedule, num_categories=self.num_categories
+        ),
+        'uniform': simplicial.SimplicialProcess.uniform_process(
+            schedule=self.schedule, num_categories=self.num_categories
+        ),
+    }[process_type]
+
+    # Build a sequence [1, UNUSED, 2, UNUSED, 3, 4] (shape [1, 6, 1]).
+    x0 = jnp.array(
+        [1, process.unused_token, 2, process.unused_token, 3, 4],
+        dtype=jnp.int32,
+    ).reshape((1, 6, 1))
+    # xt has shape [1, 6, K]; unused positions are filled with unused_token.
+    unused_positions = [False, True, False, True, False, False]
+
+    for t_val in [0.0, 0.1, 0.3, 0.5, 0.7, 0.9, 1.0]:
+      time = jnp.ones((1,)) * t_val
+      xt, _ = process.corrupt(self.key, x0, time)
+      # Shape is [1, 6, K]; check each position individually.
+      for i, is_unused in enumerate(unused_positions):
+        slot = xt[0, i, :]  # shape [K]
+        if is_unused:
+          # The entire slot must be filled with the unused_token.
+          self.assertTrue(
+              jnp.all(slot == process.unused_token),
+              msg=f'Unused token not preserved at t={t_val}, position {i}',
+          )
+        else:
+          # Non-unused positions must *not* be the unused_token.
+          self.assertFalse(
+              jnp.all(slot == process.unused_token),
+              msg=(
+                  f'Valid position wrongly set to unused_token at t={t_val},'
+                  f' pos {i}'
+              ),
+          )
+
+  # ---------------------------------------------------------------------------
+  # MARK: get_schedule_info tests
+  # ---------------------------------------------------------------------------
+
+  def test_get_schedule_info_returns_alpha(self):
+    """get_schedule_info should delegate to schedule.evaluate and include alpha."""
+    time = jnp.array([0.0, 0.25, 0.5, 0.75, 1.0])
+    info = self.process.get_schedule_info(time)
+    self.assertIn('alpha', info)
+    self.assertIn('time', info)
+    # For linear schedule alpha(t) = 1 - t.
+    expected_alpha = 1.0 - time
+    chex.assert_trees_all_close(info['alpha'], expected_alpha, atol=1e-6)
+
+
+################################################################################
+# MARK: SimplicialPostCorruptionTest
+################################################################################
+
+
+class SimplicialPostCorruptionTest(parameterized.TestCase):
+  """Tests for SimplicialPostCorruptionFn classes."""
+
+  def _make_log_x(self, batch=2, n=4, k=3):
+    """Helper: a random log-prob array of shape (batch, n, n, k)."""
+    key = jax.random.PRNGKey(0)
+    logits = jax.random.normal(key, shape=(batch, n, n, k))
+    return logits - jax.nn.logsumexp(logits, axis=-1, keepdims=True)
+
+  # ---------------------------------------------------------------------------
+  # IdentitySimplicialPostCorruptionFn
+  # ---------------------------------------------------------------------------
+
+  def test_identity_fn_is_identity(self):
+    """IdentitySimplicialPostCorruptionFn must be a no-op."""
+    fn = simplicial.IdentitySimplicialPostCorruptionFn()
+    log_x = self._make_log_x()
+    log_y = fn(log_x)
+    chex.assert_trees_all_close(log_y, log_x)
+
+  # ---------------------------------------------------------------------------
+  # SymmetricSimplicialPostCorruptionFn
+  # ---------------------------------------------------------------------------
+
+  def test_symmetric_fn_produces_symmetric_output(self):
+    """After projection, log_y[b, i, j, :] == log_y[b, j, i, :] for all i != j."""
+    fn = simplicial.SymmetricSimplicialPostCorruptionFn()
+    log_x = self._make_log_x(batch=2, n=5, k=4)
+    log_y = fn(log_x)
+    log_y_transpose = jnp.swapaxes(log_y, 1, 2)
+    chex.assert_trees_all_close(log_y, log_y_transpose, atol=1e-5)
+
+  def test_symmetric_fn_is_log_normalized(self):
+    """Every off-diagonal row of the output must be a valid log-prob vector.
+
+    This holds trivially because the output is a direct copy of an upper-
+    triangle log-prob vector (already normalised).  The test exists to guard
+    against future regressions.
+    """
+    fn = simplicial.SymmetricSimplicialPostCorruptionFn()
+    batch_size, n, k = 2, 4, 3
+    log_x = self._make_log_x(batch=batch_size, n=n, k=k)
+    log_y = fn(log_x)
+    # Check off-diagonal positions only; diagonal is set to uniform separately.
+    off_diag = ~jnp.eye(n, dtype=jnp.bool_)
+    for b in range(batch_size):
+      for i in range(n):
+        for j in range(n):
+          if not off_diag[i, j]:
+            continue
+          log_sum = jax.nn.logsumexp(log_y[b, i, j, :])
+          chex.assert_trees_all_close(log_sum, jnp.zeros(()), atol=1e-5)
+
+  def test_symmetric_fn_copies_upper_triangle_exactly(self):
+    """Upper-triangle values must be preserved; lower triangle must match them.
+
+    Specifically, log_y[b, i, j] must equal log_x[b, i, j] for i < j, and
+    log_y[b, j, i] must equal log_x[b, i, j] for j > i.  No blending should
+    occur (contrast with a geometric-mean approach).
+    """
+    fn = simplicial.SymmetricSimplicialPostCorruptionFn()
+    batch, n, k = 2, 4, 3
+    log_x = self._make_log_x(batch=batch, n=n, k=k)
+    log_y = fn(log_x)
+    for b in range(batch):
+      for i in range(n):
+        for j in range(i + 1, n):  # upper triangle only
+          # Upper-triangle entry is unchanged.
+          chex.assert_trees_all_close(
+              log_y[b, i, j, :], log_x[b, i, j, :], atol=1e-6
+          )
+          # Lower-triangle entry is copied from upper.
+          chex.assert_trees_all_close(
+              log_y[b, j, i, :], log_x[b, i, j, :], atol=1e-6
+          )
+
+  def test_symmetric_fn_zeroes_diagonal(self):
+    """Diagonal entries should be set to the no-edge vector (category 0)."""
+    fn = simplicial.SymmetricSimplicialPostCorruptionFn()
+    batch, n, k = 2, 4, 3
+    log_x = self._make_log_x(batch=batch, n=n, k=k)
+    log_y = fn(log_x)
+    # No-edge vector: all mass on category 0, i.e. [0, -inf, -inf, ...]
+    expected = jnp.full((k,), -1e9, dtype=log_y.dtype).at[0].set(0.0)
+    for b in range(batch):
+      for i in range(n):
+        chex.assert_trees_all_close(
+            log_y[b, i, i, :],
+            expected,
+            atol=1e-5,
+        )
+
+  def test_symmetric_fn_raises_on_wrong_dims(self):
+    """Should raise ValueError if input is not 4-D or not square."""
+    fn = simplicial.SymmetricSimplicialPostCorruptionFn()
+    with self.assertRaisesRegex(ValueError, 'Expected 4D'):
+      fn(jnp.zeros((2, 3, 4)))  # 3-D input
+    with self.assertRaisesRegex(ValueError, 'Spatial dimensions must be equal'):
+      fn(jnp.zeros((2, 3, 4, 5)))  # non-square
+
+  # ---------------------------------------------------------------------------
+  # SimplicialProcess with post_corruption_fn
+  # ---------------------------------------------------------------------------
+
+  def test_corrupt_with_symmetric_fn_produces_symmetric_output(self):
+    """SimplicialProcess.corrupt() must respect post_corruption_fn.
+
+    When a SymmetricSimplicialPostCorruptionFn is plugged into the process,
+    the corrupted xt must satisfy xt[b, i, j, :] == xt[b, j, i, :] for i != j.
+
+    We use a (batch=1, N=3, N=3) adjacency layout.
+    """
+    schedule = schedules.LinearDiscreteSchedule()
+    fn = simplicial.SymmetricSimplicialPostCorruptionFn()
+    process = simplicial.SimplicialProcess.uniform_process(
+        schedule=schedule, num_categories=4, post_corruption_fn=fn
+    )
+    # x0: integer tokens for a 3-node graph, shape (1, 3, 3, 1)
+    x0 = jax.random.randint(
+        jax.random.PRNGKey(7), shape=(1, 3, 3, 1), minval=0, maxval=4
+    )
+    time = jnp.array([0.3])
+    xt, _ = process.corrupt(jax.random.PRNGKey(1), x0, time)
+    # xt has shape (1, 3, 3, 4) -- log-prob array.
+    xt_transpose = jnp.swapaxes(xt, 1, 2)
+    n = xt.shape[1]
+    off_diag_mask = ~jnp.eye(n, dtype=jnp.bool_)[None, :, :, None]
+    chex.assert_trees_all_close(
+        jnp.where(off_diag_mask, xt, 0.0),
+        jnp.where(off_diag_mask, xt_transpose, 0.0),
+        atol=1e-5,
+    )
 
 
 if __name__ == '__main__':

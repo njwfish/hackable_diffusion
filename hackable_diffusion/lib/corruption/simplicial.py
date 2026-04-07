@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import dataclasses
 import enum
-from typing import Sequence
+from typing import Protocol, Sequence
 
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import random_utils
@@ -34,6 +34,7 @@ import kauldron.ktyping as kt
 ################################################################################
 
 UNUSED_TOKEN = -1
+LOGITS_INF = 1e9
 
 ################################################################################
 # MARK: Type Aliases
@@ -67,7 +68,80 @@ class SamplingPrecisionMode(enum.StrEnum):
 
 
 ################################################################################
-# MARK: CategoricalProcess
+# MARK: Post-corruption functions
+################################################################################
+
+
+class SimplicialPostCorruptionFn(Protocol):
+  """Post-corruption function protocol for simplicial (log-prob) data.
+
+  The purpose of a post-corruption function is to project the noisy
+  log-probability array onto a constrained subspace after each corruption or
+  reverse-diffusion step.  The canonical example is symmetrising a
+  simplex-valued edge-attribute matrix so that edge (i, j) and edge (j, i)
+  share the same categorical distribution — the simplicial analogue of
+  ``SymmetricPostCorruptionFn`` from the discrete process.
+
+  Unlike the discrete variant, the input and output here are log-probability
+  arrays of shape (*batch, num_categories), not integer token arrays.
+  """
+
+  def __call__(self, log_x: DataArray) -> DataArray:
+    """Project the log-probability array."""
+    ...
+
+
+class IdentitySimplicialPostCorruptionFn(SimplicialPostCorruptionFn):
+  """Identity post-corruption function (no projection)."""
+
+  def __call__(self, log_x: DataArray) -> DataArray:
+    return log_x
+
+
+class SymmetricSimplicialPostCorruptionFn(SimplicialPostCorruptionFn):
+  """Symmetric post-corruption function for simplex-valued edge matrices.
+
+  This is the simplicial analogue of ``SymmetricPostCorruptionFn`` from the
+  discrete process, used in DiGress https://arxiv.org/abs/2209.14734 in order
+  to noise the adjacency graph.  This function also zeroes out the diagonal
+  entries, thereby removing any self-loop.
+
+  Input shape must be (batch, N, N, num_categories) where N is the number of
+  nodes.
+  """
+
+  def __call__(self, log_x: DataArray) -> DataArray:
+    """Project the log-probability array to be symmetric."""
+
+    if log_x.ndim != 4:
+      raise ValueError(f'Expected 4D (B, N, N, K) input, got {log_x.ndim=}.')
+    if log_x.shape[1] != log_x.shape[2]:
+      raise ValueError(
+          f'Spatial dimensions must be equal, got {log_x.shape[1]=} and'
+          f' {log_x.shape[2]=}.'
+      )
+
+    _, n, _, num_categories = log_x.shape
+
+    # Move the category axis before the spatial axes so that jnp.triu
+    # operates on the last two (N, N) dimensions: (B, N, N, K) -> (B, K, N, N).
+    # Doing so, the operations are identical to the discrete case,
+    # see SymmetricPostCorruptionFn.
+    log_x_bknn = jnp.moveaxis(log_x, -1, 1)
+    log_x_tri = jnp.triu(log_x_bknn, k=1)
+    log_x_sym = log_x_tri + jnp.transpose(log_x_tri, axes=(0, 1, 3, 2))
+    log_y = jnp.moveaxis(log_x_sym, 1, -1)
+    # Zero out diagonal entries: set to the no-edge log-probability vector
+    # (all mass on category 0).
+    no_edge_log = jnp.full((num_categories,), -LOGITS_INF, dtype=log_x.dtype)
+    no_edge_log = no_edge_log.at[0].set(0.0)
+    diag_mask = jnp.eye(n, dtype=jnp.bool_)[None, :, :, None]
+    log_y = jnp.where(diag_mask, no_edge_log, log_y)
+    return log_y
+
+
+################################################################################
+# MARK: SimplicialProcess
 ################################################################################
 
 
@@ -118,6 +192,10 @@ class SimplicialProcess(CorruptionProcess):
       for more information.
     safety_epsilon: A small constant added to the denominator of the h-function
       to avoid division by zero.
+    post_corruption_fn: A projection applied to the corrupted log-prob array
+      after each forward-corruption step and after each reverse-diffusion step.
+      Used to enforce structural constraints such as symmetry of edge-attribute
+      matrices.  Defaults to the identity (no projection).
   """
 
   schedule: SimplicialSchedule
@@ -127,6 +205,9 @@ class SimplicialProcess(CorruptionProcess):
   temperature: float = 1.0
   mode: SamplingPrecisionMode = SamplingPrecisionMode.HIGH
   safety_epsilon: float = 1e-6
+  post_corruption_fn: SimplicialPostCorruptionFn = (
+      IdentitySimplicialPostCorruptionFn()
+  )
 
   def __post_init__(self):
     if (
@@ -235,6 +316,10 @@ class SimplicialProcess(CorruptionProcess):
     xt = random_utils.log_dirichlet_fast(key, alpha=dirichlet_param)
 
     logits = x0_oh
+
+    # Apply post-corruption projection (e.g. symmetrisation).
+    xt = self.post_corruption_fn(xt)
+
     target_info = {
         'x0': x0,  # Int[*b 1]; Uncorrupted input data.
         'logits': logits,  # Float[*b K] one-hot encoding of x0.
@@ -283,8 +368,9 @@ class SimplicialProcess(CorruptionProcess):
       temperature: float = 1.0,
       mode: SamplingPrecisionMode = SamplingPrecisionMode.HIGH,
       safety_epsilon: float = 1e-6,
+      post_corruption_fn: SimplicialPostCorruptionFn = IdentitySimplicialPostCorruptionFn(),
   ) -> SimplicialProcess:
-    """Create a CategoricalProcess from a schedule and invariant probs."""
+    """Create a SimplicialProcess with masking invariant distribution."""
     if num_categories < 1:
       raise ValueError(
           f'num_categories must be positive. Got: {num_categories=}'
@@ -299,6 +385,7 @@ class SimplicialProcess(CorruptionProcess):
         temperature=temperature,
         mode=mode,
         safety_epsilon=safety_epsilon,
+        post_corruption_fn=post_corruption_fn,
     )
 
   @classmethod
@@ -310,8 +397,9 @@ class SimplicialProcess(CorruptionProcess):
       temperature: float = 1.0,
       mode: SamplingPrecisionMode = SamplingPrecisionMode.HIGH,
       safety_epsilon: float = 1e-6,
+      post_corruption_fn: SimplicialPostCorruptionFn = IdentitySimplicialPostCorruptionFn(),
   ) -> SimplicialProcess:
-    """Create a CategoricalProcess from a schedule and invariant probs."""
+    """Create a SimplicialProcess with uniform invariant distribution."""
     if num_categories < 1:
       raise ValueError(
           f'num_categories must be positive. Got: {num_categories=}'
@@ -325,4 +413,5 @@ class SimplicialProcess(CorruptionProcess):
         temperature=temperature,
         mode=mode,
         safety_epsilon=safety_epsilon,
+        post_corruption_fn=post_corruption_fn,
     )

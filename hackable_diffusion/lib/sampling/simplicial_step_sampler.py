@@ -72,6 +72,7 @@ def log_beta_shrinkage(
     log_x: jax.Array,
     concentration: jax.Array,
     kappa: float,
+    safety_epsilon: float = 0.0,
 ) -> jax.Array:
   """Beta shrinkage of a Dirichlet sample.
 
@@ -89,6 +90,10 @@ def log_beta_shrinkage(
     log_x: the log-Dirichlet sample of shape (..., num_categories).
     concentration: the concentration scalar or array.
     kappa: the shrinkage parameter in [0, 1].
+    safety_epsilon: a small positive value added to both Beta concentration
+      parameters to avoid the degenerate Beta(0, b) at kappa=0. When
+      safety_epsilon > 0, kappa=0 produces a Beta highly concentrated near zero
+      rather than a point mass, keeping all computations finite.
 
   Returns:
     the shrunk log-sample.
@@ -98,7 +103,10 @@ def log_beta_shrinkage(
   alpha_vec = jnp.broadcast_to(concentration, log_x.shape)
 
   log_b, _ = random_utils.sample_log_beta_joint(
-      key, kappa * alpha_vec, (1.0 - kappa) * alpha_vec, shape=alpha_vec.shape
+      key,
+      kappa * alpha_vec + safety_epsilon,
+      (1.0 - kappa) * alpha_vec + safety_epsilon,
+      shape=alpha_vec.shape,
   )
 
   log_y = log_b + log_x
@@ -117,6 +125,7 @@ class SimplicialDDIMStep(SamplerStep):
 
   corruption_process: SimplicialProcess
   churn: float = 1.0
+  safety_epsilon: float = 1e-6
 
   @kt.typechecked
   def initialize(
@@ -191,9 +200,15 @@ class SimplicialDDIMStep(SamplerStep):
       h_t = alpha_t / (1.0 - alpha_t)
       h_s = alpha_s / (1.0 - alpha_s)
 
+      concentration = eps * (pi + h_t * one_hot_mask)
+
       key, f_key = jax.random.split(key)
       log_pt_kappa = log_beta_shrinkage(
-          f_key, log_x=log_xt, concentration=bar_beta_t, kappa=1.0 - self.churn
+          f_key,
+          log_x=log_xt,
+          concentration=concentration,
+          kappa=1.0 - self.churn,
+          safety_epsilon=self.safety_epsilon,
       )
 
       key, v_key = jax.random.split(key)
@@ -203,12 +218,16 @@ class SimplicialDDIMStep(SamplerStep):
       )
       log_v = random_utils.log_dirichlet_fast(v_key, alpha=alpha_v, shape=())
 
-      # Sample W from Beta(kappa * bar_beta_t, bar_beta_s - kappa * bar_beta_t)
+      # Sample W from Beta(kappa * bar_beta_t, bar_beta_s - kappa * bar_beta_t).
+      # safety_epsilon is added to both parameters to handle the degenerate
+      # case kappa=0 (churn=1), where Beta(0, b) is undefined in JAX.
+      # With safety_epsilon, Beta(eps, b+eps) is concentrated near 0,
+      # matching the correct asymptotic behaviour W->0 as churn->1.
       _, beta_key = jax.random.split(key)
       log_w, log_1_minus_w = random_utils.sample_log_beta_joint(
           beta_key,
-          (1.0 - self.churn) * bar_beta_t,
-          bar_beta_s - (1.0 - self.churn) * bar_beta_t,
+          (1.0 - self.churn) * bar_beta_t + self.safety_epsilon,
+          bar_beta_s - (1.0 - self.churn) * bar_beta_t + self.safety_epsilon,
           shape=target_shape,
       )
 
@@ -216,6 +235,10 @@ class SimplicialDDIMStep(SamplerStep):
       term_2 = log_1_minus_w + log_v
 
     new_xt = jnp.logaddexp(term_1, term_2)
+
+    # Apply the post-corruption projection (e.g. symmetrisation) exactly as
+    # DiscreteDDIMStep / IntegratedDiscreteDDIMStep do after sampling new_xt.
+    new_xt = self.corruption_process.post_corruption_fn(new_xt)
 
     return DiffusionStep(
         xt=new_xt,  # Output is robust logits

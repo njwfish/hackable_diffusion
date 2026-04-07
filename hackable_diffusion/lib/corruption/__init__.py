@@ -39,6 +39,9 @@ from hackable_diffusion.lib.corruption.schedules import RiemannianSchedule
 from hackable_diffusion.lib.corruption.schedules import Schedule
 from hackable_diffusion.lib.corruption.schedules import ShiftedSchedule
 from hackable_diffusion.lib.corruption.schedules import SquareCosineDiscreteSchedule
+from hackable_diffusion.lib.corruption.simplicial import IdentitySimplicialPostCorruptionFn
+from hackable_diffusion.lib.corruption.simplicial import SimplicialPostCorruptionFn
 from hackable_diffusion.lib.corruption.simplicial import SimplicialProcess
 from hackable_diffusion.lib.corruption.simplicial import SimplicialSchedule
+from hackable_diffusion.lib.corruption.simplicial import SymmetricSimplicialPostCorruptionFn
 # pylint: enable=g-importing-member
