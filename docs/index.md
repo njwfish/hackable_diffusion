@@ -66,8 +66,9 @@ system for encoding and injecting conditioning signals via
 
 This module defines the **forward process** of diffusion. It includes
 implementations for corrupting data with noise, such as `GaussianProcess` for
-continuous data and `CategoricalProcess` for discrete data. It also defines the
-noise `schedules` that govern the corruption over time.
+continuous data, `CategoricalProcess` for discrete data, and `RiemannianProcess`
+for data on Riemannian manifolds (e.g., Sphere, SO(3), Torus). It also defines
+the noise `schedules` that govern the corruption over time.
 
 ### [Inference Function](./inference.md)
 
@@ -101,14 +102,18 @@ The `notebooks/` directory contains a set of tutorials that demonstrate how to
 use the library to train and sample from diffusion models. These serve as
 excellent starting points for understanding the library's components in action.
 
-  * **`2d_training.ipynb`**: A minimal example that trains a diffusion model on
+*   **`2d_training.ipynb`**: A minimal example that trains a diffusion model on
     a simple 2D toy dataset.
-  * **`mnist.ipynb`**: Trains a standard continuous diffusion model (Gaussian
+*   **`mnist.ipynb`**: Trains a standard continuous diffusion model (Gaussian
     process) on the MNIST dataset, demonstrating image data handling.
-  * **`mnist_discrete.ipynb`**: Trains a discrete diffusion model on MNIST,
+*   **`mnist_discrete.ipynb`**: Trains a discrete diffusion model on MNIST,
     treating pixel values as categorical data. This showcases the use of
     `CategoricalProcess`.
-  * **`mnist_multimodal.ipynb`**: A more advanced example that trains a
+*   **`mnist_multimodal.ipynb`**: A more advanced example that trains a
     multimodal model to jointly generate MNIST images with discrete and
     continuous diffusion models, demonstrating the "Nested" design pattern in a
     practical setting.
+*   **`riemannian_sphere_training.ipynb`**: Demonstrates Riemannian Flow
+    Matching on the unit sphere S^2.
+*   **`riemannian_torus_ode_to_sde.ipynb`**: Shows how to use Riemannian Flow
+    Matching on the torus manifold for both ODE and SDE sampling.

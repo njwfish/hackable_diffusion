@@ -21,8 +21,8 @@ key components:
 1.  **`TimeSchedule`**: Defines the sequence of discrete time steps `{t_N,
     t_{N-1}, ..., t_0}` for the denoising process.
 2.  **`InferenceFn`**: The function that calls the trained model to make a
-    denoising prediction at a single time step (see the [Inference
-    Function](./inference.md) documentation).
+    denoising prediction at a single time step (see the
+    [Inference Function](./inference.md) documentation).
 3.  **`SamplerStep`**: An implementation of a specific sampling algorithm (e.g.,
     DDIM, SDE) that uses the model's prediction to compute the state at the next
     time step.
@@ -43,10 +43,10 @@ The overall flow for `N` steps is:
 
 Two main data structures manage the state of the sampling loop:
 
-  * **`StepInfo`**: A static container for all information related to a single
+*   **`StepInfo`**: A static container for all information related to a single
     step that can be pre-computed. This includes the step index, the continuous
     time `t`, and a JAX random key for that step.
-  * **`DiffusionStep`**: The complete, dynamic state of the process at a given
+*   **`DiffusionStep`**: The complete, dynamic state of the process at a given
     step. It contains the noisy data `xt` and the `StepInfo` for that step. This
     is the "state" that is carried over from one iteration of the sampling loop
     to the next.
@@ -58,8 +58,8 @@ Two main data structures manage the state of the sampling loop:
 The `TimeSchedule` protocol is responsible for discretizing the `[0, 1]` time
 interval.
 
-  * `UniformTimeSchedule`: Creates linearly spaced time steps.
-  * `EDMTimeSchedule`: Implements the non-uniform time step distribution from
+*   `UniformTimeSchedule`: Creates linearly spaced time steps.
+*   `EDMTimeSchedule`: Implements the non-uniform time step distribution from
     the EDM paper, which can improve sample quality. The `rho` parameter
     controls the density of steps near `t=0`.
 
@@ -80,14 +80,51 @@ computes the next `DiffusionStep`.
 
 Implementations for **Gaussian** processes include:
 
-  * **`DDIMStep`**: Implements the popular Denoising Diffusion Implicit Models
+*   **`DDIMStep`**: Implements the popular Denoising Diffusion Implicit Models
     sampler. It can be deterministic (`stoch_coeff=0.0`) or stochastic
     (`stoch_coeff > 0.0`).
-  * **`SdeStep`**: A stochastic sampler based on discretizing the reverse-time
+*   **`SdeStep`**: A stochastic sampler based on discretizing the reverse-time
     Stochastic Differential Equation (SDE).
-  * **`VelocityStep`**: A sampler that operates using the velocity prediction
+*   **`VelocityStep`**: A sampler that operates using the velocity prediction
     from the model.
-  * **`HeunStep`**: A more accurate second-order solver.
+*   **`HeunStep`**: A more accurate second-order solver.
+
+### Riemannian Sampling Theory
+
+Generating samples from a Riemannian Flow Matching model involves solving a
+time-dependent Ordinary Differential Equation (ODE) on the manifold $$M$$:
+
+$$\frac{dx_t}{dt} = v_{\theta}(x_t, t), \quad x_1 \sim \text{Invariant}(M)$$
+
+where $$v_{\theta}$$ is the learned velocity field. To solve this ODE while
+remaining on the manifold, we use specialized integration schemes that respect
+the manifold's intrinsic geometry.
+
+#### Riemannian Euler Integration
+
+Implementations for **Riemannian** processes include:
+
+*   **`RiemannianFlowSamplerStep`**: Implements **Riemannian Euler
+    integration**. Instead of a standard additive update $$(x + dt \cdot v)$$,
+    this step uses the manifold's **exponential map** to move along the tangent
+    vector $$v$$ while respecting the manifold's curvature:
+
+    $$x_{t-\Delta t} = \text{Exp}_{x_t}(-\Delta t \cdot v_{\theta}(x_t, t))$$
+
+    This ensures that the updated state $$x_{t-\Delta t}$$ remains perfectly on
+    the manifold $$M$$ (e.g., still has unit norm on a sphere) without needing
+    ad-hoc projection steps. This is mathematically equivalent to moving along
+    the unique geodesic starting at $$x_t$$ with initial velocity $$-v_\theta$$.
+
+#### Why use Riemannian Euler?
+
+In contrast, a **Euclidean Euler** step followed by a projection: 1. $$x' =
+x_t - \Delta t \cdot v_\theta$$ 2. $$x_{t-\Delta t} = \text{Project}(x')$$
+
+can lead to numerical drift and artifacts, especially when the manifold is
+highly curved or the step size is large. Riemannian Euler is the "natural"
+first-order integrator for manifolds as it directly utilizes the Riemannian
+metric's shortest paths.
 
 Note that in our implementation we assume that one step corresponds to one NFE.
 While this strong assumption allows you to make the identification `num_steps =
@@ -169,6 +206,31 @@ generated_images = final_step.xt
 
 print(f"Shape of generated images: {generated_images.shape}")
 # Shape of generated images: (4, 32, 32, 3)
+```
+
+### Riemannian Sampling Example
+
+For manifolds like the Sphere or SO(3), the setup is similar but uses
+Riemannian-specific components.
+
+```python
+from hackable_diffusion.lib import manifolds
+from hackable_diffusion.lib.corruption.riemannian import RiemannianProcess
+from hackable_diffusion.lib.sampling.riemannian_sampling import RiemannianFlowSamplerStep
+
+# 1. Define manifold and process
+manifold = manifolds.Sphere()
+process = RiemannianProcess(manifold=manifold)
+
+# 2. Configure Sampler Step
+stepper = RiemannianFlowSamplerStep(corruption_process=process)
+
+# 3. Create the sampler
+sampler = DiffusionSampler(
+    time_schedule=UniformTimeSchedule(), # or EDM
+    stepper=stepper,
+    num_steps=50,
+)
 ```
 
 This modular setup makes it easy to experiment with different samplers (e.g.,

@@ -140,13 +140,57 @@ print(f"Output shape: {output.shape}")
 
 For simpler, non-image data, a `ConditionalMLP` backbone is provided. It
 processes the input `x`, combines it with conditioning embeddings, and passes it
-through a series of dense layers. This module is mainly use for testing
+through a series of dense layers. This module is mainly used for testing
 purposes.
+
+### `RiemannianConditionalBackbone`
+
+(`lib/architecture/riemannian.py`)
+
+A specialized wrapper for any `ConditionalBackbone` that handles Riemannian
+manifold constraints. Its primary role is to ensure that the model's output
+`velocity` is a valid **tangent vector** at the point `xt`.
+
+This is achieved by applying the manifold's **`project`** operator to the raw
+output of the underlying backbone.
+
+#### Riemannian Projections
+
+Each manifold defines a `project(x, v)` method that ensures the output $$v$$ is
+a valid tangent vector at point $$x$$.
+
+*   **Sphere ($$S^d$$)**: The projection is $$v_{\text{tangent}} = v - \langle
+    x, v \rangle x$$, which removes the component of $$v$$ parallel to $$x$$.
+*   **SO(3)**: The projection maps a $$3 \times 3$$ matrix $$V$$ to the tangent
+    space $$T_R SO(3)$$ by computing the skew-symmetric part of the relative
+    velocity in the Lie algebra: $$R \cdot \text{skew}(R^T V)$$, where
+    $$\text{skew}(\Omega) = 0.5(\Omega - \Omega^T)$$.
+
+By wrapping a standard neural network (e.g., a UNet) in this backbone, we can
+learn complex velocity fields on manifolds using standard architectures.
+
+#### Example Usage
+
+```python
+from hackable_diffusion.lib import manifolds
+from hackable_diffusion.lib.architecture.riemannian import RiemannianConditionalBackbone
+from hackable_diffusion.lib.architecture.mlp import ConditionalMLP
+
+# 1. Choose a manifold
+manifold = manifolds.Sphere()
+
+# 2. Create a standard backbone
+mlp = ConditionalMLP(num_features=256, num_layers=3)
+
+# 3. Wrap it in a RiemannianConditionalBackbone
+model = RiemannianConditionalBackbone(
+    backbone=mlp,
+    manifold=manifold,
+)
+```
 
 The conditioning mechanism is simpler here, limited to `SUM` or `CONCATENATE` of
 the conditioning embeddings with the intermediate representation of `x`.
-
-## Attention
 
 ### `MultiHeadAttention`
 

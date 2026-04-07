@@ -157,4 +157,44 @@ loss requires a `DiscreteSchedule`.
 ### `NoWeightDiscreteLoss`
 
 This is a concrete implementation that computes discrete diffusion loss without
-any weighting (i.e. weight=1).
+
+## any weighting (i.e. weight=1).
+
+## Riemannian Flow Matching Loss
+
+Training a Riemannian Flow Matching (RFM) model requires a loss function that
+respects the intrinsic geometry of the manifold $$(M, g)$$.
+
+### Metric-Aware Loss
+
+The **Riemannian Flow Matching loss** is defined as the squared norm of the
+difference between the model's velocity prediction $$v_\theta$$ and the true
+geodesic velocity $$u_t$$:
+
+$$L(\theta) = \mathbb{E}_{t, x_0, x_1} [ \| v_{\theta}(x_t, t) - u_t(x_t | x_0, x_1) \|_{g}^2 ]$$
+
+where the norm is induced by the Riemannian metric $$g$$ at point $$x_t$$:
+
+$$\| v \|_{g} = \sqrt{g_{x_t}(v, v)}$$
+
+### Implementation for Embedded Manifolds
+
+For many manifolds implemented in this library (like the Sphere $$S^d$$ or
+$$SO(3)$$), the Riemannian metric is induced by the standard Euclidean metric of
+the ambient space $$\mathbb{R}^n$$. In these cases, the loss simplifies to:
+
+$$L(\theta) = \mathbb{E}_{t, x_0, x_1} [ \| v_{\theta}(x_t, t) - u_t(x_t | x_0, x_1) \|_{2}^2 ]$$
+
+**Crucially**, this equivalence only holds if $$v_{\theta}$$ and $$u_t$$ are
+both valid **tangent vectors** (i.e., $$v, u \in T_{x_t} M$$). The library
+ensures this via:
+
+1.  **True Target**: The `RiemannianProcess` returns a $$u_t$$ that is
+    mathematically guaranteed to be tangent to the manifold.
+2.  **Model Forecast**: The **`RiemannianConditionalBackbone`** (see
+    [Architecture docs](./architecture.md)) acts as a wrapper that projects the
+    raw model output onto the tangent space $$T_{x_t} \mathcal{M}$$ before
+    computing the loss.
+
+By enforcing the tangent space constraint, the RFM objective can be optimized
+using standard MSE loss while remaining geometrically rigorous.
