@@ -130,6 +130,12 @@ def _dot_product_attention(
 ) -> Float["batch sequence_query head*dim"]:
   """Performs dot product attention.
 
+  Uses ``jax.nn.dot_product_attention`` when available (JAX >= 0.4),
+  which dispatches to CuDNN flash attention on supported GPUs (H100,
+  A100) -- only when ``rescale`` is a scalar (not QK-normalized
+  attention) and no mask is supplied.  Falls back to explicit
+  materialization otherwise.
+
   Args:
     q: Query tensor.
     k: Key tensor.
@@ -141,26 +147,38 @@ def _dot_product_attention(
   Returns:
     The output tensor.
   """
-
   b, _, t, _ = q.shape
 
-  # Attention scores
-  attn_logits = jnp.einsum("bhtd,bhsd->bhts", q, k) * rescale
-
-  # We apply the mask to the logits before softmax so that the softmax is zero
-  # for masked tokens.
-  if mask is not None:
-    bcast_mask = jnp.expand_dims(mask, axis=(1, 2))
-    attn_logits = jnp.where(bcast_mask, attn_logits, MASK_LOGITS_VALUE)
-
-  # Softmax and attention weights
-  attn_weights = _stable_softmax(logits=attn_logits)
-
-  # Calculate attention output
-  attn_output = jnp.einsum("bhts,bhsd->bhtd", attn_weights, v)
-
-  # Merge heads and project to output dimension
-  attn_output = attn_output.transpose(0, 2, 1, 3).reshape(b, t, -1)
+  rescale_is_scalar = (
+      isinstance(rescale, (int, float)) or
+      (hasattr(rescale, 'shape') and rescale.shape == ())
+  )
+  if (
+      hasattr(jax.nn, 'dot_product_attention')
+      and rescale_is_scalar
+      and mask is None
+  ):
+    # jax.nn.dot_product_attention expects (b, t, h, d) layout.
+    if isinstance(rescale, (int, float)):
+      scale_val = float(rescale)
+    else:
+      scale_val = rescale.item() if hasattr(rescale, 'item') else float(rescale)
+    q_t = q.transpose(0, 2, 1, 3)  # (b, t, h, d)
+    k_t = k.transpose(0, 2, 1, 3)  # (b, s, h, d)
+    v_t = v.transpose(0, 2, 1, 3)  # (b, s, h, d)
+    attn_output = jax.nn.dot_product_attention(
+        q_t, k_t, v_t, scale=scale_val,
+    )  # (b, t, h, d)
+    attn_output = attn_output.reshape(b, t, -1)  # (b, t, h*d)
+  else:
+    # Fallback: explicit attention matrix materialization (handles mask).
+    attn_logits = jnp.einsum("bhtd,bhsd->bhts", q, k) * rescale
+    if mask is not None:
+      bcast_mask = jnp.expand_dims(mask, axis=(1, 2))
+      attn_logits = jnp.where(bcast_mask, attn_logits, MASK_LOGITS_VALUE)
+    attn_weights = _stable_softmax(logits=attn_logits)
+    attn_output = jnp.einsum("bhts,bhsd->bhtd", attn_weights, v)
+    attn_output = attn_output.transpose(0, 2, 1, 3).reshape(b, t, -1)
 
   return attn_output
 

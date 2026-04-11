@@ -198,6 +198,37 @@ class DiffusionSamplingTest(parameterized.TestCase):
     # confirm that the last step is the same as the carry
     chex.assert_trees_all_equal(all_xt[-1], last_step.xt)
 
+  def test_sample_without_trajectory(self):
+    sample_fn = sampling.DiffusionSampler(
+        time_schedule=self.time_schedule,
+        stepper=self.stepper,
+        num_steps=5,
+        return_trajectory=False,
+    )
+    last_step, all_steps = sample_fn(
+        inference_fn=self.dummy_inference_fn,
+        initial_noise=self.initial_noise,
+        conditioning=self.conditioning,
+        rng=jax.random.PRNGKey(0),
+    )
+
+    self.assertIsNone(all_steps)
+    chex.assert_trees_all_equal(
+        last_step.xt,
+        jnp.repeat(
+            jnp.array([
+                [
+                    [1.0, 1.0, 1.0, 0.0],
+                    [0.0, 1.0, 1.0, 1.0],
+                    [1.0, 0.0, 1.0, 1.0],
+                    [1.0, 1.0, 0.0, 1.0],
+                ],
+            ]),
+            repeats=2,
+            axis=0,
+        ),
+    )
+
   @parameterized.named_parameters(
       ('zero_steps', 0),
       ('negative_steps', -1),

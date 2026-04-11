@@ -294,6 +294,14 @@ class SimplicialProcess(CorruptionProcess):
     Note that the mask is True if the original data is present in x0. The mask
     is False if the original data is replaced by noise.
 
+    Supports two input formats:
+    - Integer tokens: x0 shape (*batch, 1) with int dtype.  Converted to
+      one-hot internally (original behaviour).
+    - Simplex vectors: x0 shape (*batch, process_num_categories) with float
+      dtype.  Used directly as the clean direction for Dirichlet corruption.
+      This is needed for multiscale training where coarse-level data is a
+      composition (block-average of one-hot vectors).
+
     Args:
       key: The random key.
       x0: The uncorrupted data.
@@ -303,12 +311,18 @@ class SimplicialProcess(CorruptionProcess):
       xt: The corrupted data.
       target_info: The target info for the corrupted data.
     """
-    # get the unused mask
-    unused_mask = x0 == self.unused_token
+    # Accept both integer tokens and float simplex vectors.  Integer input
+    # is the original behaviour (one-hot then Dirichlet); float input lets
+    # multiscale training pass coarse-level compositional probabilities
+    # directly without the lossy argmax round-trip through integers.
+    if jnp.issubdtype(x0.dtype, jnp.integer):
+      unused_mask = x0 == self.unused_token
+      x0_oh = jax.nn.one_hot(x0[..., 0], self.process_num_categories)
+    else:
+      unused_mask = None
+      x0_oh = x0
 
-    # compute one-hot encoding of x0
-    x0_oh = jax.nn.one_hot(x0[..., 0], self.process_num_categories)
-    time = utils.bcast_right(time, x0.ndim)
+    time = utils.bcast_right(time, x0_oh.ndim)
 
     # compute Dirichlet parameters
     dirichlet_param = self.invariant_probs_vec + self.h(time) * x0_oh
@@ -321,12 +335,13 @@ class SimplicialProcess(CorruptionProcess):
     xt = self.post_corruption_fn(xt)
 
     target_info = {
-        'x0': x0,  # Int[*b 1]; Uncorrupted input data.
-        'logits': logits,  # Float[*b K] one-hot encoding of x0.
+        'x0': x0,  # Int[*b 1] or Float[*b K]; uncorrupted input.
+        'logits': logits,  # Float[*b K]; one-hot or simplex direction.
     }
 
-    # Replace the unused probabilities with the unused_token.
-    xt = jnp.where(unused_mask, self.unused_token, xt)
+    # Replace the unused probabilities with the unused_token (integer input only).
+    if unused_mask is not None:
+      xt = jnp.where(unused_mask, self.unused_token, xt)
 
     return xt, target_info
 

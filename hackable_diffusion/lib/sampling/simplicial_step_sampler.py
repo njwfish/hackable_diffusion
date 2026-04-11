@@ -121,10 +121,26 @@ def log_beta_shrinkage(
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class SimplicialDDIMStep(SamplerStep):
-  """This is the simplicial version of the DDIM step."""
+  """Simplicial DDIM step with churn support.
+
+  Implements Algorithm 1 from the Simplicial Diffusion manuscript.
+  The churn parameter κ ∈ [0, 1] controls stochasticity during sampling:
+    - κ = 1 (default): Deterministic DDIM-like update. P_t is used directly
+      (no Beta-shrinkage). Equivalent to the original implementation.
+    - κ = 0: Fully stochastic. P_t is ignored; V is sampled independently.
+    - 0 < κ < 1: Intermediate. P_t is shrunk via Beta-shrinkage toward
+      Dir(κε), injecting controlled noise.
+
+  The update rule is:
+    1. Predict P̂_0 from the model.
+    2. Compute W ~ Beta(κε/(1-α_t), ε/(1-α_s) - κε/(1-α_t)).
+    3. Compute V ~ Dir((1-κ)ε·π + (ε·α_s/(1-α_s) - κε·α_t/(1-α_t))·P̂_0).
+    4. Apply Beta-shrinkage: P_t^κ = F_κ(P_t) (when κ < 1).
+    5. Update: P_s = W·P_t^κ + (1-W)·V.
+  """
 
   corruption_process: SimplicialProcess
-  churn: float = 1.0
+  churn: float = 1.0  # κ ∈ [0, 1]
   safety_epsilon: float = 1e-6
 
   @kt.typechecked
@@ -145,10 +161,11 @@ class SimplicialDDIMStep(SamplerStep):
       prediction: TargetInfo,
       current_step: DiffusionStep,
       next_step_info: StepInfo,
+      eps: Float = 1e-6,
   ) -> DiffusionStep:
 
     current_step_info = current_step.step_info
-    log_xt = current_step.xt  # Input is now logits (log-probabilities)
+    log_xt = current_step.xt  # log-probabilities on the simplex
 
     time = current_step_info.time
     next_time = next_step_info.time
@@ -158,90 +175,97 @@ class SimplicialDDIMStep(SamplerStep):
     next_time = utils.bcast_right(next_time, log_xt.ndim)
     key = next_step_info.rng
 
-    # Get logits
+    temperature = self.corruption_process.temperature
+    kappa = self.churn
+
+    # Get model prediction (logits for P̂_0)
     logits = self.corruption_process.convert_predictions(
         prediction,
         log_xt,
         time,
     )['logits']
 
-    # Sample hard token
-    key, sample_key = jax.random.split(key)
-    sample_idx = jax.random.categorical(key=sample_key, logits=logits)
-    num_cats = self.corruption_process.process_num_categories
-    one_hot_mask = jax.nn.one_hot(sample_idx, num_cats, dtype=log_xt.dtype)
-    log_sample_oh = jnp.where(one_hot_mask > 0.5, 0.0, -1e30)
-
-    # Compute parameters
-    eps = self.corruption_process.temperature
+    # Schedule values
     alpha_t = self.corruption_process.schedule.alpha(time)
     alpha_s = self.corruption_process.schedule.alpha(next_time)
 
-    bar_beta_t = eps / (1.0 - alpha_t)
-    bar_beta_s = eps / (1.0 - alpha_s)
+    key, beta_key, dir_key, shrink_key = jax.random.split(key, 4)
 
+    # ------------------------------------------------------------------
+    # Step 2: Sample mixing weight W ~ Beta(a_W, b_W)
+    # a_W = κε/(1-α_t),  b_W = ε/(1-α_s) - κε/(1-α_t)
+    # ------------------------------------------------------------------
     target_shape = log_xt.shape[:-1] + (1,)
+    a_w = kappa * temperature / (1.0 - alpha_t)
+    b_w = temperature / (1.0 - alpha_s) - kappa * temperature / (1.0 - alpha_t)
+    a_w = jnp.broadcast_to(a_w, target_shape)
+    b_w = jnp.broadcast_to(b_w, target_shape)
 
-    if self.churn == 0.0:
-      # Regular DDIM step
-      shape_0 = bar_beta_t
-      shape_1 = bar_beta_s - shape_0
+    log_w, log_1_minus_w = fast_random.sample_log_beta_joint(
+        beta_key, a_w, b_w, shape=a_w.shape
+    )
 
-      _, beta_key = jax.random.split(key)
-      log_w, log_1_minus_w = fast_random.sample_log_beta_joint(
-          beta_key, shape_0, shape_1, shape=target_shape
+    # ------------------------------------------------------------------
+    # Step 3: Sample target direction V ~ Dir(β_V)
+    # β_V = (1-κ)ε·π + (ε·α_s/(1-α_s) - κε·α_t/(1-α_t))·P̂_0
+    # ------------------------------------------------------------------
+    pi = self.corruption_process.invariant_probs_vec  # [K]
+    # Softmax of logits gives P̂_0 (predicted clean distribution)
+    log_p0_hat = jax.nn.log_softmax(logits)
+    p0_hat = jnp.exp(log_p0_hat)
+
+    prior_weight = (1.0 - kappa) * temperature  # scalar
+    pred_weight = (
+        temperature * alpha_s / (1.0 - alpha_s)
+        - kappa * temperature * alpha_t / (1.0 - alpha_t)
+    )  # [broadcastable]
+
+    beta_v = prior_weight * pi + pred_weight * p0_hat  # [..., K]
+    # Clamp to avoid zero/negative concentration params
+    beta_v = jnp.maximum(beta_v, eps)
+
+    log_v = fast_random.log_dirichlet_fast(dir_key, beta_v)
+
+    # ------------------------------------------------------------------
+    # Step 4: Beta-shrinkage F_κ(P_t) when κ < 1
+    # For each k: b_k ~ Beta(κε·P_{t,k}, (1-κ)ε·P_{t,k})
+    # P_t^κ = normalize(b ⊙ P_t)
+    # When κ = 1, F_κ is identity (no shrinkage needed).
+    # ------------------------------------------------------------------
+    if kappa < 1.0:
+      # P_t on the simplex (from log-space)
+      p_t = jax.nn.softmax(log_xt)  # [..., K]
+
+      shrink_a = kappa * temperature * p_t        # [..., K]
+      shrink_b = (1.0 - kappa) * temperature * p_t  # [..., K]
+      # Clamp to avoid zero Beta params
+      shrink_a = jnp.maximum(shrink_a, eps)
+      shrink_b = jnp.maximum(shrink_b, eps)
+
+      # Sample b_k ~ Beta(shrink_a_k, shrink_b_k) for each category k
+      log_bk, _ = fast_random.sample_log_beta_joint(
+          shrink_key, shrink_a, shrink_b, shape=shrink_a.shape
       )
-
-      term_1 = log_w + log_xt
-      term_2 = log_1_minus_w + log_sample_oh
+      # P_t^κ = normalize(b ⊙ P_t) in log-space
+      log_pt_kappa = log_bk + log_xt
+      log_pt_kappa = jax.nn.log_softmax(log_pt_kappa)
     else:
-      # Churn step
-      pi = self.corruption_process.invariant_probs_vec
-      h_t = alpha_t / (1.0 - alpha_t)
-      h_s = alpha_s / (1.0 - alpha_s)
+      log_pt_kappa = log_xt
 
-      concentration = eps * (pi + h_t * one_hot_mask)
-
-      key, f_key = jax.random.split(key)
-      log_pt_kappa = log_beta_shrinkage(
-          f_key,
-          log_x=log_xt,
-          concentration=concentration,
-          kappa=1.0 - self.churn,
-          safety_epsilon=self.safety_epsilon,
-      )
-
-      key, v_key = jax.random.split(key)
-      alpha_v = (
-          self.churn * eps * pi
-          + (eps * h_s - (1.0 - self.churn) * eps * h_t) * one_hot_mask
-      )
-      log_v = fast_random.log_dirichlet_fast(v_key, alpha=alpha_v, shape=())
-
-      # Sample W from Beta(kappa * bar_beta_t, bar_beta_s - kappa * bar_beta_t).
-      # safety_epsilon is added to both parameters to handle the degenerate
-      # case kappa=0 (churn=1), where Beta(0, b) is undefined in JAX.
-      # With safety_epsilon, Beta(eps, b+eps) is concentrated near 0,
-      # matching the correct asymptotic behaviour W->0 as churn->1.
-      _, beta_key = jax.random.split(key)
-      log_w, log_1_minus_w = fast_random.sample_log_beta_joint(
-          beta_key,
-          (1.0 - self.churn) * bar_beta_t + self.safety_epsilon,
-          bar_beta_s - (1.0 - self.churn) * bar_beta_t + self.safety_epsilon,
-          shape=target_shape,
-      )
-
-      term_1 = log_w + log_pt_kappa
-      term_2 = log_1_minus_w + log_v
-
-    new_xt = jnp.logaddexp(term_1, term_2)
+    # ------------------------------------------------------------------
+    # Step 5: Update P_s = W·P_t^κ + (1-W)·V
+    # ------------------------------------------------------------------
+    new_xt = jnp.logaddexp(
+        log_w + log_pt_kappa,
+        log_1_minus_w + log_v,
+    )
 
     # Apply the post-corruption projection (e.g. symmetrisation) exactly as
     # DiscreteDDIMStep / IntegratedDiscreteDDIMStep do after sampling new_xt.
     new_xt = self.corruption_process.post_corruption_fn(new_xt)
 
     return DiffusionStep(
-        xt=new_xt,  # Output is robust logits
+        xt=new_xt,
         step_info=next_step_info,
         aux={'logits': logits},
     )

@@ -19,6 +19,8 @@ from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import normalization
+from hackable_diffusion.lib.hd_typing import typechecked  # pylint: disable=g-multiple-import,g-importing-member
+import jax
 import jax.numpy as jnp
 import kauldron.ktyping as kt
 
@@ -86,6 +88,7 @@ class DiT(nn.Module, ConditionalBackbone):
   dtype: DType = jnp.float32
   pad_token: int = PAD_TOKEN
   use_padding_mask: bool = False
+  remat: bool = False  # Gradient checkpointing: recompute blocks during backward
 
   def setup(self):
     self.conditional_norm = normalization.NormalizationLayerFactory(
@@ -122,12 +125,25 @@ class DiT(nn.Module, ConditionalBackbone):
     if self.absolute_posenc:
       tokens_emb = tokens_emb + self.absolute_posenc(tokens_emb)
 
-    # Apply DiT blocks.
+    # Apply DiT blocks (with optional per-block gradient checkpointing).
     cond = adaptive_norm_emb
-    for i in range(1, self.num_blocks + 1):
-      tokens_emb = self.block.copy(name=f"Block_{i}")(
-          tokens_emb, cond, is_training=is_training, mask=padding_mask
-      )
+    if self.remat:
+      # Per-block gradient checkpointing: recompute each block during
+      # backward to reduce peak memory.  Wrap with nn.remat keeping
+      # is_training as a static Python bool (nn.remat traces it,
+      # breaking @typechecked on the block).
+      _is_train = is_training
+      _padding_mask = padding_mask
+      def _block_apply(module, tokens, cond, _it=_is_train, _pm=_padding_mask):
+        return module(tokens, cond, is_training=_it, mask=_pm)
+      for i in range(1, self.num_blocks + 1):
+        block_i = self.block.copy(name=f"Block_{i}")
+        tokens_emb = nn.remat(_block_apply)(block_i, tokens_emb, cond)
+    else:
+      for i in range(1, self.num_blocks + 1):
+        tokens_emb = self.block.copy(name=f"Block_{i}")(
+            tokens_emb, cond, is_training=is_training, mask=padding_mask,
+        )
 
     tokens_emb = self.conditional_norm(tokens_emb, c=nn.silu(cond))
 

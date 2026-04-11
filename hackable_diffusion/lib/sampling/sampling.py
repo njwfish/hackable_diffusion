@@ -62,7 +62,7 @@ class SampleFn(Protocol):
       rng: PRNGKey,
       initial_noise: DataTree,
       conditioning: Conditioning,
-  ) -> tuple[DiffusionStepTree, DiffusionStepTree]:
+  ) -> tuple[DiffusionStepTree, DiffusionStepTree | None]:
     ...
 
 
@@ -130,11 +130,15 @@ class DiffusionSampler(SampleFn):
     time_schedule: Defines the sequence of time steps for the process.
     stepper: The sampling algorithm (e.g., DDIM) that updates the state.
     num_steps: The total number of denoising steps.
+    return_trajectory: Whether to materialize and return the full diffusion
+      trajectory. Disable this when only the final sample is needed to avoid
+      carrying the entire step history in memory.
   """
 
   time_schedule: TimeSchedule
   stepper: SamplerStep
   num_steps: int
+  return_trajectory: bool = True
 
   @kt.typechecked
   def __call__(
@@ -143,7 +147,7 @@ class DiffusionSampler(SampleFn):
       rng: PRNGKey,
       initial_noise: DataTree,
       conditioning: Conditioning | None = None,
-  ) -> tuple[DiffusionStepTree, DiffusionStepTree]:
+  ) -> tuple[DiffusionStepTree, DiffusionStepTree | None]:
     """Performs a full reverse diffusion sampling loop for a single sample.
 
     This function orchestrates the denoising process, starting from an initial
@@ -159,7 +163,7 @@ class DiffusionSampler(SampleFn):
       A tuple containing:
         - The final `DiffusionStepTree` of the sampling process.
         - A `DiffusionStepTree` PyTree containing the full trajectory of all
-        steps.
+        steps, or `None` when `return_trajectory=False`.
     """
     if self.num_steps < 2:
       raise ValueError(
@@ -191,11 +195,24 @@ class DiffusionSampler(SampleFn):
           step_carry,
           next_step_info,
       )
-      return next_step, next_step  # ('carryover', 'accumulated')
+      if self.return_trajectory:
+        return next_step, next_step  # ('carryover', 'accumulated')
+      return next_step, None
 
-    before_last_step, intermediate_steps = jax.lax.scan(
-        scan_body, first_step, next_step_infos
+    next_step_leaves = jax.tree.leaves(next_step_infos)
+    num_intermediate_steps = (
+        0 if not next_step_leaves else int(next_step_leaves[0].shape[0])
     )
+    if num_intermediate_steps == 0:
+      before_last_step = first_step
+      intermediate_steps = jax.tree.map(
+          lambda x: jnp.expand_dims(x, 0)[:0],
+          first_step,
+      )
+    else:
+      before_last_step, intermediate_steps = jax.lax.scan(
+          scan_body, first_step, next_step_infos
+      )
 
     xt, time = _get_input_inference_fn(before_last_step)
     last_prediction = inference_fn(
@@ -209,6 +226,9 @@ class DiffusionSampler(SampleFn):
         before_last_step,
         last_step_info,
     )
+
+    if not self.return_trajectory:
+      return last_step, None
 
     all_steps = _concat_pytree(first_step, intermediate_steps, last_step)
     return last_step, all_steps
