@@ -205,14 +205,22 @@ class DiffusionSampler(SampleFn):
     )
     if num_intermediate_steps == 0:
       before_last_step = first_step
-      intermediate_steps = jax.tree.map(
-          lambda x: jnp.expand_dims(x, 0)[:0],
-          first_step,
-      )
-    else:
+      if self.return_trajectory:
+        intermediate_steps = jax.tree.map(
+            lambda x: jnp.expand_dims(x, 0)[:0],
+            first_step,
+        )
+      else:
+        intermediate_steps = None
+    elif self.return_trajectory:
       before_last_step, intermediate_steps = jax.lax.scan(
           scan_body, first_step, next_step_infos
       )
+    else:
+      before_last_step, _ = jax.lax.scan(
+          scan_body, first_step, next_step_infos
+      )
+      intermediate_steps = None
 
     xt, time = _get_input_inference_fn(before_last_step)
     last_prediction = inference_fn(
