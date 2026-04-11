@@ -125,24 +125,21 @@ class DiT(nn.Module, ConditionalBackbone):
     if self.absolute_posenc:
       tokens_emb = tokens_emb + self.absolute_posenc(tokens_emb)
 
-    # Apply DiT blocks (with optional per-block gradient checkpointing).
+    # Apply DiT blocks, with optional per-block gradient checkpointing.
     cond = adaptive_norm_emb
     if self.remat:
-      # Per-block gradient checkpointing: recompute each block during
-      # backward to reduce peak memory.  Wrap with nn.remat keeping
-      # is_training as a static Python bool (nn.remat traces it,
-      # breaking @typechecked on the block).
-      _is_train = is_training
-      _padding_mask = padding_mask
-      def _block_apply(module, tokens, cond, _it=_is_train, _pm=_padding_mask):
-        return module(tokens, cond, is_training=_it, mask=_pm)
+      _is_train = is_training  # closure-capture as a static Python bool
+      def _block_apply(module, tokens_emb, cond, mask):
+        return module(tokens_emb, cond, is_training=_is_train, mask=mask)
       for i in range(1, self.num_blocks + 1):
         block_i = self.block.copy(name=f"Block_{i}")
-        tokens_emb = nn.remat(_block_apply)(block_i, tokens_emb, cond)
+        tokens_emb = nn.remat(_block_apply)(
+            block_i, tokens_emb, cond, padding_mask
+        )
     else:
       for i in range(1, self.num_blocks + 1):
         tokens_emb = self.block.copy(name=f"Block_{i}")(
-            tokens_emb, cond, is_training=is_training, mask=padding_mask,
+            tokens_emb, cond, is_training=is_training, mask=padding_mask
         )
 
     tokens_emb = self.conditional_norm(tokens_emb, c=nn.silu(cond))
