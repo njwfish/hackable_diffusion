@@ -92,6 +92,7 @@ class DenseEmbedder(nn.Module, BaseLogitEmbedder):
     dtype: The dtype to use for the simplex model.
   """
 
+  embedding_dim: int = 64
   adapt_to_image_like_data: bool = False
   dtype: DType = jnp.float32
 
@@ -162,7 +163,7 @@ class ConditionalSimplicialBackbone(nn.Module, ConditionalBackbone):
       x: Float['batch *other V'],
       conditioning_embeddings: dict[ConditioningMechanism, Float['batch ...']],
       is_training: bool,
-  ) -> Float['batch *other V']:
+  ) -> Float['batch *other K']:
 
     # Embed the probability distributions.
     logit_embeddings = self.logit_embedder(x, is_training=is_training)
