@@ -57,6 +57,7 @@ class ConditioningMechanism(enum.StrEnum):
   CROSS_ATTENTION = "cross_attention"
   CONCATENATE = "concatenate"
   SUM = "sum"
+  SELF_CONDITIONING = "self_conditioning"
   CUSTOM = "custom"
 
 
