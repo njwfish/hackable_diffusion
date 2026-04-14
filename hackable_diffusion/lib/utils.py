@@ -419,17 +419,3 @@ def get_dummy_batch(
       dtype,
       is_leaf=is_tuple_of_ints,
   )
-
-
-################################################################################
-# MARK: Utils for random numbers
-################################################################################
-
-
-@kt.typechecked
-def jax_randint(
-    key: PRNGKey,
-    minval: int = 0,
-    maxval: int = jnp.iinfo(jnp.int32).max,
-) -> int:
-  return jax.random.randint(key, shape=(), minval=minval, maxval=maxval).item()
