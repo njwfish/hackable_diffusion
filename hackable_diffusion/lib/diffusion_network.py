@@ -21,7 +21,9 @@ from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import conditioning_encoder
+from hackable_diffusion.lib.corruption import discrete
 from hackable_diffusion.lib.corruption import schedules
+from hackable_diffusion.lib.corruption import simplicial
 import jax
 import jax.numpy as jnp
 import kauldron.ktyping as kt
@@ -183,6 +185,173 @@ class DiffusionNetwork(nn.Module, BaseDiffusionNetwork):
         name='Backbone'
     )(
         x=xt_rescaled,
+        conditioning_embeddings=conditioning_embeddings,
+        is_training=is_training,
+    )
+
+    return {self.prediction_type: backbone_outputs}
+
+
+################################################################################
+# MARK: Self-Conditioning Diffusion Network
+################################################################################
+
+
+class SelfConditioningDiffusionNetwork(nn.Module, BaseDiffusionNetwork):
+  """DiffusionNetwork with self-conditioning on predicted logits.
+
+  Implements self-conditioning from the discrete diffusion literature
+  (e.g. "Analog Bits: Generating Discrete Data using Diffusion Models with
+  Self-Conditioning", arXiv:2208.04202).
+
+  During training, with probability ``self_cond_prob`` (default 0.5):
+
+    1. Run the network once with zero logits input to get initial predictions.
+    2. ``stop_gradient`` on the initial logits.
+    3. Concatenate the logits to the noisy input along the last axis.
+    4. Run the network again and return the output.
+
+  During inference (``is_training=False``), self-conditioning is always applied.
+
+  The ``backbone_network`` is expected to accept the wider input
+  (noisy input concatenated with predicted logits on the last axis).
+  This backbone only supports a discrete corruption process.
+
+  Note: ``prediction_type`` must be ``'logits'``.
+
+  Attributes:
+    backbone_network: The backbone network to use for the diffusion model.
+    conditioning_encoder: The conditioning encoder to use for the diffusion
+      model.
+    prediction_type: Only `logits` is supported at the moment.
+    process: The corruption process used by the diffusion model, either
+      `discrete.CategoricalProcess` or `simplicial.SimplicialProcess`.
+    self_cond_prob: Probability of applying self-conditioning during training.
+      During inference, self-conditioning is always applied.
+    data_dtype: The dtype of the data.
+    input_rescaler: Optional input rescaler.
+    time_rescaler: Optional time rescaler.
+    rng_collection: The PRNG collection name to use for drawing the
+      self-conditioning mask. Defaults to ``'self_conditioning'``.
+  """
+
+  backbone_network: arch_typing.ConditionalBackbone
+  conditioning_encoder: conditioning_encoder.BaseConditioningEncoder
+  prediction_type: str
+  process: discrete.CategoricalProcess | simplicial.SimplicialProcess
+  self_cond_prob: float = 0.5
+  data_dtype: DType = jnp.float32
+  input_rescaler: InputRescaler | None = None
+  time_rescaler: TimeRescaler | None = None
+  rng_collection: str = 'self_conditioning'
+
+  def __post_init__(self):
+    super().__post_init__()
+    if self.prediction_type != 'logits':
+      raise ValueError(
+          '`prediction_type` must be `logits` for '
+          'SelfConditioningDiffusionNetwork, '
+          f'got {self.prediction_type!r}.'
+      )
+
+  def initialize_variables(
+      self,
+      input_shape: Shape,
+      conditioning_shape: ConditioningShape,
+      key: PRNGKey,
+      is_training: bool = False,
+  ) -> PyTree:
+    """Initializes the variables of the model from shapes."""
+    dummy_xt = utils.get_dummy_batch_fixed_dtype(
+        input_shape, dtype=self.data_dtype
+    )
+    dummy_conditioning = utils.get_dummy_batch_fixed_dtype(
+        conditioning_shape, dtype=jnp.float32
+    )
+    dummy_time = utils.get_dummy_batch_fixed_dtype(
+        input_shape, only_first_axis=True, dtype=jnp.float32
+    )
+
+    params_key, sc_key, dropout_key = jax.random.split(key, 3)
+    return self.init(
+        {
+            'params': params_key,
+            self.rng_collection: sc_key,
+            'dropout': dropout_key,
+        },
+        time=dummy_time,
+        xt=dummy_xt,
+        conditioning=dummy_conditioning,
+        is_training=is_training,
+    )
+
+  @nn.compact
+  @kt.typechecked
+  def __call__(
+      self,
+      time: TimeArray,
+      xt: DataArray,
+      conditioning: Conditioning | None,
+      is_training: bool,
+  ) -> TargetInfo:
+
+    time_rescaled = (
+        self.time_rescaler(time) if self.time_rescaler is not None else time
+    )
+
+    xt_rescaled = (
+        self.input_rescaler(time, xt) if self.input_rescaler is not None else xt
+    )
+
+    conditioning_embeddings = cast(nn.Module, self.conditioning_encoder).copy(
+        name='ConditioningEncoder'
+    )(
+        time=time_rescaled,
+        conditioning=conditioning,
+        is_training=is_training,
+    )
+
+    # Create zero logits with the same spatial shape as xt.
+    zero_logits = jnp.zeros(
+        xt.shape[:-1] + (self.process.num_categories,), dtype=xt.dtype
+    )
+
+    # First pass: run with zero logits to get initial predictions.
+    xt_with_zeros = jnp.concatenate([xt_rescaled, zero_logits], axis=-1)
+
+    backbone_module = cast(nn.Module, self.backbone_network).copy(
+        name='Backbone'
+    )
+    first_output = backbone_module(
+        x=xt_with_zeros,
+        conditioning_embeddings=conditioning_embeddings,
+        is_training=is_training,
+    )
+
+    x0_hat_logits = jax.lax.stop_gradient(first_output)
+
+    if is_training:
+      # With probability self_cond_prob, run self-conditioning element-wise.
+      batch_size = xt.shape[0]
+      do_self_cond = (
+          jax.random.uniform(
+              self.make_rng(self.rng_collection), shape=(batch_size,)
+          )
+          < self.self_cond_prob
+      )
+      # Reshape to broadcast with x0_hat_logits (Batch, ..., Channels)
+      do_self_cond = do_self_cond.reshape(
+          (batch_size,) + (1,) * (x0_hat_logits.ndim - 1)
+      )
+      x0_hat_logits = jnp.where(do_self_cond, x0_hat_logits, zero_logits)
+
+    # Second pass: run with predicted logits concatenated.
+    xt_with_x0_hat_logits = jnp.concatenate(
+        [xt_rescaled, x0_hat_logits], axis=-1
+    )
+
+    backbone_outputs = backbone_module(
+        x=xt_with_x0_hat_logits,
         conditioning_embeddings=conditioning_embeddings,
         is_training=is_training,
     )

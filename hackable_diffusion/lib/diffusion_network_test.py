@@ -14,6 +14,8 @@
 
 """Tests for diffusion_network and its components."""
 
+from collections.abc import Mapping
+
 import chex
 from flax import linen as nn
 from hackable_diffusion.lib import diffusion_network
@@ -373,6 +375,281 @@ class DiffusionNetworkTest(parameterized.TestCase):
     )
 
     chex.assert_trees_all_equal_structs(modified_t, output)
+
+
+################################################################################
+# MARK: SelfConditioningDiffusionNetwork Tests
+################################################################################
+
+
+class SelfConditioningBackbone(nn.Module, arch_typing.ConditionalBackbone):
+  """Backbone for self-conditioning tests.
+
+  Accepts input of shape (B, ..., input_channels + num_classes) and returns
+  output of shape (B, ..., num_classes).  The backbone simply applies a dense
+  layer so the output depends on the input content.
+  """
+
+  num_classes: int = 4
+
+  @nn.compact
+  def __call__(
+      self,
+      x: arch_typing.DataTree,
+      conditioning_embeddings: Mapping[
+          arch_typing.ConditioningMechanism, Float['batch ...']
+      ],
+      is_training: bool,
+  ) -> arch_typing.DataTree:
+    return nn.Dense(features=self.num_classes)(x)
+
+
+class SelfConditioningDiffusionNetworkTest(parameterized.TestCase):
+
+  def setUp(self):
+    super().setUp()
+
+    class MockProcess:
+
+      def __init__(self, num_categories):
+        self.num_categories = num_categories
+
+      def corrupt(self, key, x0, time):
+        raise NotImplementedError()
+
+      def sample_from_invariant(self, key, data_spec):
+        raise NotImplementedError()
+
+      def convert_predictions(self, prediction, xt, time):
+        raise NotImplementedError()
+
+      def get_schedule_info(self, time):
+        raise NotImplementedError()
+
+    self.key = jax.random.PRNGKey(0)
+    self.batch_size = 2
+    self.input_channels = 1
+    self.num_categories = 4
+    self.spatial_shape = (8, 8)
+    self.xt_shape = (
+        self.batch_size, *self.spatial_shape, self.input_channels
+    )
+    self.t = jnp.ones((self.batch_size,))
+    self.xt = jnp.ones(self.xt_shape)
+    self.conditioning = {
+        'label1': jnp.arange(self.batch_size),
+    }
+    self.process = MockProcess(self.num_categories)
+
+    self.time_encoder = conditioning_encoder.SinusoidalTimeEmbedder(
+        activation='silu',
+        embedding_dim=16,
+        num_features=32,
+    )
+    self.cond_encoder = conditioning_encoder.ConditioningEncoder(
+        time_embedder=self.time_encoder,
+        conditioning_embedders={
+            'label': conditioning_encoder.LabelEmbedder(
+                conditioning_key='label1',
+                num_classes=10,
+                num_features=16,
+            ),
+        },
+        embedding_merging_method=arch_typing.EmbeddingMergeMethod.CONCAT,
+        conditioning_rules={
+            'time': arch_typing.ConditioningMechanism.ADAPTIVE_NORM,
+            'label': arch_typing.ConditioningMechanism.ADAPTIVE_NORM,
+        },
+    )
+    self.backbone = SelfConditioningBackbone(
+        num_classes=self.num_categories
+    )
+
+  def _make_network(
+      self, self_cond_prob: float = 0.5
+  ) -> diffusion_network.SelfConditioningDiffusionNetwork:
+    return diffusion_network.SelfConditioningDiffusionNetwork(
+        backbone_network=self.backbone,
+        conditioning_encoder=self.cond_encoder,
+        prediction_type='logits',
+        data_dtype=jnp.float32,
+        process=self.process,  # type: ignore[wrong-arg-types]
+        self_cond_prob=self_cond_prob,
+    )
+
+  def test_output_shape(self):
+    network = self._make_network()
+    variables = network.init(
+        {'params': self.key, 'self_conditioning': self.key},
+        self.t, self.xt, self.conditioning, True,
+    )
+
+    output = network.apply(
+        variables,
+        self.t, self.xt, self.conditioning, True,
+        rngs={'self_conditioning': self.key},
+    )
+
+    self.assertIsInstance(output, dict)
+    self.assertIn('logits', output)
+
+    expected_shape = (
+        self.batch_size, *self.spatial_shape, self.num_categories
+    )
+
+    self.assertEqual(output['logits'].shape, expected_shape)
+
+  def test_self_cond_prob_zero_skips_self_cond(self):
+    network = self._make_network(self_cond_prob=0.0)
+    variables = network.init(
+        {'params': self.key, 'self_conditioning': self.key},
+        self.t, self.xt, self.conditioning, True,
+    )
+
+    output_no_sc = network.apply(
+        variables,
+        self.t, self.xt, self.conditioning, True,
+        rngs={'self_conditioning': self.key},
+    )
+    # With prob=1.0, self-conditioning is always applied (different output).
+    network_always = self._make_network(self_cond_prob=1.0)
+    output_always = network_always.apply(
+        variables,
+        self.t,
+        self.xt,
+        self.conditioning,
+        True,
+        rngs={'self_conditioning': self.key},
+    )
+
+    self.assertFalse(
+        jnp.allclose(output_no_sc['logits'], output_always['logits']),
+        msg='Outputs should differ since self-conditioning changes the input.',
+    )
+
+  def test_self_cond_prob_one_always_self_conditions(self):
+    network = self._make_network(self_cond_prob=1.0)
+    variables = network.init(
+        {'params': self.key, 'self_conditioning': self.key},
+        self.t, self.xt, self.conditioning, True,
+    )
+    # Run twice with different RNG — should give the same result since
+    # self_cond_prob=1.0 means the random draw has no effect.
+    output_a = network.apply(
+        variables,
+        self.t, self.xt, self.conditioning, True,
+        rngs={'self_conditioning': jax.random.PRNGKey(42)},
+    )
+    output_b = network.apply(
+        variables,
+        self.t, self.xt, self.conditioning, True,
+        rngs={'self_conditioning': jax.random.PRNGKey(99)},
+    )
+
+    chex.assert_trees_all_close(output_a, output_b)
+
+  def test_inference_always_self_conditions(self):
+    # Even with self_cond_prob=0.0, inference should self-condition.
+    network = self._make_network(self_cond_prob=0.0)
+    variables = network.init(
+        {'params': self.key, 'self_conditioning': self.key},
+        self.t, self.xt, self.conditioning, True,
+    )
+    # Inference output (is_training=False).
+    output_infer = network.apply(
+        variables,
+        self.t, self.xt, self.conditioning, False,
+    )
+    # Training with self_cond_prob=1.0 should match inference.
+    network_always = self._make_network(self_cond_prob=1.0)
+
+    output_train_sc = network_always.apply(
+        variables,
+        self.t, self.xt, self.conditioning, True,
+        rngs={'self_conditioning': self.key},
+    )
+
+    chex.assert_trees_all_close(output_infer, output_train_sc)
+
+  def test_element_wise_self_conditioning(self):
+    batch_size = 100
+    xt_shape = (batch_size, *self.spatial_shape, self.input_channels)
+    xt = jnp.ones(xt_shape)
+    t = jnp.ones((batch_size,))
+    conditioning = {'label1': jnp.zeros((batch_size,), dtype=jnp.int32)}
+
+    network_zero = self._make_network(self_cond_prob=0.0)
+    network_one = self._make_network(self_cond_prob=1.0)
+    network_half = self._make_network(self_cond_prob=0.5)
+
+    variables = network_zero.init(
+        {'params': self.key, 'self_conditioning': self.key},
+        t,
+        xt,
+        conditioning,
+        True,
+    )
+
+    output_zero = network_zero.apply(
+        variables,
+        t,
+        xt,
+        conditioning,
+        True,
+        rngs={'self_conditioning': self.key},
+    )
+    output_one = network_one.apply(
+        variables,
+        t,
+        xt,
+        conditioning,
+        True,
+        rngs={'self_conditioning': self.key},
+    )
+    output_half = network_half.apply(
+        variables,
+        t,
+        xt,
+        conditioning,
+        True,
+        rngs={'self_conditioning': self.key},
+    )
+
+    logits_zero = output_zero['logits']
+    logits_one = output_one['logits']
+    logits_half = output_half['logits']
+
+    matches_zero = jnp.all(
+        jnp.isclose(logits_half, logits_zero), axis=(1, 2, 3)
+    )
+    matches_one = jnp.all(jnp.isclose(logits_half, logits_one), axis=(1, 2, 3))
+
+    # Every element must match either zero or one
+    self.assertTrue(jnp.all(matches_zero | matches_one))
+
+    # With a fixed seed and batch_size=100, the mask is deterministic and
+    # contains a mix of True/False values.
+    self.assertFalse(jnp.all(matches_zero))
+    self.assertFalse(jnp.all(matches_one))
+
+  def test_default_self_cond_prob(self):
+    network = diffusion_network.SelfConditioningDiffusionNetwork(
+        backbone_network=self.backbone,
+        conditioning_encoder=self.cond_encoder,
+        prediction_type='logits',
+        process=self.process,  # type: ignore[wrong-arg-types]
+    )
+
+    self.assertEqual(network.self_cond_prob, 0.5)
+
+  def test_invalid_prediction_type_raises(self):
+    with self.assertRaisesRegex(ValueError, 'prediction_type'):
+      diffusion_network.SelfConditioningDiffusionNetwork(
+          backbone_network=self.backbone,
+          conditioning_encoder=self.cond_encoder,
+          prediction_type='x0',
+          process=self.process,  # type: ignore[wrong-arg-types]
+      )
 
 
 if __name__ == '__main__':
