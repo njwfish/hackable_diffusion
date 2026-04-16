@@ -14,7 +14,7 @@
 
 """Tests for the DiT backbone."""
 
-from hackable_diffusion.lib import test_utils
+from hackable_diffusion.lib import test_helpers
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import dit
 from hackable_diffusion.lib.architecture import dit_blocks
@@ -115,7 +115,7 @@ class DiTTest(parameterized.TestCase):
         conditioning_embeddings=conditioning_embeddings,
         is_training=self.is_training,
     )
-    variables_shapes = test_utils.get_pytree_shapes(variables)
+    variables_shapes = test_helpers.get_pytree_shapes(variables)
 
     block_params = {
         'Dense_Gate_MSA': {

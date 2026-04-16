@@ -14,7 +14,7 @@
 
 """Tests for the MLP blocks."""
 
-from hackable_diffusion.lib import test_utils
+from hackable_diffusion.lib import test_helpers
 from hackable_diffusion.lib.architecture import mlp_blocks
 import jax
 import jax.numpy as jnp
@@ -144,7 +144,7 @@ class MLPBlocksTest(parameterized.TestCase):
         self.flatten_x,
         is_training=self.is_training,
     )
-    leaves_with_paths = test_utils.get_leaves_with_paths(variables)
+    leaves_with_paths = test_helpers.get_leaves_with_paths(variables)
     expected_shapes = dict()
     for i in range(len(hidden_layers)):
       name_prefix = f'params/Dense_Hidden_{i}'
@@ -180,7 +180,7 @@ class MLPBlocksTest(parameterized.TestCase):
         self.flatten_sequence_x,
         is_training=self.is_training,
     )
-    leaves_with_paths = test_utils.get_leaves_with_paths(variables)
+    leaves_with_paths = test_helpers.get_leaves_with_paths(variables)
     expected_shapes = dict()
     for i in range(len(hidden_layers)):
       name_prefix = f'params/Dense_Hidden_{i}'

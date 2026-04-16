@@ -15,7 +15,7 @@
 """Tests for the attention module."""
 
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import test_utils
+from hackable_diffusion.lib import test_helpers
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import attention
 import jax
@@ -304,7 +304,7 @@ class AttentionTest(parameterized.TestCase):
     variables = module.init(self.rng, self.x, self.c)
 
     # 1. Check that the kernel and bias of the output projection are zeros.
-    leaves_with_paths = test_utils.get_leaves_with_paths(variables)
+    leaves_with_paths = test_helpers.get_leaves_with_paths(variables)
     for path, leaf in leaves_with_paths.items():
       path_split = path.split("/")
       last_key = path_split[-1]
@@ -340,7 +340,7 @@ class AttentionTest(parameterized.TestCase):
     variables = module.init(self.rng, self.x, self.c)
 
     # Check that the variables have the correct shape.
-    leaves_with_paths = test_utils.get_leaves_with_paths(variables)
+    leaves_with_paths = test_helpers.get_leaves_with_paths(variables)
     if normalize_qk:
       self.assertLen(leaves_with_paths, 9)
     else:

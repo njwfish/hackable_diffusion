@@ -14,7 +14,7 @@
 
 """Tests for the DiT blocks."""
 
-from hackable_diffusion.lib import test_utils
+from hackable_diffusion.lib import test_helpers
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import dit_blocks
 import jax
@@ -63,7 +63,7 @@ class DiTBlockAdaLNZeroTest(parameterized.TestCase):
         hidden_size=self.d, num_heads=4, mlp_ratio=4.0
     )
     variables = module.init(self.key, x, cond, is_training=False)
-    variables_shapes = test_utils.get_pytree_shapes(variables)
+    variables_shapes = test_helpers.get_pytree_shapes(variables)
 
     expected_variables_shapes = {
         'params': {
@@ -139,7 +139,7 @@ class PositionalEmbeddingTest(parameterized.TestCase):
     x = jnp.ones(input_shape)
     module = dit_blocks.PositionalEmbedding()
     variables = module.init(self.key, x)
-    variables_shapes = test_utils.get_pytree_shapes(variables)
+    variables_shapes = test_helpers.get_pytree_shapes(variables)
     expected_variables_shapes = {
         'params': {
             'PositionalEmbeddingTensor': (1, self.n, self.d),
@@ -188,7 +188,7 @@ class PatchifyTest(parameterized.TestCase):
         patch_size=self.patch_size, embedding_dim=self.embedding_dim
     )
     variables = module.init(self.key, x)
-    variables_shapes = test_utils.get_pytree_shapes(variables)
+    variables_shapes = test_helpers.get_pytree_shapes(variables)
     expected_variables_shapes = {
         'params': {
             'Dense_Project': {
@@ -232,7 +232,7 @@ class DePatchifyTest(parameterized.TestCase):
         patch_size=self.patch_size, output_shape=(self.h, self.w, self.c)
     )
     variables = module.init(self.key, x, cond)
-    variables_shapes = test_utils.get_pytree_shapes(variables)
+    variables_shapes = test_helpers.get_pytree_shapes(variables)
     expected_variables_shapes = {
         'params': {
             'ConditionalNorm': {
