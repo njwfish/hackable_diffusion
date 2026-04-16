@@ -29,7 +29,7 @@ from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import inference
 from hackable_diffusion.lib import loss
 from hackable_diffusion.lib import manifolds
-from hackable_diffusion.lib import random_utils
+from hackable_diffusion.lib import fast_random
 from hackable_diffusion.lib import sampling
 from hackable_diffusion.lib import time_sampling
 from hackable_diffusion.lib import utils

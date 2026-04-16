@@ -15,7 +15,7 @@
 """Tests for simplicial step sampler."""
 
 import chex
-from hackable_diffusion.lib import random_utils
+from hackable_diffusion.lib import fast_random
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.corruption import simplicial
 from hackable_diffusion.lib.sampling import base as sampling_base
@@ -83,7 +83,7 @@ class BetaShrinkageTest(parameterized.TestCase):
     n_samples = 20_000
 
     key, subkey = jax.random.split(key)
-    log_x = random_utils.log_dirichlet_fast(subkey, alpha, shape=(n_samples,))
+    log_x = fast_random.log_dirichlet_fast(subkey, alpha, shape=(n_samples,))
 
     _, subkey = jax.random.split(key)
     log_y = log_beta_shrinkage(subkey, log_x, alpha, kappa=kappa)

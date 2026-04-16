@@ -33,8 +33,8 @@ relevant representation, for instance score, velocity, etc.
 
 import dataclasses
 
+from hackable_diffusion.lib import fast_random
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import random_utils
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.corruption import simplicial
@@ -102,7 +102,7 @@ def log_beta_shrinkage(
     return log_x
   alpha_vec = jnp.broadcast_to(concentration, log_x.shape)
 
-  log_b, _ = random_utils.sample_log_beta_joint(
+  log_b, _ = fast_random.sample_log_beta_joint(
       key,
       kappa * alpha_vec + safety_epsilon,
       (1.0 - kappa) * alpha_vec + safety_epsilon,
@@ -188,7 +188,7 @@ class SimplicialDDIMStep(SamplerStep):
       shape_1 = bar_beta_s - shape_0
 
       _, beta_key = jax.random.split(key)
-      log_w, log_1_minus_w = random_utils.sample_log_beta_joint(
+      log_w, log_1_minus_w = fast_random.sample_log_beta_joint(
           beta_key, shape_0, shape_1, shape=target_shape
       )
 
@@ -216,7 +216,7 @@ class SimplicialDDIMStep(SamplerStep):
           self.churn * eps * pi
           + (eps * h_s - (1.0 - self.churn) * eps * h_t) * one_hot_mask
       )
-      log_v = random_utils.log_dirichlet_fast(v_key, alpha=alpha_v, shape=())
+      log_v = fast_random.log_dirichlet_fast(v_key, alpha=alpha_v, shape=())
 
       # Sample W from Beta(kappa * bar_beta_t, bar_beta_s - kappa * bar_beta_t).
       # safety_epsilon is added to both parameters to handle the degenerate
@@ -224,7 +224,7 @@ class SimplicialDDIMStep(SamplerStep):
       # With safety_epsilon, Beta(eps, b+eps) is concentrated near 0,
       # matching the correct asymptotic behaviour W->0 as churn->1.
       _, beta_key = jax.random.split(key)
-      log_w, log_1_minus_w = random_utils.sample_log_beta_joint(
+      log_w, log_1_minus_w = fast_random.sample_log_beta_joint(
           beta_key,
           (1.0 - self.churn) * bar_beta_t + self.safety_epsilon,
           bar_beta_s - (1.0 - self.churn) * bar_beta_t + self.safety_epsilon,

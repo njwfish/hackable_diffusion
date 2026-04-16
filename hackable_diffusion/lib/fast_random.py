@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Random utils.
+"""Fast random samplers for Gamma, Dirichlet and Beta distributions.
 
 `jax.random.gamma` is slow https://github.com/jax-ml/jax/issues/18984.
 As Dirichlet and Beta samplers rely on Gamma samplers and are heavily used in

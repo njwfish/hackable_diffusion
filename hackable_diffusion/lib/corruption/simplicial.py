@@ -20,8 +20,8 @@ import dataclasses
 import enum
 from typing import Protocol, Sequence
 
+from hackable_diffusion.lib import fast_random
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import random_utils
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.corruption import base
 from hackable_diffusion.lib.corruption import schedules
@@ -274,7 +274,7 @@ class SimplicialProcess(CorruptionProcess):
     # data_spec is [B, T, 1]
     # invariant_dirichlet_params is [B, T, K]
     # output is [B, T, K]
-    return random_utils.log_dirichlet_fast(
+    return fast_random.log_dirichlet_fast(
         key, alpha=invariant_dirichlet_params, shape=data_spec.shape[:-1]
     )
 
@@ -313,7 +313,7 @@ class SimplicialProcess(CorruptionProcess):
     # compute Dirichlet parameters
     dirichlet_param = self.invariant_probs_vec + self.h(time) * x0_oh
     dirichlet_param = self.temperature * dirichlet_param
-    xt = random_utils.log_dirichlet_fast(key, alpha=dirichlet_param)
+    xt = fast_random.log_dirichlet_fast(key, alpha=dirichlet_param)
 
     logits = x0_oh
 

@@ -431,7 +431,7 @@ concentrates on `delta(x0)` when `h(t)` is large (near `t=0`) and on `pi` when
 All computations are performed in **log-space** for numerical stability: the
 corrupted state `xt` stores `log(P_t)` rather than `P_t` directly. This is
 achieved using fast log-Gamma samplers followed by log-softmax normalization
-(see `random_utils.log_dirichlet_fast`).
+(see `fast_random.log_dirichlet_fast`).
 
 ### Comparison with `CategoricalProcess`
 
