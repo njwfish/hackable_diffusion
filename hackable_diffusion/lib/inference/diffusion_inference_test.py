@@ -15,9 +15,9 @@
 """Tests for the diffusion_inference module."""
 
 import chex
-from flax import linen as nn
 from hackable_diffusion.lib import diffusion_network
 from hackable_diffusion.lib import hd_typing
+from hackable_diffusion.lib import test_helpers
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import conditioning_encoder
 from hackable_diffusion.lib.architecture import normalization
@@ -43,24 +43,11 @@ Float = hd_typing.Float
 TimeRescaler = diffusion_network.TimeRescaler
 InputRescaler = diffusion_network.InputRescaler
 GaussianProcess = gaussian.GaussianProcess
+IdentityBackbone = test_helpers.IdentityBackbone
 
 ################################################################################
 # MARK: Constants
-################################################################################
-
-
-class IdentityBackbone(nn.Module, arch_typing.ConditionalBackbone):
-
-  @nn.compact
-  def __call__(
-      self,
-      x: arch_typing.DataTree,
-      conditioning_embeddings: dict[
-          arch_typing.ConditioningMechanism, Float['batch ...']
-      ],
-      is_training: bool,
-  ) -> arch_typing.DataTree:
-    return x
+################################################
 
 
 CONDITIONING_ENCODER = {

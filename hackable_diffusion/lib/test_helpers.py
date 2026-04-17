@@ -15,7 +15,12 @@
 """Various testing utilities."""
 
 from typing import Any, Sequence
+
 import flax
+from flax import linen as nn
+
+from hackable_diffusion.lib import hd_typing
+from hackable_diffusion.lib.architecture import arch_typing
 import jax
 
 
@@ -25,6 +30,7 @@ import jax
 
 VariableDict = flax.core.scope.VariableDict
 DictKey = jax.tree_util.DictKey
+Float = hd_typing.Float
 GetAttrKey = jax.tree_util.GetAttrKey
 Path = Sequence[DictKey | GetAttrKey]
 
@@ -77,3 +83,17 @@ def get_leaves_with_paths(variables: VariableDict) -> dict[str, Any]:
 def get_pytree_shapes(pytree: dict[str, Any]) -> dict[str, Any]:
   """Recursively extracts the shape of every leaf in a PyTree."""
   return jax.tree_util.tree_map(lambda x: getattr(x, 'shape', None), pytree)
+
+
+class IdentityBackbone(nn.Module, arch_typing.ConditionalBackbone):
+
+  @nn.compact
+  def __call__(
+      self,
+      x: arch_typing.DataTree,
+      conditioning_embeddings: dict[
+          arch_typing.ConditioningMechanism, Float['batch ...']
+      ],
+      is_training: bool,
+  ) -> arch_typing.DataTree:
+    return x
