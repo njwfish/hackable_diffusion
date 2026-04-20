@@ -125,6 +125,12 @@ def _accepts_rng_kwarg(fn: Callable[..., object]) -> bool:
   rng to stochastic inference fns (e.g. distributional diffusion) while
   remaining compatible with deterministic fns — including naked lambdas —
   that don't take one.
+
+  Caveat: ``functools.partial`` and similar wrappers can mask an inner
+  ``rng`` parameter. If you're wrapping a stochastic inference fn,
+  either expose ``rng`` in the outer signature or declare ``**kwargs`` so
+  this introspection picks it up; otherwise the sampler will silently
+  skip threading the rng.
   """
   try:
     sig = inspect.signature(fn)

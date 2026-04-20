@@ -12,18 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Helpers for distributional diffusion (arXiv:2502.02483).
+"""Training-side helpers for distributional diffusion (arXiv:2502.02483).
 
-Implements the ``x_theta(t, x_t, xi)`` ensemble forward:
-  1. draw M i.i.d. Gaussian noise tensors ``xi`` with the same shape as ``x_t``,
-  2. inject each into ``x_t`` by channel-concat along the last axis
-     (paper's default for image U-Nets and the 2D MLP),
-  3. call the network with ``jax.vmap`` over the M axis,
-  4. slice the first ``c`` channels of each prediction to drop the xi-half
-     of the doubled output.
+One canonical path: the network is **shape-preserving** under the
+``[x_t, xi]`` doubled-last-axis input. That invariant is provided by
+distributional backbone variants —
+:class:`hackable_diffusion.lib.architecture.NoiseTrimBackbone` for any
+backbone whose last axis is a clean feature dim (MLPs, per-token
+transformers), or a dedicated subclass for backbones that reshape the last
+axis into an image (e.g.
+``mdt.model.unet_patch_distributional.DistributionalUNetPatch``).
 
-The returned predictions dict has an extra axis of size ``M`` inserted at
-position 1 (``[B, M, *data]``), ready for ``EnergyScoreLoss``.
+With that invariant, :func:`ensemble_apply` is just:
+  1. draw M i.i.d. Gaussian ``xi``, each with the same shape as ``x_t``,
+  2. inject each via a user-supplied ``xi_injector`` (default:
+     channel-concat along the last axis),
+  3. vmap the network over the M axis.
+
+The returned predictions pytree has an extra axis of size ``M`` at
+position 1 of every leaf (``[B, M, *data]``), ready for
+:class:`hackable_diffusion.lib.loss.EnergyScoreLoss`.
 """
 
 from typing import Any, Callable, Mapping
@@ -45,7 +53,6 @@ TargetInfo = hd_typing.TargetInfo
 TimeArray = hd_typing.TimeArray
 
 XiInjector = Callable[[DataArray, DataArray], DataArray]
-OutputTrim = Callable[[TargetInfo], TargetInfo]
 
 ################################################################################
 # MARK: Default xi injection
@@ -55,17 +62,6 @@ OutputTrim = Callable[[TargetInfo], TargetInfo]
 def channel_concat_xi(xt: DataArray, xi: DataArray) -> DataArray:
   """Concatenates xi to xt along the last axis (paper's default)."""
   return jnp.concatenate([xt, xi], axis=-1)
-
-
-def make_channel_slice(keep_channels: int) -> OutputTrim:
-  """Returns a trim fn that keeps the first ``keep_channels`` of the last dim.
-
-  The network is expected to output ``2 * keep_channels`` along the final
-  axis; the xi-half is dropped. Matches the paper's U-Net and 2D MLP setup.
-  """
-  def _trim(preds: TargetInfo) -> TargetInfo:
-    return jax.tree.map(lambda y: y[..., :keep_channels], preds)
-  return _trim
 
 
 ################################################################################
@@ -83,17 +79,23 @@ def ensemble_apply(
     xi_rng: PRNGKey,
     population_size: int,
     xi_injector: XiInjector = channel_concat_xi,
-    output_trim: OutputTrim | None = None,
     apply_rngs: Mapping[str, PRNGKey] | None = None,
     **apply_kwargs: Any,
 ) -> TargetInfo:
-  """Calls a diffusion network ``population_size`` times with fresh xi draws.
+  """Calls a shape-preserving diffusion network M times with fresh xi draws.
+
+  Pair this with a network whose output shape matches the original data
+  shape — i.e. one built around a distributional backbone variant (see the
+  module docstring). Do not hand a raw backbone whose output has a doubled
+  last axis; wrap it first.
 
   Args:
     apply_fn: The Flax apply fn of the diffusion network (``network.apply``).
     variables: Variable tree passed as the first positional arg to ``apply_fn``.
     time: Time array ``[B, ...]``.
-    xt: Noisy data ``[B, *data]``.
+    xt: Noisy data ``[B, *data]``. The network sees ``xi_injector(xt, xi)``;
+      with the default injector that is the doubled-last-axis tensor that
+      distributional backbones expect.
     conditioning: Optional conditioning pytree.
     xi_rng: PRNGKey used *only* to draw the xi noise tensor. Dropout / other
       RNGs the network may need are passed through ``apply_rngs``.
@@ -101,9 +103,6 @@ def ensemble_apply(
     xi_injector: How to combine ``xt`` and a single xi draw into the tensor the
       network consumes. Default is ``channel_concat_xi`` (concat along last
       axis), matching the paper.
-    output_trim: Optional callable that trims the network output to the
-      original data shape (drops the xi-half of a doubled-channel output). Use
-      ``make_channel_slice(keep_channels=c)`` to slice last dim.
     apply_rngs: Additional RNGs forwarded to ``apply_fn`` (e.g. ``{"dropout":
       key}``). Shared across the M ensemble members — downstream dropout
       patterns will therefore be identical per member, which matches the
@@ -120,11 +119,11 @@ def ensemble_apply(
 
   xi = jax.random.normal(
       xi_rng, (population_size,) + xt.shape, dtype=xt.dtype
-  )                                                                 # [M, B, ...]
+  )                                                                 # [M, B, *data]
 
   def _one(xi_member: DataArray) -> TargetInfo:
     xt_ext = xi_injector(xt, xi_member)
-    preds = apply_fn(
+    return apply_fn(
         variables,
         time=time,
         xt=xt_ext,
@@ -132,9 +131,6 @@ def ensemble_apply(
         rngs=apply_rngs,
         **apply_kwargs,
     )
-    if output_trim is not None:
-      preds = output_trim(preds)
-    return preds
 
   # out_axes=1 places the M axis at position 1 of every leaf, i.e. right
   # after the batch dim — the shape the energy-score loss expects.

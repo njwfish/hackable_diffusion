@@ -27,6 +27,7 @@ from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.loss import base
 import jax.numpy as jnp
+import kauldron.ktyping as kt
 
 ################################################################################
 # MARK: Type Aliases
@@ -43,6 +44,7 @@ GaussianSchedule = schedules.GaussianSchedule
 ################################################################################
 
 
+@kt.typechecked
 def compute_energy_score_loss(
     preds: TargetInfo,
     targets: TargetInfo,
@@ -137,22 +139,21 @@ def compute_energy_score_loss(
   pair_diff = xhat_flat[:, :, None, :] - xhat_flat[:, None, :, :]  # [B, M, M, D]
   pair_sq = jnp.sum(pair_diff * pair_diff, axis=-1)                 # [B, M, M]
 
-  # Clip before any fractional root. Off-diagonal values can be slightly
-  # negative from fp cancellation; on-diagonal is exactly zero and gets masked.
-  data_sq = jnp.maximum(data_sq, eps)
-  pair_sq = jnp.maximum(pair_sq, eps)
-
   # beta-specific dispatch at Python level — compile-time branch, no cost.
+  # For beta < 2 we eps-clip *before* the fractional root: off-diagonal values
+  # can be slightly negative from fp cancellation and would then hit sqrt/pow
+  # with an undefined derivative. For beta == 2 there is no root, so the clip
+  # would only introduce a tiny unconditional bias — skipped.
   if beta == 2.0:
     data_term = data_sq.mean(axis=1)                              # [B]
     pair = pair_sq                                                # [B, M, M]
   elif beta == 1.0:
-    data_term = jnp.sqrt(data_sq).mean(axis=1)
-    pair = jnp.sqrt(pair_sq)
+    data_term = jnp.sqrt(jnp.maximum(data_sq, eps)).mean(axis=1)
+    pair = jnp.sqrt(jnp.maximum(pair_sq, eps))
   else:
     half_beta = beta / 2.0
-    data_term = jnp.power(data_sq, half_beta).mean(axis=1)
-    pair = jnp.power(pair_sq, half_beta)
+    data_term = jnp.power(jnp.maximum(data_sq, eps), half_beta).mean(axis=1)
+    pair = jnp.power(jnp.maximum(pair_sq, eps), half_beta)
 
   # Zero the diagonal then normalise by the U-statistic denominator 2*M*(M-1).
   # (The double sum over j != j' has M*(M-1) terms; the factor of 2 comes
@@ -196,6 +197,7 @@ class EnergyScoreLoss(base.DiffusionLoss):
   schedule: GaussianSchedule | None = None
   weight_fn: base.WeightFn | None = None
 
+  @kt.typechecked
   def __call__(
       self,
       preds: TargetInfo,

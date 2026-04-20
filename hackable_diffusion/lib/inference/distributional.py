@@ -12,24 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Inference fn for distributional diffusion (arXiv:2502.02483).
+"""Sampling-time inference fn for distributional diffusion (arXiv:2502.02483).
 
-At each reverse step the network takes ``(t, x_t, xi)`` with ``xi ~ N(0, I)``,
+At each reverse step the network takes ``(t, x_t, xi)`` with ``xi ~ N(0, I)``
 and outputs an approximate *sample* from ``p_{0|t}(x_0 | x_t)`` rather than
 its mean. The sampling-loop scan body passes us the step's rng; we use it to
-draw ``xi``, concat into ``x_t``, call the network once, and slice the
-xi-half off the output to match the expected prediction shape.
+draw ``xi``, inject it via the same ``xi_injector`` used at training, and
+call the network once per step.
+
+The network is expected to be shape-preserving under the doubled input —
+see :mod:`hackable_diffusion.lib.distributional` for the invariant and
+:class:`hackable_diffusion.lib.architecture.NoiseTrimBackbone` for the
+canonical wrapper.
 """
 
 import dataclasses
-from typing import Callable
 
 from hackable_diffusion.lib import distributional
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib.inference import base
 import flax.linen as nn
 import jax
-import jax.numpy as jnp
 import kauldron.ktyping as kt
 
 ################################################################################
@@ -48,7 +51,12 @@ TimeTree = hd_typing.TimeTree
 InferenceFn = base.InferenceFn
 
 XiInjector = distributional.XiInjector
-OutputTrim = distributional.OutputTrim
+
+# Salt mixed into the per-step rng before drawing xi, so any other consumer
+# of the same step rng (e.g. the Z-noise in a stochastic DDIM update) gets
+# an independent stream.
+_XI_RNG_SALT = 0x1D01  # distinctive constant for traceability in logs.
+
 
 ################################################################################
 # MARK: DistributionalInferenceFn
@@ -59,37 +67,32 @@ OutputTrim = distributional.OutputTrim
 class DistributionalInferenceFn(InferenceFn):
   """Stochastic inference fn: calls the network with a per-step xi draw.
 
-  Use case: sampling from a network trained with ``EnergyScoreLoss`` that
-  expects a ``(x_t, xi)`` concatenated input. At every reverse step, the
-  sampling loop passes the step's rng via ``rng=``; we deterministically
-  derive an xi-specific key, draw ``xi``, forward the network, and strip the
-  xi-half of the output.
+  The trained network must be shape-preserving under ``[x_t, xi]`` doubled
+  inputs — use
+  :class:`hackable_diffusion.lib.architecture.NoiseTrimBackbone` around any
+  plain backbone whose I/O share a last-axis layout, or a dedicated
+  distributional subclass for backbones that reshape the last axis into an
+  image (e.g.
+  ``mdt.model.unet_patch_distributional.DistributionalUNetPatch``). Either
+  way this class simply injects ``xi`` and forwards; it never trims output.
 
-  This is the sampling-time counterpart of ``lib/distributional.ensemble_apply``
-  used at training time. Sampling uses a single xi draw per step (not a
-  population) — the energy-score training is what bought us the ability to
-  take big reverse steps with just one sample.
+  One xi draw per reverse step — not a population. The energy-score
+  training is what buys the ability to take big steps with a single sample.
 
   Attributes:
     network: The trained Linen diffusion network.
     params: The trained parameters tree.
-    keep_channels: Number of channels to keep from the last axis of every
-      prediction leaf (to drop the xi-half of a doubled-channel output). Must
-      match the per-sample data channel count the network was trained with.
     xi_injector: How to combine ``x_t`` and ``xi`` into the network's input.
-      Default channel-concat along the last axis.
-    rng_salt: Integer mixed into the step rng before drawing xi, so that any
-      other consumer of ``step_info.rng`` in the same step (e.g. the SDE Z
-      noise in the update) gets an independent stream.
+      Default channel-concat along the last axis. Must match whatever was
+      used at training time (otherwise the learned function sees a
+      different input distribution than it was trained on).
   """
 
   network: nn.Module
   params: PyTree
-  keep_channels: int
   xi_injector: XiInjector = dataclasses.field(
       default=distributional.channel_concat_xi
   )
-  rng_salt: int = 0x1D01  # "distributional"
 
   @kt.typechecked
   def __call__(
@@ -105,14 +108,13 @@ class DistributionalInferenceFn(InferenceFn):
           "should be passing one from step_info. If you're calling this fn "
           "directly, pass rng= explicitly."
       )
-    xi_rng = jax.random.fold_in(rng, self.rng_salt)
+    xi_rng = jax.random.fold_in(rng, _XI_RNG_SALT)
     xi = jax.random.normal(xi_rng, xt.shape, dtype=xt.dtype)
     xt_ext = self.xi_injector(xt, xi)
-    preds = self.network.apply(
+    return self.network.apply(
         {"params": self.params},
         time=time,
         xt=xt_ext,
         conditioning=conditioning,
         is_training=False,
     )
-    return jax.tree.map(lambda y: y[..., : self.keep_channels], preds)
