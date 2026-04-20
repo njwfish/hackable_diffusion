@@ -21,7 +21,8 @@ It defines a sampling loop that orchestrates three key components:
 """
 
 import dataclasses
-from typing import Protocol
+import inspect
+from typing import Callable, Protocol
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib.inference import base as inference_base
 from hackable_diffusion.lib.sampling import base
@@ -117,6 +118,44 @@ def _get_input_inference_fn(
   return xt, time
 
 
+def _accepts_rng_kwarg(fn: Callable[..., object]) -> bool:
+  """Returns True if ``fn`` can be called with an ``rng=`` keyword.
+
+  Used once at trace time so the sampling loop can optionally pass a per-step
+  rng to stochastic inference fns (e.g. distributional diffusion) while
+  remaining compatible with deterministic fns — including naked lambdas —
+  that don't take one.
+  """
+  try:
+    sig = inspect.signature(fn)
+  except (TypeError, ValueError):
+    return False
+  params = sig.parameters
+  if "rng" in params:
+    return True
+  return any(
+      p.kind == inspect.Parameter.VAR_KEYWORD for p in params.values()
+  )
+
+
+def _get_step_rng(step_carry: DiffusionStepTree) -> PRNGKey | None:
+  """Extracts a single rng from the step's state.
+
+  Stochastic inference fns (e.g. distributional diffusion, which draws a fresh
+  xi per reverse step) use this to derive their own noise. If the sampling
+  tree is nested (multi-modal), the first leaf's rng is returned; downstream
+  stochastic fns are expected to fold_in their own salts to get independent
+  streams.
+  """
+  rng_tree = jax.tree.map(
+      lambda x: x.step_info.rng,
+      step_carry,
+      is_leaf=_is_diffusion_leaf,
+  )
+  leaves = jax.tree.leaves(rng_tree)
+  return leaves[0] if leaves else None
+
+
 ################################################################################
 # MARK: Sampling loop
 ################################################################################
@@ -183,12 +222,19 @@ class DiffusionSampler(SampleFn):
         first_step_info,
     )
 
+    rng_kwargs_fn = (
+        (lambda carry: {"rng": _get_step_rng(carry)})
+        if _accepts_rng_kwarg(inference_fn)
+        else (lambda carry: {})
+    )
+
     def scan_body(step_carry: DiffusionStepTree, next_step_info: StepInfoTree):
       xt, time = _get_input_inference_fn(step_carry)
       prediction = inference_fn(
           xt=xt,
           conditioning=conditioning,
           time=time,
+          **rng_kwargs_fn(step_carry),
       )
       next_step = self.stepper.update(
           prediction,
@@ -227,6 +273,7 @@ class DiffusionSampler(SampleFn):
         xt=xt,
         conditioning=conditioning,
         time=time,
+        **rng_kwargs_fn(before_last_step),
     )
 
     last_step = self.stepper.finalize(

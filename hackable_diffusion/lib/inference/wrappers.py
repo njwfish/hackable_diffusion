@@ -33,6 +33,7 @@ PyTree = hd_typing.PyTree
 
 Conditioning = hd_typing.Conditioning
 DataTree = hd_typing.DataTree
+PRNGKey = hd_typing.PRNGKey
 TargetInfoTree = hd_typing.TargetInfoTree
 TimeTree = hd_typing.TimeTree
 
@@ -57,8 +58,11 @@ class FlaxLinenInferenceFn(InferenceFn):
       time: TimeTree,
       xt: DataTree,
       conditioning: Conditioning | None,
+      rng: PRNGKey | None = None,
   ) -> TargetInfoTree:
-    """Returns the model outputs."""
+    """Returns the model outputs. ``rng`` is accepted for protocol compliance
+    and ignored (deterministic inference fn)."""
+    del rng  # Unused — this wrapper is deterministic.
     return self.network.apply(
         {"params": self.params},
         time=time,
@@ -105,8 +109,11 @@ class FlaxNNXInferenceFn(InferenceFn):
       time: TimeTree,
       xt: DataTree,
       conditioning: Conditioning | None,
+      rng: PRNGKey | None = None,
   ) -> TargetInfoTree:
-    """Returns the model outputs."""
+    """Returns the model outputs. ``rng`` is accepted for protocol compliance
+    and ignored (deterministic inference fn)."""
+    del rng  # Unused — this wrapper is deterministic.
     return self.nnx_network(
         time=time,
         xt=xt,

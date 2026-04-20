@@ -25,6 +25,7 @@
 from hackable_diffusion.lib import architecture
 from hackable_diffusion.lib import corruption
 from hackable_diffusion.lib import diffusion_network
+from hackable_diffusion.lib import distributional
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import inference
 from hackable_diffusion.lib import loss

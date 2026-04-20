@@ -27,6 +27,7 @@ import kauldron.ktyping as kt
 
 Conditioning = hd_typing.Conditioning
 DataTree = hd_typing.DataTree
+PRNGKey = hd_typing.PRNGKey
 TimeTree = hd_typing.TimeTree
 TargetInfoTree = hd_typing.TargetInfoTree
 
@@ -51,18 +52,27 @@ class GuidedDiffusionInferenceFn(InferenceFn):
       time: TimeTree,
       xt: DataTree,
       conditioning: Conditioning | None,
+      rng: PRNGKey | None = None,
   ) -> TargetInfoTree:
-    """Returns the model outputs."""
+    """Returns the model outputs.
+
+    The optional ``rng`` is forwarded to both cond and uncond calls on the
+    base inference fn, so stochastic base fns (e.g. distributional) share the
+    same noise between the cond/uncond predictions — necessary for a
+    well-defined classifier-free guidance direction.
+    """
 
     cond_outputs = self.base_inference_fn(
         time=time,
         xt=xt,
         conditioning=conditioning,
+        rng=rng,
     )
     uncond_outputs = self.base_inference_fn(
         time=time,
         xt=xt,
         conditioning=None,
+        rng=rng,
     )
 
     guided_outputs = self.guidance_fn(

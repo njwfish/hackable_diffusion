@@ -23,6 +23,7 @@ from hackable_diffusion.lib import hd_typing
 
 Conditioning = hd_typing.Conditioning
 DataTree = hd_typing.DataTree
+PRNGKey = hd_typing.PRNGKey
 TimeTree = hd_typing.TimeTree
 TargetInfoTree = hd_typing.TargetInfoTree
 
@@ -40,9 +41,18 @@ class InferenceFn(Protocol):
   into account guidance and/or conditioning.
 
   The InferenceFn is created by the create_inference_fn function.
+
+  The optional ``rng`` argument is used by stochastic inference fns (e.g. the
+  distributional-diffusion one that draws a fresh xi per reverse step). The
+  sampling loop passes the current step's rng here. Deterministic inference
+  fns accept it and ignore it.
   """
 
   def __call__(
-      self, time: TimeTree, xt: DataTree, conditioning: Conditioning | None
+      self,
+      time: TimeTree,
+      xt: DataTree,
+      conditioning: Conditioning | None,
+      rng: PRNGKey | None = None,
   ) -> TargetInfoTree:
     ...
