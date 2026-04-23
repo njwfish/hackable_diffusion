@@ -65,6 +65,37 @@ migration):
   kauldron enforces strict dimension-name matching.  Fix: rename return dim
   to `K`.
 
+### 5. New subpackage: `hackable_diffusion.lib.guidance`
+**Directory:** `hackable_diffusion/lib/guidance/`
+
+Additive-only subpackage providing a composable conditional-sampling
+framework.  Three protocols (`CorrectionFn`, `TwistFn`, `ResamplerFn`)
+compose inside `ConditionalDiffusionSampler` to express Pi-GDM, cov-aware,
+DPS, TDS, MCGDiff, and other published guidance methods as configurations
+over the existing `DiffusionSampler`.
+
+**Why:** upstream `lib/inference/guidance.py` covers only classifier-free
+guidance (combining conditional and unconditional outputs).  The broader
+family of inverse-problem / posterior-sampling methods -- which all
+require shifting the denoiser output or weighting particles by a
+log-potential -- is not representable there.  This subpackage provides
+the missing abstractions without touching any upstream module.
+
+Key public objects:
+
+- `ConditionalDiffusionSampler`: orchestrator wrapping a `DiffusionSampler`
+  with optional `correction_fn`, `twist_fn`, `resampler_fn`.
+- `GradientCorrectionFn`: bridges `TwistFn` -> `CorrectionFn` via
+  autograd (generalises DPS / Pi-GDM-via-Miyasawa).  Prefactor schedule
+  injected as a callable (`miyasawa_prefactor`, `dps_prefactor`).
+- `IteratedCorrectionFn`: K inner Kalman sweeps with denoiser
+  re-evaluation (closes the intermediate-H non-Gaussian bump).
+- `GaussianLikelihoodTwistFn` / `DiscreteCompositionTwistFn`: canonical
+  log-potentials for linear-Gaussian and multinomial observations.
+- `proposal_log_ratio`: closed-form `log p_theta - log q` dispatcher
+  (isinstance-based registry).  Pre-registered for `DDIMStep` and
+  `SimplicialDDIMStep(churn=0)`; extend via `register_proposal_ratio`.
+
 ## Rebasing on upstream
 
 ```bash
