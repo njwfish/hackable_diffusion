@@ -51,9 +51,24 @@ def call_inference_fn(
   return inference_fn(xt=xt, time=time, conditioning=conditioning)
 
 
+def scalar_alpha(schedule: Any, time: jax.Array) -> jax.Array:
+  """Return scalar ``alpha_t`` from a scalar-or-batch ``time`` input.
+
+  Works for any schedule exposing ``.alpha(t)`` (Gaussian, simplicial,
+  linear-discrete, ...).
+  """
+  t = jnp.atleast_1d(time).reshape(-1)[0:1]
+  return schedule.alpha(t).reshape(())
+
+
 def scalar_alpha_sigma(
     schedule: Any, time: jax.Array
 ) -> tuple[jax.Array, jax.Array]:
-  """Return ``(alpha_t, sigma_t)`` for a scalar-or-batch ``time`` input."""
+  """Return ``(alpha_t, sigma_t)`` for a scalar-or-batch ``time`` input.
+
+  Requires the schedule to expose both ``.alpha`` and ``.sigma`` --
+  i.e. a Gaussian-forward schedule.  Discrete schedules only have
+  ``alpha``; use :func:`scalar_alpha` there.
+  """
   t = jnp.atleast_1d(time).reshape(-1)[0:1]
   return schedule.alpha(t).reshape(()), schedule.sigma(t).reshape(())

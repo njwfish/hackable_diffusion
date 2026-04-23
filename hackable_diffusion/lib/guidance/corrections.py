@@ -19,13 +19,13 @@
   non-Gaussian bump on mixture priors).
 - :class:`GradientCorrectionFn` bridges ``TwistFn`` -> ``CorrectionFn``
   by backpropagating the twist gradient through the denoiser
-  (generalises DPS / Pi-GDM-via-Miyasawa).
-
-The step-size prefactor is an injected callable (``prefactor_fn``) so
-new schedules can be plugged in without subclassing; two built-ins are
-exported: :func:`miyasawa_prefactor` (Tweedie-identity scaling, exact on
-Gaussian priors) and :func:`dps_prefactor` (canonical DPS
-``1 / ||residual||`` step).
+  (generalises DPS).  The step-size prefactor is an injected callable
+  (:func:`miyasawa_prefactor` or :func:`dps_prefactor`).
+- :class:`PiGDMCorrectionFn` is the generic Pi-GDM / Kalman correction,
+  parameterised over a :class:`ForwardFn` and a
+  :class:`PosteriorCovarianceFn`.  Combined with
+  :class:`TweediePosteriorCovarianceFn` it yields the exact
+  second-order correction for any prior the denoiser represents.
 """
 
 from __future__ import annotations
@@ -36,9 +36,16 @@ from typing import Any, Callable
 import jax
 import jax.numpy as jnp
 
-from hackable_diffusion.lib.guidance.protocols import CorrectionFn, TwistFn
+from hackable_diffusion.lib.guidance.linalg import batched_cg, linear_adjoint
+from hackable_diffusion.lib.guidance.protocols import (
+    CorrectionFn,
+    ForwardFn,
+    PosteriorCovarianceFn,
+    TwistFn,
+)
 from hackable_diffusion.lib.guidance.utils import (
     call_inference_fn,
+    scalar_alpha,
     scalar_alpha_sigma,
 )
 
@@ -124,7 +131,7 @@ class IteratedCorrectionFn(CorrectionFn):
           "iteration.  ConditionalDiffusionSampler wires this in "
           "automatically; if invoking directly, pass inference_fn=... ."
       )
-    alpha, _ = scalar_alpha_sigma(schedule, time)
+    alpha = scalar_alpha(schedule, time)
 
     xt_curr = xt
     outputs_curr = outputs
@@ -215,6 +222,92 @@ class GradientCorrectionFn(CorrectionFn):
     )
 
     delta_x0 = float(self.strength) * prefactor * grad_xt
+    x0_guided = x0 + delta_x0
+    guided_outputs = corruption_process.convert_predictions(
+        {"x0": x0_guided}, xt, time,
+    )
+    pred_type = next(iter(outputs.keys()))
+    return {pred_type: guided_outputs[pred_type]}
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class PiGDMCorrectionFn(CorrectionFn):
+  """Generic Pi-GDM / Kalman x_0-space correction.
+
+  Implements the closed-form Kalman update
+
+      xhat_0_new = xhat_0 + Sigma_hat A^T (A Sigma_hat A^T + sigma_y^2 I)^{-1}
+                                         (y - A xhat_0)
+
+  over any linear ``forward_fn`` ``A`` and any
+  ``posterior_covariance_fn`` ``Sigma_hat``.  The ``(A Sigma_hat A^T +
+  sigma_y^2 I) z = r`` solve is batched conjugate gradient
+  (:func:`batched_cg`), so the posterior-covariance operator only needs
+  to expose a matvec -- the Jacobian is never materialised.
+
+  Choice of ``posterior_covariance_fn`` picks the Pi-GDM variant:
+
+  - :class:`IsotropicPosteriorCovarianceFn`: DPS-style projection.
+  - :class:`FixedPriorPosteriorCovarianceFn`: "cov-aware" correction,
+    exact under a known Gaussian prior.
+  - :class:`TweediePosteriorCovarianceFn`: exact Pi-GDM under any prior
+    via the Miyasawa JVP through the denoiser.
+
+  The adjoint of ``forward_fn`` is obtained automatically via VJP, so
+  the :class:`ForwardFn` protocol only needs ``.forward(x)``.
+  """
+
+  observation: jax.Array
+  forward_fn: ForwardFn
+  posterior_covariance_fn: PosteriorCovarianceFn
+  observation_noise: float = 0.1
+  cg_max_iter: int = 20
+  cg_tol: float = 1e-6
+
+  def __call__(
+      self,
+      outputs: dict[str, jax.Array],
+      xt: jax.Array,
+      time: jax.Array,
+      *,
+      schedule: Any,
+      corruption_process: Any,
+      conditioning: Any = None,
+      rng: jax.Array | None = None,
+      inference_fn: Callable | None = None,
+  ) -> dict[str, jax.Array]:
+    x0 = corruption_process.convert_predictions(outputs, xt, time)["x0"]
+
+    # Denoiser closure: xt' -> xhat_0(xt') at the current (time, cond, rng).
+    # Passed to posterior_covariance_fn for state-dependent variants
+    # (e.g. TweediePosteriorCovarianceFn); state-independent variants
+    # simply ignore it.
+    def denoiser_x0(xt_arg: jax.Array) -> jax.Array:
+      outs = call_inference_fn(
+          inference_fn, xt=xt_arg, time=time,
+          conditioning=conditioning, rng=rng,
+      )
+      return corruption_process.convert_predictions(outs, xt_arg, time)["x0"]
+
+    adjoint = linear_adjoint(self.forward_fn, x0)
+    sigma_y2 = max(float(self.observation_noise) ** 2, 1e-30)
+
+    def matvec(w: jax.Array) -> jax.Array:
+      # (A Sigma_hat A^T + sigma_y^2 I) w.
+      cov_at_w = self.posterior_covariance_fn(
+          adjoint(w), xt=xt, time=time, schedule=schedule,
+          denoiser_x0=denoiser_x0,
+      )
+      return self.forward_fn.forward(cov_at_w) + sigma_y2 * w
+
+    residual = self.observation - self.forward_fn.forward(x0)
+    w = batched_cg(
+        matvec, residual, max_iter=self.cg_max_iter, tol=self.cg_tol,
+    )
+    delta_x0 = self.posterior_covariance_fn(
+        adjoint(w), xt=xt, time=time, schedule=schedule,
+        denoiser_x0=denoiser_x0,
+    )
     x0_guided = x0 + delta_x0
     guided_outputs = corruption_process.convert_predictions(
         {"x0": x0_guided}, xt, time,

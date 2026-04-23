@@ -14,8 +14,13 @@
 
 """Core protocols for the composable guidance framework.
 
-Three protocols cover every published guidance method:
+Five protocols cover every published guidance method:
 
+- ``ForwardFn``: linear / non-linear measurement map ``y = A(x_0)``
+  (shared by twists and the Pi-GDM correction).
+- ``PosteriorCovarianceFn``: linear operator ``v -> Cov(x_0 | x_t) v``
+  (plug-in point for Isotropic / Tweedie / fixed-prior Kalman variants
+  of Pi-GDM).
 - ``CorrectionFn``: modifies the denoiser's outputs dict before the
   sampler advances.  Covers Pi-GDM, covariance-aware, isotropic
   projection, iterated Pi-GDM, and DPS (via ``GradientCorrectionFn``).
@@ -24,7 +29,7 @@ Three protocols cover every published guidance method:
   methods as a gradient source.
 - ``ResamplerFn``: pure operation on a particle/weight pair.
 
-A fourth object, ``ConditionalDiffusionSampler`` (in ``sampler.py``),
+The orchestrator :class:`ConditionalDiffusionSampler` (in ``sampler.py``)
 composes the above around a ``DiffusionSampler`` to produce conditional
 samples.  The K=1 case with ``correction=None, twist=None`` delegates to
 the base sampler bit-for-bit.
@@ -43,12 +48,43 @@ class ForwardFn(Protocol):
   A minimal Protocol: a single ``forward(x)`` method that takes a batched
   input and returns the aggregated / measured output.  Any object with a
   matching ``forward`` method satisfies this -- no base-class inheritance
-  required.  Used by :class:`GaussianLikelihoodTwistFn` and the discrete
-  composition twists to share a single abstraction across modalities.
+  required.  Used by :class:`GaussianLikelihoodTwistFn`, the discrete
+  composition twists, and :class:`PiGDMCorrectionFn`, which together
+  cover every first- and second-order guidance method in the framework.
+
+  The adjoint ``A^T`` is obtained automatically via ``jax.vjp`` for
+  linear ``forward`` implementations -- no need to supply it explicitly.
   """
 
   def forward(self, x: jax.Array) -> jax.Array:
     ...
+
+
+class PosteriorCovarianceFn(Protocol):
+  """Linear operator ``v -> Cov(x_0 | x_t) v`` at a given ``(xt, time)``.
+
+  Used by :class:`PiGDMCorrectionFn` as the Kalman-gain covariance term.
+  Three built-in variants cover the published choices:
+
+  - :class:`IsotropicPosteriorCovarianceFn` (``Cov = scale(alpha, sigma) I``)
+  - :class:`FixedPriorPosteriorCovarianceFn` (known prior covariance)
+  - :class:`TweediePosteriorCovarianceFn` (via Miyasawa JVP through the
+    denoiser -- exact under any prior the denoiser represents).
+
+  Implementations may ignore any unused kwarg; the fully generic variant
+  needs ``denoiser_x0`` (a pre-composed ``xt -> xhat_0`` closure),
+  state-independent variants only use ``(time, schedule)``.
+  """
+
+  def __call__(
+      self,
+      v: jax.Array,
+      *,
+      xt: jax.Array,
+      time: jax.Array,
+      schedule: Any,
+      denoiser_x0: Callable[[jax.Array], jax.Array] | None = None,
+  ) -> jax.Array: ...
 
 
 class CorrectionFn(Protocol):

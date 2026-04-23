@@ -40,8 +40,20 @@ from hackable_diffusion.lib.sampling.time_scheduling import UniformTimeSchedule
 from hackable_diffusion.lib.guidance.corrections import (
     GradientCorrectionFn,
     IteratedCorrectionFn,
+    PiGDMCorrectionFn,
     dps_prefactor,
     miyasawa_prefactor,
+)
+from hackable_diffusion.lib.guidance.linalg import (
+    batch_inner,
+    batched_cg,
+    linear_adjoint,
+)
+from hackable_diffusion.lib.guidance.posterior_covariance import (
+    FixedPriorPosteriorCovarianceFn,
+    IsotropicPosteriorCovarianceFn,
+    TweediePosteriorCovarianceFn,
+    miyasawa_scale,
 )
 from hackable_diffusion.lib.guidance.proposal_ratio import (
     ddim_proposal_log_ratio,
@@ -500,6 +512,248 @@ class SamplerBackwardCompatTest(unittest.TestCase):
     final_base = base_out[0] if isinstance(base_out, tuple) else base_out
     final_cond = cond_out[0] if isinstance(cond_out, tuple) else cond_out
     self.assertTrue(jnp.allclose(final_base.xt, final_cond.xt, atol=1e-12))
+
+
+################################################################################
+# Linear-algebra helpers
+################################################################################
+
+
+class LinAlgTest(unittest.TestCase):
+
+  def test_batch_inner_matches_manual(self):
+    x = jnp.arange(12.0).reshape(3, 4)
+    y = jnp.ones((3, 4))
+    out = batch_inner(x, y)
+    self.assertTrue(jnp.allclose(
+        out, jnp.asarray([6.0, 22.0, 38.0]), atol=1e-12,
+    ))
+
+  def test_batched_cg_solves_diagonal_system(self):
+    # M = diag(d_i) per particle (d_i vary across batch).  Residual = d * x_true
+    # so the solution must return x_true.
+    d = jnp.asarray([[2.0, 3.0, 5.0], [7.0, 11.0, 13.0]])
+    x_true = jnp.asarray([[1.0, 2.0, 3.0], [4.0, -1.0, 2.0]])
+    residual = d * x_true
+    def matvec(p):
+      return d * p
+    x = batched_cg(matvec, residual, max_iter=20, tol=1e-10)
+    self.assertTrue(jnp.allclose(x, x_true, atol=1e-8))
+
+  def test_batched_cg_dense_random_psd(self):
+    rng = jax.random.PRNGKey(0)
+    B, n = 3, 6
+    # Each particle has its own random PSD matrix M_i.
+    A = jax.random.normal(rng, (B, n, n), dtype=jnp.float64)
+    M = jnp.einsum("bij,bkj->bik", A, A) + jnp.eye(n, dtype=jnp.float64)[None]
+    x_true = jax.random.normal(jax.random.PRNGKey(1), (B, n), dtype=jnp.float64)
+    residual = jnp.einsum("bij,bj->bi", M, x_true)
+    def matvec(p):
+      return jnp.einsum("bij,bj->bi", M, p)
+    x = batched_cg(matvec, residual, max_iter=50, tol=1e-10)
+    self.assertTrue(jnp.allclose(x, x_true, atol=1e-6))
+
+  def test_linear_adjoint_matches_matrix_transpose(self):
+    # forward = linear map x -> x @ W.T, adjoint should be w -> w @ W.
+    rng = jax.random.PRNGKey(0)
+    n, m = 8, 3
+    W = jax.random.normal(rng, (m, n), dtype=jnp.float64)
+
+    @dataclasses.dataclass(kw_only=True, frozen=True)
+    class _LinFwd:
+      def forward(self, x):
+        return x @ W.T
+
+    x = jax.random.normal(jax.random.PRNGKey(1), (4, n), dtype=jnp.float64)
+    adj = linear_adjoint(_LinFwd(), x)
+    w = jax.random.normal(jax.random.PRNGKey(2), (4, m), dtype=jnp.float64)
+    out = adj(w)
+    expected = w @ W  # (4, m) @ (m, n) = (4, n)
+    self.assertTrue(jnp.allclose(out, expected, atol=1e-12))
+
+
+################################################################################
+# PosteriorCovarianceFn variants
+################################################################################
+
+
+class IsotropicPosteriorCovarianceTest(unittest.TestCase):
+
+  def test_default_scale_is_miyasawa(self):
+    schedule = schedules.CosineSchedule()
+    op = IsotropicPosteriorCovarianceFn()
+    v = jnp.ones((2, 4), dtype=jnp.float64)
+    t = jnp.asarray([0.3], dtype=jnp.float64)
+    out = op(v, xt=v, time=t, schedule=schedule)
+    alpha, sigma = scalar_alpha_sigma(schedule, t)
+    self.assertTrue(jnp.allclose(
+        out, (sigma ** 2 / alpha) * v, atol=1e-12,
+    ))
+
+  def test_custom_scale_fn(self):
+    schedule = schedules.CosineSchedule()
+    op = IsotropicPosteriorCovarianceFn(
+        scale_fn=lambda alpha, sigma: jnp.asarray(3.0, dtype=alpha.dtype),
+    )
+    v = jnp.ones((2, 4), dtype=jnp.float64)
+    out = op(v, xt=v, time=jnp.asarray([0.5]), schedule=schedule)
+    self.assertTrue(jnp.allclose(out, 3.0 * v, atol=1e-12))
+
+
+class FixedPriorPosteriorCovarianceTest(unittest.TestCase):
+
+  def test_dense_matrix_application(self):
+    schedule = schedules.CosineSchedule()
+    C = jnp.asarray([[2.0, 0.5], [0.5, 3.0]], dtype=jnp.float64)
+    op = FixedPriorPosteriorCovarianceFn(prior_covariance=C)
+    v = jnp.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=jnp.float64)
+    t = jnp.asarray([0.5], dtype=jnp.float64)
+    out = op(v, xt=v, time=t, schedule=schedule)
+    alpha, sigma = scalar_alpha_sigma(schedule, t)
+    expected = (sigma ** 2 / alpha) * (v @ C.T)
+    self.assertTrue(jnp.allclose(out, expected, atol=1e-12))
+
+  def test_apply_fn_matches_dense(self):
+    schedule = schedules.CosineSchedule()
+    C = jnp.asarray([[2.0, 0.5], [0.5, 3.0]], dtype=jnp.float64)
+    op_dense = FixedPriorPosteriorCovarianceFn(prior_covariance=C)
+    op_apply = FixedPriorPosteriorCovarianceFn(
+        apply_fn=lambda v_flat: v_flat @ C.T,
+    )
+    v = jnp.asarray([[1.0, -1.0]], dtype=jnp.float64)
+    t = jnp.asarray([0.5], dtype=jnp.float64)
+    a = op_dense(v, xt=v, time=t, schedule=schedule)
+    b = op_apply(v, xt=v, time=t, schedule=schedule)
+    self.assertTrue(jnp.allclose(a, b, atol=1e-12))
+
+  def test_requires_exactly_one_operator(self):
+    with self.assertRaises(ValueError):
+      FixedPriorPosteriorCovarianceFn()
+    with self.assertRaises(ValueError):
+      FixedPriorPosteriorCovarianceFn(
+          prior_covariance=jnp.eye(2), apply_fn=lambda v: v,
+      )
+
+
+class TweediePosteriorCovarianceTest(unittest.TestCase):
+
+  def test_linear_denoiser_recovers_scaled_gain(self):
+    # If denoiser_x0(xt) = G xt for a fixed matrix G, then JVP(denoiser, xt, v)
+    # = G v and the operator returns (sigma^2/alpha) * G v.
+    schedule = schedules.CosineSchedule()
+    rng = jax.random.PRNGKey(0)
+    n = 4
+    G = jax.random.normal(rng, (n, n), dtype=jnp.float64)
+    def denoiser(x):
+      return x @ G.T
+
+    op = TweediePosteriorCovarianceFn()
+    v = jnp.asarray([[1.0, 2.0, 3.0, 4.0]], dtype=jnp.float64)
+    t = jnp.asarray([0.4], dtype=jnp.float64)
+    out = op(v, xt=v, time=t, schedule=schedule, denoiser_x0=denoiser)
+    alpha, sigma = scalar_alpha_sigma(schedule, t)
+    expected = (sigma ** 2 / alpha) * (v @ G.T)
+    self.assertTrue(jnp.allclose(out, expected, atol=1e-10))
+
+  def test_missing_denoiser_raises(self):
+    schedule = schedules.CosineSchedule()
+    op = TweediePosteriorCovarianceFn()
+    v = jnp.ones((1, 2))
+    with self.assertRaises(ValueError):
+      op(v, xt=v, time=jnp.asarray([0.5]), schedule=schedule)
+
+
+################################################################################
+# PiGDM correction
+################################################################################
+
+
+class PiGDMCorrectionTest(unittest.TestCase):
+  """End-to-end Kalman update sanity checks on a linear-Gaussian setup."""
+
+  def _setup(self, *, n=4, batch=2):
+    schedule = schedules.CosineSchedule()
+    corruption = GaussianProcess(schedule=schedule)
+    fwd = _MeanForwardFn()  # maps (B, n) -> (B, 1)
+    # Arbitrary fixed x0 and target observation.
+    x0 = jax.random.normal(jax.random.PRNGKey(0), (batch, n), dtype=jnp.float64)
+    y_target = fwd.forward(x0) + 1.0  # shift target by 1 to create a residual
+    return schedule, corruption, fwd, x0, y_target
+
+  def test_isotropic_pigdm_reduces_residual(self):
+    schedule, corruption, fwd, x0, y = self._setup()
+
+    def inference_fn(xt, time, conditioning=None):
+      del xt, time, conditioning
+      return {"x0": x0}
+
+    correction = PiGDMCorrectionFn(
+        observation=y, forward_fn=fwd,
+        posterior_covariance_fn=IsotropicPosteriorCovarianceFn(),
+        observation_noise=0.1,
+    )
+    xt = jnp.zeros_like(x0)
+    time = jnp.asarray([0.5], dtype=jnp.float64)
+    corrected = correction(
+        {"x0": x0}, xt, time,
+        schedule=schedule, corruption_process=corruption,
+        inference_fn=inference_fn,
+    )
+    x0_new = corruption.convert_predictions(corrected, xt, time)["x0"]
+    res_old = jnp.abs(fwd.forward(x0) - y)
+    res_new = jnp.abs(fwd.forward(x0_new) - y)
+    self.assertTrue(bool(jnp.all(res_new < res_old)))
+
+  def test_tweedie_pigdm_runs_and_reduces_residual(self):
+    schedule, corruption, fwd, x0, y = self._setup()
+
+    # Non-trivial denoiser: xhat_0 = tanh(xt).  Jacobian = diag(1 - tanh^2).
+    def inference_fn(xt, time, conditioning=None):
+      del time, conditioning
+      return {"x0": jnp.tanh(xt)}
+
+    correction = PiGDMCorrectionFn(
+        observation=y, forward_fn=fwd,
+        posterior_covariance_fn=TweediePosteriorCovarianceFn(),
+        observation_noise=0.1, cg_max_iter=25, cg_tol=1e-8,
+    )
+    xt = jnp.full_like(x0, 0.3)  # tanh(xt) is non-identity
+    time = jnp.asarray([0.5], dtype=jnp.float64)
+    # The denoiser's output at this xt is what x0 is set to.
+    x0_at_xt = jnp.tanh(xt)
+    corrected = correction(
+        {"x0": x0_at_xt}, xt, time,
+        schedule=schedule, corruption_process=corruption,
+        inference_fn=inference_fn,
+    )
+    x0_new = corruption.convert_predictions(corrected, xt, time)["x0"]
+    res_old = jnp.abs(fwd.forward(x0_at_xt) - y)
+    res_new = jnp.abs(fwd.forward(x0_new) - y)
+    self.assertTrue(bool(jnp.all(res_new < res_old)))
+
+  def test_zero_residual_gives_zero_correction(self):
+    # If observation matches A x0 already, Kalman update is zero.
+    schedule, corruption, fwd, x0, _ = self._setup()
+    y_match = fwd.forward(x0)  # consistent observation
+
+    def inference_fn(xt, time, conditioning=None):
+      del xt, time, conditioning
+      return {"x0": x0}
+
+    correction = PiGDMCorrectionFn(
+        observation=y_match, forward_fn=fwd,
+        posterior_covariance_fn=IsotropicPosteriorCovarianceFn(),
+        observation_noise=0.1,
+    )
+    xt = jnp.zeros_like(x0)
+    time = jnp.asarray([0.5], dtype=jnp.float64)
+    corrected = correction(
+        {"x0": x0}, xt, time,
+        schedule=schedule, corruption_process=corruption,
+        inference_fn=inference_fn,
+    )
+    x0_new = corruption.convert_predictions(corrected, xt, time)["x0"]
+    self.assertTrue(jnp.allclose(x0_new, x0, atol=1e-10))
 
 
 if __name__ == "__main__":
