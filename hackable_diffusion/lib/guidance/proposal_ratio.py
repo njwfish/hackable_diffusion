@@ -18,16 +18,22 @@ When a :class:`CorrectionFn` shifts the denoiser output, SMC importance
 weights require this ratio to stay unbiased.  For common sampler steps
 the ratio admits a closed form (no Monte Carlo needed).
 
-This module provides:
+Every registered implementation has the uniform signature
 
-- :func:`ddim_proposal_log_ratio` for :class:`DDIMStep` (Gaussian
-  linear-mean-shift formula; returns 0 at ``eta=0``).
+    ``(stepper, corruption_process, outputs_uncorrected, outputs_corrected,
+       xt_prev, xt_next, time_prev, time_next) -> (K,) log-ratio``
+
+so :func:`proposal_log_ratio` can dispatch by ``isinstance`` without
+signature adapters.  Add a new stepper by registering its ratio via
+:func:`register_proposal_ratio`.
+
+Built-in implementations:
+
+- :func:`ddim_proposal_log_ratio` for Gaussian :class:`DDIMStep`
+  (linear-mean-shift formula; returns 0 at ``eta=0``).
 - :func:`simplicial_ddim_proposal_log_ratio` for
   :class:`SimplicialDDIMStep` with ``churn=0`` (categorical log-prob
   ratio on the sampled token).
-- :func:`proposal_log_ratio`, the ``isinstance``-based dispatcher used
-  by :class:`ConditionalDiffusionSampler`.  Add a new stepper by
-  registering its ratio via :func:`register_proposal_ratio`.
 """
 
 from __future__ import annotations
@@ -44,19 +50,19 @@ from hackable_diffusion.lib.sampling.simplicial_step_sampler import (
 from hackable_diffusion.lib.guidance.utils import scalar_alpha_sigma
 
 
-# ----------------------------------------------------------------------
-# Stepper-specific closed forms
-# ----------------------------------------------------------------------
+################################################################################
+# MARK: Gaussian DDIM
+################################################################################
 
 
 def ddim_proposal_log_ratio(
     *,
     stepper: DDIMStep,
-    schedule: Any,
+    corruption_process: Any,
+    outputs_uncorrected: dict[str, jax.Array],
+    outputs_corrected: dict[str, jax.Array],
     xt_prev: jax.Array,
     xt_next: jax.Array,
-    x0_uncorrected: jax.Array,
-    x0_corrected: jax.Array,
     time_prev: jax.Array,
     time_next: jax.Array,
 ) -> jax.Array:
@@ -68,9 +74,9 @@ def ddim_proposal_log_ratio(
       B = alpha_s - alpha_r sigma_s sqrt(1-eta^2) / sigma_r,
       C = sigma_s sqrt(1-eta^2) / sigma_r,
 
-  with ``r = prev, s = next`` and step variance ``(sigma_s eta)^2``.
-  A correction that shifts ``xhat_0`` by ``Delta`` shifts the proposal
-  mean by ``B Delta`` with variance unchanged, giving
+  with ``r = prev, s = next`` and step variance ``(sigma_s eta)^2``.  A
+  correction that shifts ``xhat_0`` by ``Delta`` shifts the proposal mean
+  by ``B Delta`` with variance unchanged, giving
 
       log p - log q = (||x - mu_q||^2 - ||x - mu_p||^2) / (2 sigma_step^2).
 
@@ -78,12 +84,20 @@ def ddim_proposal_log_ratio(
   (importance sampling degenerates).  We return zero there -- consistent
   with standard TDS-literature practice for deterministic proposals.
   """
+  schedule = corruption_process.schedule
   alpha_r, sigma_r = scalar_alpha_sigma(schedule, time_prev)
   alpha_s, sigma_s = scalar_alpha_sigma(schedule, time_next)
   eta = float(getattr(stepper, "stoch_coeff", 0.0))
 
   if eta == 0.0:
     return jnp.zeros(xt_next.shape[0], dtype=xt_next.dtype)
+
+  x0_uncorrected = corruption_process.convert_predictions(
+      outputs_uncorrected, xt_prev, time_prev,
+  )["x0"]
+  x0_corrected = corruption_process.convert_predictions(
+      outputs_corrected, xt_prev, time_prev,
+  )["x0"]
 
   det_factor = jnp.sqrt(jnp.maximum(1.0 - eta ** 2, 0.0))
   coeff_b = alpha_s - alpha_r * sigma_s * det_factor / jnp.maximum(sigma_r, 1e-12)
@@ -93,40 +107,44 @@ def ddim_proposal_log_ratio(
   mu_p = coeff_b * x0_uncorrected + coeff_c * xt_prev
   mu_q = coeff_b * x0_corrected + coeff_c * xt_prev
 
-  flat_unc = (xt_next - mu_p).reshape(xt_next.shape[0], -1)
-  flat_cor = (xt_next - mu_q).reshape(xt_next.shape[0], -1)
-  denom = 2.0 * sigma_step ** 2
-  return (
-      jnp.sum(flat_cor ** 2, axis=-1) - jnp.sum(flat_unc ** 2, axis=-1)
-  ) / denom
+  sq_p = jnp.sum((xt_next - mu_p).reshape(xt_next.shape[0], -1) ** 2, axis=-1)
+  sq_q = jnp.sum((xt_next - mu_q).reshape(xt_next.shape[0], -1) ** 2, axis=-1)
+  return (sq_q - sq_p) / (2.0 * sigma_step ** 2)
+
+
+################################################################################
+# MARK: Simplicial DDIM
+################################################################################
 
 
 def simplicial_ddim_proposal_log_ratio(
     *,
     stepper: SimplicialDDIMStep,
+    corruption_process: Any,
     outputs_uncorrected: dict[str, jax.Array],
     outputs_corrected: dict[str, jax.Array],
     xt_prev: jax.Array,
     xt_next: jax.Array,
     time_prev: jax.Array,
-    corruption_process: Any,
+    time_next: jax.Array,
 ) -> jax.Array:
   """Exact ``log p_theta - log q`` for the churn=0 simplicial DDIM step.
 
   The simplicial DDIM step at ``churn = 0`` draws a token
-  ``i ~ Categorical(softmax(logits))`` and beta weights ``(w, 1-w)``
-  from a schedule-dependent Beta.  The beta weights are data-independent
-  and cancel between numerator and denominator; only the token draw
-  depends on the correction.  Hence
+  ``i ~ Categorical(softmax(logits))`` and beta weights ``(w, 1-w)`` from
+  a schedule-dependent Beta.  The beta weights are data-independent and
+  cancel between numerator and denominator; only the token draw depends
+  on the correction.  Hence
 
       log p_theta - log q = log softmax(logits_unc)[i]
                           - log softmax(logits_cor)[i].
 
-  The sampled token is recovered site-wise from ``argmax(xt_next -
-  xt_prev)``: at the sampled token the position picks up an extra
-  ``log(1-w)`` term, while everywhere else the difference is just
-  ``log w``.
+  The sampled token is recovered site-wise from
+  ``argmax(xt_next - xt_prev)``: at the sampled token the position picks
+  up an extra ``log(1-w)`` term, while everywhere else the difference is
+  just ``log w``.
   """
+  del time_next  # Simplicial ratio depends only on time_prev logits.
   churn = float(getattr(stepper, "churn", 0.0))
   if churn != 0.0:
     raise NotImplementedError(
@@ -142,89 +160,34 @@ def simplicial_ddim_proposal_log_ratio(
   )["logits"]
   log_p_unc = jax.nn.log_softmax(logits_unc, axis=-1)
   log_p_cor = jax.nn.log_softmax(logits_cor, axis=-1)
-  sampled_idx = jnp.argmax(xt_next - xt_prev, axis=-1)  # (K, n_child)
+  sampled_idx = jnp.argmax(xt_next - xt_prev, axis=-1)
   one_hot = jax.nn.one_hot(sampled_idx, logits_unc.shape[-1], dtype=log_p_unc.dtype)
-  per_site_unc = jnp.sum(log_p_unc * one_hot, axis=-1)
-  per_site_cor = jnp.sum(log_p_cor * one_hot, axis=-1)
-  return jnp.sum(per_site_unc - per_site_cor, axis=-1)
+  per_site = jnp.sum((log_p_unc - log_p_cor) * one_hot, axis=-1)
+  return jnp.sum(per_site, axis=-1)
 
 
-# ----------------------------------------------------------------------
-# Dispatcher
-# ----------------------------------------------------------------------
+################################################################################
+# MARK: Registry and dispatcher
+################################################################################
 
 
-# Signature of a registered proposal-ratio callable.
 ProposalRatioFn = Callable[..., jax.Array]
 
-
-_PROPOSAL_RATIO_REGISTRY: dict[type, ProposalRatioFn] = {}
+_PROPOSAL_RATIO_REGISTRY: dict[type, ProposalRatioFn] = {
+    DDIMStep: ddim_proposal_log_ratio,
+    SimplicialDDIMStep: simplicial_ddim_proposal_log_ratio,
+}
 
 
 def register_proposal_ratio(stepper_cls: type, fn: ProposalRatioFn) -> None:
   """Register a closed-form proposal ratio for a stepper class.
 
-  ``fn`` must accept all of:
+  ``fn`` must match the uniform signature
 
-    ``stepper, corruption_process, outputs_uncorrected, outputs_corrected,
-    xt_prev, xt_next, time_prev, time_next``
-
-  and return shape ``(K,)``.  Unknown kwargs should be ignored via
-  ``**_``.
+      ``(stepper, corruption_process, outputs_uncorrected, outputs_corrected,
+         xt_prev, xt_next, time_prev, time_next) -> (K,)``.
   """
   _PROPOSAL_RATIO_REGISTRY[stepper_cls] = fn
-
-
-def _ddim_adapter(
-    *,
-    stepper,
-    corruption_process,
-    outputs_uncorrected,
-    outputs_corrected,
-    xt_prev,
-    xt_next,
-    time_prev,
-    time_next,
-    **_,
-):
-  schedule = getattr(corruption_process, "schedule", None)
-  x0_unc = corruption_process.convert_predictions(
-      outputs_uncorrected, xt_prev, time_prev,
-  )["x0"]
-  x0_cor = corruption_process.convert_predictions(
-      outputs_corrected, xt_prev, time_prev,
-  )["x0"]
-  return ddim_proposal_log_ratio(
-      stepper=stepper, schedule=schedule,
-      xt_prev=xt_prev, xt_next=xt_next,
-      x0_uncorrected=x0_unc, x0_corrected=x0_cor,
-      time_prev=time_prev, time_next=time_next,
-  )
-
-
-def _simplicial_adapter(
-    *,
-    stepper,
-    corruption_process,
-    outputs_uncorrected,
-    outputs_corrected,
-    xt_prev,
-    xt_next,
-    time_prev,
-    **_,
-):
-  return simplicial_ddim_proposal_log_ratio(
-      stepper=stepper,
-      outputs_uncorrected=outputs_uncorrected,
-      outputs_corrected=outputs_corrected,
-      xt_prev=xt_prev, xt_next=xt_next,
-      time_prev=time_prev,
-      corruption_process=corruption_process,
-  )
-
-
-register_proposal_ratio(DDIMStep, _ddim_adapter)
-register_proposal_ratio(SimplicialDDIMStep, _simplicial_adapter)
 
 
 def proposal_log_ratio(
@@ -241,11 +204,11 @@ def proposal_log_ratio(
 ) -> jax.Array:
   """Closed-form ``log p_theta - log q`` for a single sampler step.
 
-  Dispatches by ``isinstance`` against the registry (populated by
-  :func:`register_proposal_ratio`).  Returns zero when the correction is
-  an identity (uncorrected = corrected).  Raises ``NotImplementedError``
-  for unknown steppers; callers should either register a ratio or drop
-  the correction (bootstrap SMC is always exact).
+  Dispatches by ``isinstance`` against the registry.  Returns zero when
+  the correction is an identity (uncorrected = corrected).  Raises
+  ``NotImplementedError`` for unknown steppers -- register one via
+  :func:`register_proposal_ratio`, or drop the correction (bootstrap SMC
+  is always exact).
   """
   if correction_identity:
     return jnp.zeros(xt_next.shape[0], dtype=xt_next.dtype)
