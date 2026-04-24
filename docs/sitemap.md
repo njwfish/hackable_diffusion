@@ -5,4 +5,5 @@
 *   [Inference Function](./inference.md)
 *   [Diffusion Loss Functions](./loss.md)
 *   [Sampling](./sampling.md)
+*   [Composable Guidance Framework](./composable_guidance.md)
 

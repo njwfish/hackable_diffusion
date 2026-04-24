@@ -44,8 +44,11 @@ import jax
 import jax.numpy as jnp
 
 from hackable_diffusion.lib.sampling.gaussian_step_sampler import (
+    AdjustedDDIMStep,
     DDIMStep,
+    HeunStep,
     SdeStep,
+    VelocityStep,
 )
 from hackable_diffusion.lib.sampling.simplicial_step_sampler import (
     SimplicialDDIMStep,
@@ -109,6 +112,105 @@ def ddim_proposal_log_ratio(
 
   mu_p = coeff_b * x0_uncorrected + coeff_c * xt_prev
   mu_q = coeff_b * x0_corrected + coeff_c * xt_prev
+
+  sq_p = jnp.sum((xt_next - mu_p).reshape(xt_next.shape[0], -1) ** 2, axis=-1)
+  sq_q = jnp.sum((xt_next - mu_q).reshape(xt_next.shape[0], -1) ** 2, axis=-1)
+  return (sq_q - sq_p) / (2.0 * sigma_step ** 2)
+
+
+################################################################################
+# MARK: Deterministic Gaussian steppers (ratio = 0)
+################################################################################
+
+
+def _zero_ratio(*, xt_next, **_) -> jax.Array:
+  """Deterministic proposal: Dirac; Gaussian log-ratio is ill-defined.
+
+  Consistent with the DDIM(eta=0) convention -- treat deterministic
+  corrections as a heuristic (uniform-weight) SMC proposal.
+  """
+  return jnp.zeros(xt_next.shape[0], dtype=xt_next.dtype)
+
+
+################################################################################
+# MARK: Velocity-SDE step
+################################################################################
+
+
+def velocity_proposal_log_ratio(
+    *,
+    stepper: VelocityStep,
+    corruption_process: Any,
+    outputs_uncorrected: dict[str, jax.Array],
+    outputs_corrected: dict[str, jax.Array],
+    xt_prev: jax.Array,
+    xt_next: jax.Array,
+    time_prev: jax.Array,
+    time_next: jax.Array,
+) -> jax.Array:
+  """Exact ``log p_theta - log q`` for :class:`VelocityStep` at ``epsilon > 0``.
+
+  Step mean (from the velocity-SDE formulation):
+
+      mu = xt + dt * [-velocity(xhat_0) + 0.5 eps^2 g^2 score(xhat_0)]
+
+  with ``velocity = alpha_der xhat_0 + (sigma_der/sigma)(xt - alpha xhat_0)``
+  and ``score = (alpha xhat_0 - xt) / sigma^2``.  The mean is linear in
+  ``xhat_0`` with coefficient
+
+      B = dt * [-(alpha_der - alpha sigma_der/sigma)
+                + 0.5 eps^2 g^2 alpha/sigma^2]
+
+  and the proposal has standard deviation ``sqrt(dt) g eps``.  Returns
+  zero at ``epsilon = 0`` (deterministic limit).
+  """
+  eps = float(getattr(stepper, "epsilon", 0.0))
+  if eps == 0.0:
+    return jnp.zeros(xt_next.shape[0], dtype=xt_next.dtype)
+
+  schedule = corruption_process.schedule
+  t_prev = jnp.atleast_1d(time_prev).reshape(-1)[0:1]
+  t_next = jnp.atleast_1d(time_next).reshape(-1)[0:1]
+  alpha = schedule.alpha(t_prev).reshape(())
+  sigma = schedule.sigma(t_prev).reshape(())
+  g_t = schedule.g(t_prev).reshape(())
+  dt = (t_prev - t_next).reshape(())
+
+  # Schedule derivatives via elementwise gradient at t_prev (1-D input).
+  alpha_der = jax.grad(lambda t: schedule.alpha(t[None]).reshape(()))(
+      t_prev.reshape(()),
+  )
+  sigma_der = jax.grad(lambda t: schedule.sigma(t[None]).reshape(()))(
+      t_prev.reshape(()),
+  )
+
+  x0_unc = corruption_process.convert_predictions(
+      outputs_uncorrected, xt_prev, time_prev,
+  )["x0"]
+  x0_cor = corruption_process.convert_predictions(
+      outputs_corrected, xt_prev, time_prev,
+  )["x0"]
+
+  sigma2_safe = jnp.maximum(sigma ** 2, 1e-12)
+  sigma_safe = jnp.maximum(sigma, 1e-12)
+
+  # velocity linearised in x0:
+  #   velocity(x0) = (alpha_der - alpha sigma_der / sigma) * x0
+  #                + (sigma_der / sigma) * xt
+  v_x0 = alpha_der - alpha * sigma_der / sigma_safe
+  v_xt = sigma_der / sigma_safe
+  # score linearised in x0:
+  #   score(x0) = (alpha / sigma^2) x0 - (1/sigma^2) xt
+  s_x0 = alpha / sigma2_safe
+  s_xt = -1.0 / sigma2_safe
+
+  coeff_b = dt * (-v_x0 + 0.5 * eps ** 2 * g_t ** 2 * s_x0)
+  base_const = dt * (-v_xt + 0.5 * eps ** 2 * g_t ** 2 * s_xt)
+  base = xt_prev + base_const * xt_prev
+
+  mu_p = base + coeff_b * x0_unc
+  mu_q = base + coeff_b * x0_cor
+  sigma_step = jnp.sqrt(dt) * g_t * eps
 
   sq_p = jnp.sum((xt_next - mu_p).reshape(xt_next.shape[0], -1) ** 2, axis=-1)
   sq_q = jnp.sum((xt_next - mu_q).reshape(xt_next.shape[0], -1) ** 2, axis=-1)
@@ -247,9 +349,12 @@ def simplicial_ddim_proposal_log_ratio(
 ProposalRatioFn = Callable[..., jax.Array]
 
 _PROPOSAL_RATIO_REGISTRY: dict[type, ProposalRatioFn] = {
+    AdjustedDDIMStep: _zero_ratio,     # deterministic
     DDIMStep: ddim_proposal_log_ratio,
+    HeunStep: _zero_ratio,             # deterministic predictor-corrector
     SdeStep: sde_proposal_log_ratio,
     SimplicialDDIMStep: simplicial_ddim_proposal_log_ratio,
+    VelocityStep: velocity_proposal_log_ratio,
 }
 
 

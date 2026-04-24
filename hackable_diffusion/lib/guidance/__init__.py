@@ -21,7 +21,10 @@ Pi-GDM, cov-aware, DPS, TDS, MCGDiff, and other published guidance
 methods as configurations over a common diffusion sampler.
 """
 
-from hackable_diffusion.lib.guidance.adapters import BoundAggregateGuidanceFn
+from hackable_diffusion.lib.guidance.adapters import (
+    BoundAggregateGuidanceFn,
+    CFGCorrectionFn,
+)
 from hackable_diffusion.lib.guidance.corrections import (
     GradientCorrectionFn,
     IteratedCorrectionFn,
@@ -63,6 +66,7 @@ from hackable_diffusion.lib.guidance.proposal_ratio import (
     register_proposal_ratio,
     sde_proposal_log_ratio,
     simplicial_ddim_proposal_log_ratio,
+    velocity_proposal_log_ratio,
 )
 from hackable_diffusion.lib.guidance.resamplers import (
     ESSThresholdedResamplerFn,
@@ -92,6 +96,7 @@ from hackable_diffusion.lib.guidance.utils import (
 
 __all__ = [
     "BoundAggregateGuidanceFn",
+    "CFGCorrectionFn",
     "ClassifierTwistFn",
     "ComposeForwardFn",
     "ConditionalDiffusionSampler",
@@ -141,4 +146,5 @@ __all__ = [
     "scalar_alpha_sigma",
     "sde_proposal_log_ratio",
     "simplicial_ddim_proposal_log_ratio",
+    "velocity_proposal_log_ratio",
 ]

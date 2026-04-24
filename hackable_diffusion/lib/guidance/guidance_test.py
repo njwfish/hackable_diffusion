@@ -34,9 +34,15 @@ import jax.numpy as jnp
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.corruption.gaussian import GaussianProcess
 from hackable_diffusion.lib.sampling.gaussian_step_sampler import (
+    AdjustedDDIMStep,
     DDIMStep,
+    HeunStep,
     SdeStep,
+    VelocityStep,
 )
+from hackable_diffusion.lib.inference.guidance import ScalarGuidanceFn
+
+from hackable_diffusion.lib.guidance.adapters import CFGCorrectionFn
 from hackable_diffusion.lib.sampling.sampling import DiffusionSampler
 from hackable_diffusion.lib.sampling.time_scheduling import UniformTimeSchedule
 
@@ -70,6 +76,7 @@ from hackable_diffusion.lib.guidance.proposal_ratio import (
     proposal_log_ratio,
     register_proposal_ratio,
     sde_proposal_log_ratio,
+    velocity_proposal_log_ratio,
 )
 from hackable_diffusion.lib.guidance.resamplers import (
     ESSThresholdedResamplerFn,
@@ -932,6 +939,105 @@ class SdeProposalRatioTest(unittest.TestCase):
         correction_identity=False,
     )
     self.assertTrue(bool(jnp.all(jnp.isfinite(ratio))))
+
+
+################################################################################
+# Additional stepper ratios: AdjustedDDIM / Velocity / Heun
+################################################################################
+
+
+class DeterministicStepperRatioTest(unittest.TestCase):
+  """AdjustedDDIMStep and HeunStep are deterministic; ratio must be 0."""
+
+  def test_adjusted_ddim_ratio_is_zero_via_registry(self):
+    schedule = schedules.CosineSchedule()
+    corruption = GaussianProcess(schedule=schedule)
+    stepper = AdjustedDDIMStep(corruption_process=corruption)
+    xt = jnp.ones((3, 8), dtype=jnp.float64)
+    ratio = proposal_log_ratio(
+        stepper=stepper, corruption_process=corruption,
+        outputs_uncorrected={"x0": jnp.zeros_like(xt)},
+        outputs_corrected={"x0": jnp.ones_like(xt)},
+        xt_prev=xt, xt_next=xt + 0.1,
+        time_prev=jnp.asarray([0.5]), time_next=jnp.asarray([0.4]),
+        correction_identity=False,
+    )
+    self.assertTrue(bool(jnp.all(ratio == 0.0)))
+
+
+class VelocityProposalRatioTest(unittest.TestCase):
+
+  def test_deterministic_epsilon_returns_zero(self):
+    schedule = schedules.CosineSchedule()
+    corruption = GaussianProcess(schedule=schedule)
+    stepper = VelocityStep(corruption_process=corruption, epsilon=0.0)
+    xt = jnp.ones((3, 8), dtype=jnp.float64)
+    ratio = velocity_proposal_log_ratio(
+        stepper=stepper, corruption_process=corruption,
+        outputs_uncorrected={"x0": jnp.zeros_like(xt)},
+        outputs_corrected={"x0": jnp.ones_like(xt)},
+        xt_prev=xt, xt_next=xt + 0.1,
+        time_prev=jnp.asarray([0.5]), time_next=jnp.asarray([0.4]),
+    )
+    self.assertTrue(bool(jnp.all(ratio == 0.0)))
+
+  def test_stochastic_epsilon_finite_and_nonzero(self):
+    schedule = schedules.CosineSchedule()
+    corruption = GaussianProcess(schedule=schedule)
+    stepper = VelocityStep(corruption_process=corruption, epsilon=0.5)
+    xt = jnp.ones((2, 4), dtype=jnp.float64)
+    ratio = velocity_proposal_log_ratio(
+        stepper=stepper, corruption_process=corruption,
+        outputs_uncorrected={"x0": jnp.zeros_like(xt)},
+        outputs_corrected={"x0": jnp.full_like(xt, 0.3)},
+        xt_prev=xt, xt_next=jnp.full_like(xt, 0.2),
+        time_prev=jnp.asarray([0.5]), time_next=jnp.asarray([0.4]),
+    )
+    self.assertTrue(bool(jnp.all(jnp.isfinite(ratio))))
+    self.assertTrue(bool(jnp.all(ratio != 0.0)))
+
+
+################################################################################
+# Classifier-free guidance correction adapter
+################################################################################
+
+
+class CFGCorrectionTest(unittest.TestCase):
+  """CFGCorrectionFn blends conditional + unconditional outputs."""
+
+  def test_scalar_cfg_reproduces_linear_blend(self):
+    schedule = schedules.CosineSchedule()
+    corruption = GaussianProcess(schedule=schedule)
+    batch, n = 2, 4
+    x0_cond = jax.random.normal(
+        jax.random.PRNGKey(0), (batch, n), dtype=jnp.float64,
+    )
+    x0_uncond = jax.random.normal(
+        jax.random.PRNGKey(1), (batch, n), dtype=jnp.float64,
+    )
+
+    # Conditional branch: we hand it ``outputs`` directly.
+    # Unconditional branch: called through CFGCorrectionFn.
+    def uncond_fn(xt, time, conditioning=None):
+      del xt, time, conditioning
+      return {"x0": x0_uncond}
+
+    w = 1.5
+    correction = CFGCorrectionFn(
+        unconditional_inference_fn=uncond_fn,
+        guidance_fn=ScalarGuidanceFn(guidance=w),
+    )
+
+    xt = jnp.zeros_like(x0_cond)
+    time = jnp.asarray([0.5], dtype=jnp.float64)
+    out = correction(
+        {"x0": x0_cond}, xt, time,
+        schedule=schedule, corruption_process=corruption,
+        conditioning=None,
+    )
+    # ScalarGuidanceFn blends as ``cond * (1+w) - uncond * w`` per tree leaf.
+    expected = x0_cond * (1.0 + w) - x0_uncond * w
+    self.assertTrue(jnp.allclose(out["x0"], expected, atol=1e-12))
 
 
 if __name__ == "__main__":
