@@ -272,7 +272,7 @@ class GaussianSourceTargets(TargetAdapter):
       interpolant,
   ) -> TargetInfoTree:
     if len(prediction) != 1:
-      raise KeyError(
+      raise ValueError(
           f'Exactly one prediction is required. Got: {prediction.keys()=}'
       )
     source_type, source_value = next(iter(prediction.items()))

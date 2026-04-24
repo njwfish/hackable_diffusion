@@ -15,9 +15,9 @@
 """Gaussian corruption: shim over the composed ``InterpolantProcess``.
 
 ``GaussianProcess(schedule=...)`` wraps an ``InterpolantProcess`` with
-``(IndependentCoupling(StandardNormalSource()), LinearInterpolant(schedule),
+``(StandardNormalSource(), LinearInterpolant(schedule),
 GaussianSourceTargets())``.  The legacy parameterisations (``x0``,
-``epsilon``, ``score``, ``velocity``, ``v``) and their bidirectional
+``x1``, ``score``, ``velocity``, ``v``) and their bidirectional
 conversions all live in ``targets.py``'s ``CONVERTERS`` table -- moved
 out of this module but byte-identical in behaviour.
 
@@ -55,10 +55,9 @@ class GaussianProcess(base.CorruptionProcess):
   """Gaussian corruption ``xt = alpha(t) x_0 + sigma(t) epsilon``.
 
   Shim over :class:`InterpolantProcess` configured with
-  ``(IndependentCoupling(StandardNormalSource()), LinearInterpolant,
-  GaussianSourceTargets)``.  Every method delegates to the internally
-  built ``_process``; behaviour is byte-identical to the pre-refactor
-  implementation.
+  ``(StandardNormalSource(), LinearInterpolant, GaussianSourceTargets)``.
+  Every method delegates to the internally built ``_process``;
+  behaviour is byte-identical to the pre-refactor implementation.
   """
 
   schedule: GaussianSchedule
@@ -70,9 +69,7 @@ class GaussianProcess(base.CorruptionProcess):
     object.__setattr__(
         self, '_process',
         base.InterpolantProcess(
-            coupling=couplings.IndependentCoupling(
-                source=couplings.StandardNormalSource(),
-            ),
+            coupling=couplings.StandardNormalSource(),
             interpolant=interpolants.LinearInterpolant(schedule=self.schedule),
             targets=targets.GaussianSourceTargets(),
         ),

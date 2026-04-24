@@ -53,14 +53,20 @@ def _sample_moons(key: jax.Array, batch: int) -> jax.Array:
   return jnp.stack([x, y], axis=-1).astype(jnp.float64)
 
 
-class _FixedBatchSource(couplings.Source):
-  """Source that returns a pre-computed batch (test fixture)."""
+class _FixedBatchSource:
+  """Coupling fixture that returns a pre-computed batch."""
+
+  is_batch_level = False
 
   def __init__(self, fixed_batch: jax.Array):
     self._batch = fixed_batch
 
-  def sample(self, key, data_spec):
-    del key, data_spec
+  @property
+  def marginal(self):
+    return self
+
+  def sample(self, key, x0):
+    del key, x0
     return self._batch
 
 
@@ -153,16 +159,19 @@ class OtFlowMatchingTest(unittest.TestCase):
 
   def test_moons_to_circles_loss_decreases(self):
     # x_0 ~ moons.  x_1 ~ unit circle (uniform).  OT-CFM training.
-    def circle_source_sample(key, data_spec):
-      theta = jax.random.uniform(
-          key, (data_spec.shape[0],),
-          minval=0.0, maxval=2 * jnp.pi, dtype=jnp.float64,
-      )
-      return jnp.stack([jnp.cos(theta), jnp.sin(theta)], axis=-1)
+    class _CircleSource:
+      is_batch_level = False
 
-    class _CircleSource(couplings.Source):
-      def sample(self, key, data_spec):
-        return circle_source_sample(key, data_spec)
+      @property
+      def marginal(self):
+        return self
+
+      def sample(self, key, x0):
+        theta = jax.random.uniform(
+            key, (x0.shape[0],),
+            minval=0.0, maxval=2 * jnp.pi, dtype=jnp.float64,
+        )
+        return jnp.stack([jnp.cos(theta), jnp.sin(theta)], axis=-1)
 
     process = base.InterpolantProcess(
         coupling=couplings.MiniBatchOTCoupling(

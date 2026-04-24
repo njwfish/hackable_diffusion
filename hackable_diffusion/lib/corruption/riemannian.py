@@ -15,7 +15,7 @@
 """Riemannian flow matching: shim over the composed ``InterpolantProcess``.
 
 ``RiemannianProcess(manifold=..., schedule=...)`` wraps an
-``InterpolantProcess`` with ``(IndependentCoupling(UniformManifoldSource),
+``InterpolantProcess`` with ``(UniformManifoldSource(manifold),
 GeodesicInterpolant, VelocityOnlyTargets)``.  Based on
 https://arxiv.org/abs/2302.03660.
 
@@ -44,7 +44,7 @@ class RiemannianProcess(base.CorruptionProcess):
       target = alpha_dot(t) * manifold.velocity(x_1, x_0, alpha(t))
 
   Shim over :class:`InterpolantProcess` with
-  ``(IndependentCoupling(UniformManifoldSource), GeodesicInterpolant,
+  ``(UniformManifoldSource(manifold), GeodesicInterpolant,
   VelocityOnlyTargets)``.
   """
 
@@ -58,9 +58,7 @@ class RiemannianProcess(base.CorruptionProcess):
     object.__setattr__(
         self, '_process',
         base.InterpolantProcess(
-            coupling=couplings.IndependentCoupling(
-                source=couplings.UniformManifoldSource(manifold=self.manifold),
-            ),
+            coupling=couplings.UniformManifoldSource(manifold=self.manifold),
             interpolant=interpolants.GeodesicInterpolant(
                 manifold=self.manifold, schedule=self.schedule,
             ),

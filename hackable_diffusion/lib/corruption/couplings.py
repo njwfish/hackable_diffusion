@@ -12,22 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Concrete :class:`Source` and :class:`Coupling` implementations.
+"""Concrete :class:`Coupling` implementations.
 
-- :class:`StandardNormalSource`: ``x_1 ~ N(0, I)``.  The diffusion
-  source; ``IndependentCoupling(StandardNormalSource())`` recovers the
-  legacy ``GaussianProcess`` sampling behaviour byte-for-byte.
-- :class:`UniformManifoldSource`: ``x_1 ~ Uniform(manifold)``.  The
-  Riemannian source.
-- :class:`DataloaderSource`: pulls pre-batched tensors from a queue.
-  For data-to-data flow matching.
+Every concrete coupling satisfies the single :class:`Coupling`
+Protocol: ``sample(key, x0) -> x_1``, plus ``marginal`` (an
+``x_0``-independent coupling usable at inference time) and
+``is_batch_level`` (whether ``sample`` must see the whole batch).
 
-- :class:`IndependentCoupling`: ``x_1`` drawn from a source independently
-  of ``x_0``.  Per-sample, vmap-friendly.
-- :class:`DeterministicCoupling`: ``x_1 = map_fn(x_0)``.  Per-sample,
-  vmap-friendly.  No ``marginal`` (depends on ``p_0``).
+- :class:`StandardNormalSource`: ``x_1 ~ N(0, I)``; ignores ``x_0``
+  values (uses only its shape).  ``marginal = self``.  Recovers legacy
+  diffusion behaviour when paired with :class:`LinearInterpolant`.
+- :class:`UniformManifoldSource`: ``x_1 ~ Uniform(manifold)``.
+  ``marginal = self``.  Riemannian case.
+- :class:`DataloaderSource`: ``x_1 = pull(x_0)`` where ``pull`` is a
+  caller-provided dataset callable (``key`` ignored -- dataloader
+  provides its own ordering).  ``marginal = self``.
+- :class:`DeterministicCoupling`: ``x_1 = map_fn(x_0)``.
+  ``marginal = None`` (depends on ``p_0``); blur-deblur / data-to-data.
 - :class:`MiniBatchOTCoupling`: entropic-OT matching via ott-jax
-  Sinkhorn.  Batch-level (``is_batch_level = True``).
+  Sinkhorn between a batch of ``x_0`` and an unmatched ``x_1 ~ source``
+  batch.  ``marginal = source``.  ``is_batch_level = True``.
 """
 
 from __future__ import annotations
@@ -44,96 +48,67 @@ from hackable_diffusion.lib.corruption import base
 PRNGKey = hd_typing.PRNGKey
 DataTree = hd_typing.DataTree
 
-Source = base.Source
 Coupling = base.Coupling
 
 
-################################################################################
-# MARK: Sources
-################################################################################
-
-
 @dataclasses.dataclass(kw_only=True, frozen=True)
-class StandardNormalSource(Source):
-  """``x_1 ~ N(0, I)``.
+class StandardNormalSource(Coupling):
+  """``x_1 ~ N(0, I)``; ignores ``x_0`` values, uses only its shape."""
 
-  Byte-equivalent to legacy ``GaussianProcess.sample_from_invariant``
-  when wrapped in :class:`IndependentCoupling`.
-  """
-
-  def sample(self, key: PRNGKey, data_spec: DataTree) -> DataTree:
-    return jax.random.normal(key, shape=data_spec.shape)
-
-
-@dataclasses.dataclass(kw_only=True, frozen=True)
-class UniformManifoldSource(Source):
-  """``x_1 ~ Uniform(manifold)``.
-
-  Wraps :meth:`manifold.random_uniform`.  Byte-equivalent to legacy
-  ``RiemannianProcess.sample_from_invariant``.
-  """
-
-  manifold: Any
-
-  def sample(self, key: PRNGKey, data_spec: DataTree) -> DataTree:
-    return self.manifold.random_uniform(key, data_spec.shape)
-
-
-@dataclasses.dataclass(kw_only=True, frozen=True)
-class DataloaderSource(Source):
-  """Pulls a pre-batched tensor from a caller-provided ``pull`` callable.
-
-  For data-to-data flow matching where ``x_1`` comes from a dataset
-  rather than a closed-form distribution.  The ``key`` argument is
-  ignored (the dataloader provides its own ordering); this is an
-  impurity the framework tolerates because the alternative -- threading
-  a pytree of dataset iterators through ``corrupt`` -- is much worse.
-  """
-
-  pull: Callable[[DataTree], DataTree]
-
-  def sample(self, key: PRNGKey, data_spec: DataTree) -> DataTree:
-    del key
-    return self.pull(data_spec)
-
-
-################################################################################
-# MARK: Couplings
-################################################################################
-
-
-@dataclasses.dataclass(kw_only=True, frozen=True)
-class IndependentCoupling(Coupling):
-  """``x_1 ~ source``, independent of ``x_0``.
-
-  Per-sample in effect (``source.sample`` produces a fresh batch
-  regardless of ``x_0``); safe to vmap.  Recovers the legacy diffusion
-  coupling when ``source=StandardNormalSource()``.
-  """
-
-  source: Source
   is_batch_level: ClassVar[bool] = False
 
   @property
-  def marginal(self) -> Source:
-    return self.source
+  def marginal(self) -> 'StandardNormalSource':
+    return self
 
   def sample(self, key: PRNGKey, x0: DataTree) -> DataTree:
-    return self.source.sample(key, x0)
+    return jax.random.normal(key, shape=x0.shape)
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class UniformManifoldSource(Coupling):
+  """``x_1 ~ Uniform(manifold)``; wraps :meth:`manifold.random_uniform`."""
+
+  manifold: Any
+  is_batch_level: ClassVar[bool] = False
+
+  @property
+  def marginal(self) -> 'UniformManifoldSource':
+    return self
+
+  def sample(self, key: PRNGKey, x0: DataTree) -> DataTree:
+    return self.manifold.random_uniform(key, x0.shape)
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class DataloaderSource(Coupling):
+  """``x_1 = pull(x_0)``.  Caller-provided dataset callable; ``key`` ignored.
+
+  The ``key`` argument is ignored because the dataloader provides its
+  own ordering.  This is an impurity the framework tolerates because
+  the alternative -- threading a pytree of dataset iterators through
+  ``corrupt`` -- is much worse.
+  """
+
+  pull: Callable[[DataTree], DataTree]
+  is_batch_level: ClassVar[bool] = False
+
+  @property
+  def marginal(self) -> 'DataloaderSource':
+    return self
+
+  def sample(self, key: PRNGKey, x0: DataTree) -> DataTree:
+    del key
+    return self.pull(x0)
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class DeterministicCoupling(Coupling):
-  """``x_1 = map_fn(x_0)``.
-
-  Per-sample, vmap-friendly.  No well-defined ``x_1`` marginal (depends
-  on ``p_0``), so ``marginal = None`` and ``sample_from_invariant``
-  raises.
-  """
+  """``x_1 = map_fn(x_0)``; no well-defined marginal."""
 
   map_fn: Callable[[DataTree], DataTree]
   is_batch_level: ClassVar[bool] = False
-  marginal: None = None
+  marginal: 'Coupling | None' = None
 
   def sample(self, key: PRNGKey, x0: DataTree) -> DataTree:
     del key
@@ -163,13 +138,13 @@ class MiniBatchOTCoupling(Coupling):
   override ``_transport_plan``.
   """
 
-  source: Source
+  source: Coupling
   epsilon: float = 0.01
   num_iters: int = 100
   is_batch_level: ClassVar[bool] = True
 
   @property
-  def marginal(self) -> Source:
+  def marginal(self) -> Coupling:
     return self.source
 
   def _transport_plan(
@@ -177,7 +152,6 @@ class MiniBatchOTCoupling(Coupling):
   ) -> jax.Array:
     """Return the ``(B, B)`` Sinkhorn transport plan.  Override for
     custom solvers / costs."""
-    # Deferred imports: ott-jax is only needed inside this method.
     from ott.geometry import pointcloud
     from ott.problems.linear import linear_problem
     from ott.solvers.linear import sinkhorn
@@ -198,7 +172,6 @@ class MiniBatchOTCoupling(Coupling):
     x1_flat = x1_unmatched.reshape(x1_unmatched.shape[0], -1)
 
     plan = self._transport_plan(x0_flat, x1_flat)
-    # Row-normalise to get per-row conditional assignments p(j | i).
     row_sums = jnp.sum(plan, axis=-1, keepdims=True)
     row_log_probs = jnp.log(
         jnp.clip(plan / jnp.maximum(row_sums, 1e-30), 1e-30, None),
@@ -209,20 +182,17 @@ class MiniBatchOTCoupling(Coupling):
     return jax.lax.stop_gradient(x1_matched)
 
 
-def assert_vmappable(process) -> None:
-  """Assert that ``process``'s coupling is vmap-safe (per-sample).
+def assert_vmappable(process: base.InterpolantProcess) -> None:
+  """Raise ``ValueError`` if ``process.coupling.is_batch_level``.
 
-  Raises ``ValueError`` with a clear message when the coupling is
-  batch-level (e.g. :class:`MiniBatchOTCoupling`) -- training loops
-  that wrap ``corrupt`` in a per-sample ``jax.vmap`` must call the
-  whole batch through ``corrupt`` directly instead.
+  Training loops that wrap :meth:`InterpolantProcess.corrupt` in a
+  per-sample ``jax.vmap`` must call the whole batch through ``corrupt``
+  directly when the coupling is batch-level (e.g.
+  :class:`MiniBatchOTCoupling`).
   """
-  coupling = getattr(process, "coupling", None)
-  if coupling is None:
-    return
-  if getattr(coupling, "is_batch_level", False):
+  if process.coupling.is_batch_level:
     raise ValueError(
-        f"{type(coupling).__name__} is batch-level and cannot be "
-        "vmapped per-sample.  Call ``corruption_process.corrupt(key, "
-        "x0_batch, time)`` on the whole batch directly."
+        f'{type(process.coupling).__name__} is batch-level and cannot be '
+        'vmapped per-sample.  Call ``corruption_process.corrupt(key, '
+        'x0_batch, time)`` on the whole batch directly.'
     )

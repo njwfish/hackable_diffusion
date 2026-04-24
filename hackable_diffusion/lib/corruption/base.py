@@ -18,17 +18,19 @@ The generic data-to-data corruption process factors into three composable
 primitives:
 
 - :class:`Coupling`: samples ``x_1`` given a batch of ``x_0``.  Covers
-  independent-source (diffusion), deterministic (blur/mask), and
-  mini-batch-OT couplings.  Operates on whole batches: per-sample
-  couplings are vmap-friendly internally, batch-level couplings (OT) are
-  not -- see :data:`Coupling.is_batch_level`.
+  independent-source (diffusion; ``StandardNormalSource`` etc. are
+  couplings that ignore ``x_0`` values and use only its shape),
+  deterministic (blur/mask), and mini-batch-OT couplings.  Per-sample
+  couplings are vmap-friendly; batch-level couplings (OT) are not --
+  see :data:`Coupling.is_batch_level`.
 - :class:`Interpolant`: deterministic path ``x_t = I(t, x_0, x_1)``,
   optionally augmented with ``+ gamma(t) z`` for stochastic interpolants.
 - :class:`TargetAdapter`: emits the ``target_info`` dict from
-  ``(x_0, x_1, z, x_t, t)``.  Different adapters are valid for different
-  sources: ``GaussianSourceTargets`` emits ``{x0, x1, epsilon, score,
-  velocity, v}``; ``VelocityOnlyTargets`` emits the subset valid under
-  an arbitrary source.
+  ``(x_0, x_1, z, x_t, dx_t/dt, t, interpolant)``.
+  ``GaussianSourceTargets`` emits ``{x0, x1, score, velocity, v}`` --
+  valid only when the coupling's ``x_1`` marginal is
+  :class:`StandardNormalSource`.  ``VelocityOnlyTargets`` emits
+  ``{x0, x1, velocity}`` for an arbitrary interpolant.
 
 These compose inside :class:`InterpolantProcess`, which satisfies the
 legacy :class:`CorruptionProcess` Protocol.  ``GaussianProcess`` and
@@ -100,37 +102,25 @@ class CorruptionProcess(Protocol):
 ################################################################################
 
 
-class Source(Protocol):
-  """A marginal distribution over the x_1 endpoint.
-
-  Used by couplings whose ``x_1`` distribution is well-defined
-  independently of ``x_0``.  :class:`StandardNormalSource` is the
-  diffusion case; :class:`UniformManifoldSource` the Riemannian case;
-  :class:`DataloaderSource` the data-to-data case.
-
-  ``sample`` returns a batched tensor with the same shape as
-  ``data_spec``.
-  """
-
-  def sample(self, key: PRNGKey, data_spec: DataTree) -> DataTree: ...
-
-
 class Coupling(Protocol):
   """Samples ``x_1`` given a batch of ``x_0``.
 
   MUST operate on whole batches: OT-style couplings are inherently set
   operations and cannot be vmapped per-sample.  Couplings that happen
-  to be per-sample (``IndependentCoupling``, ``DeterministicCoupling``)
-  simply ignore the cross-batch structure and remain vmap-friendly.
+  to ignore ``x_0`` (``StandardNormalSource``, ``UniformManifoldSource``,
+  ``DataloaderSource``) or treat it per-sample
+  (``DeterministicCoupling``) remain vmap-friendly.
 
-  ``marginal`` returns the ``Source`` for the ``x_1`` distribution when
-  one is well-defined (independent / OT couplings), else ``None``
-  (deterministic couplings).  :class:`InterpolantProcess.sample_from_invariant`
-  consults it.
+  ``marginal`` returns an ``x_0``-independent ``Coupling`` giving the
+  ``x_1`` distribution.  For couplings that already ignore ``x_0``
+  (the "sources") it is ``self``.  For :class:`MiniBatchOTCoupling` it
+  is the underlying source.  For :class:`DeterministicCoupling` it is
+  ``None`` (no well-defined marginal).  :meth:`InterpolantProcess.sample_from_invariant`
+  consults it at inference time.
   """
 
   is_batch_level: ClassVar[bool]
-  marginal: 'Source | None'
+  marginal: 'Coupling | None'
 
   def sample(self, key: PRNGKey, x0: DataTree) -> DataTree: ...
 
@@ -228,7 +218,7 @@ class InterpolantProcess(CorruptionProcess):
 
       GaussianProcess(schedule=CosineSchedule())
         => InterpolantProcess(
-               coupling=IndependentCoupling(StandardNormalSource()),
+               coupling=StandardNormalSource(),
                interpolant=LinearInterpolant(schedule=CosineSchedule()),
                targets=GaussianSourceTargets(),
            )
@@ -244,7 +234,7 @@ class InterpolantProcess(CorruptionProcess):
   Stochastic interpolant:
 
       InterpolantProcess(
-          coupling=IndependentCoupling(source),
+          coupling=StandardNormalSource(),
           interpolant=StochasticInterpolant(alpha, beta, gamma),
           targets=VelocityOnlyTargets(),
       )

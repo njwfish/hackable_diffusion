@@ -134,12 +134,10 @@ class StochasticInterpolantTest(unittest.TestCase):
     self.assertIs(si.schedule, si)
 
   def test_interpolant_process_end_to_end(self):
-    # InterpolantProcess(SI, IndependentCoupling(StandardNormal),
-    # VelocityOnlyTargets): corrupt emits {x0, x1, velocity}.
+    # InterpolantProcess(SI, StandardNormalSource, VelocityOnlyTargets):
+    # corrupt emits {x0, x1, velocity}.
     process = base.InterpolantProcess(
-        coupling=couplings.IndependentCoupling(
-            source=couplings.StandardNormalSource(),
-        ),
+        coupling=couplings.StandardNormalSource(),
         interpolant=interpolants.StochasticInterpolant(
             alpha=lambda t: 1.0 - t,
             beta=lambda t: t,
@@ -168,9 +166,7 @@ class StochasticInterpolantTest(unittest.TestCase):
         gamma=interpolants.canonical_gamma,
     )
     process = base.InterpolantProcess(
-        coupling=couplings.IndependentCoupling(
-            source=couplings.StandardNormalSource(),
-        ),
+        coupling=couplings.StandardNormalSource(),
         interpolant=si,
         targets=targets.VelocityOnlyTargets(),
     )
