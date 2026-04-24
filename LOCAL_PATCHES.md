@@ -142,6 +142,76 @@ No framework-side registry needed; wrapping is how external steppers
 opt in.  This patch is only needed because we prefer the primary path
 (one method on each upstream stepper) to be the clean one.
 
+### 7. Interpolant refactor of `lib/corruption/`
+**Files:** `hackable_diffusion/lib/corruption/base.py`,
+`hackable_diffusion/lib/corruption/couplings.py` (new),
+`hackable_diffusion/lib/corruption/interpolants.py` (new),
+`hackable_diffusion/lib/corruption/targets.py` (new),
+`hackable_diffusion/lib/corruption/gaussian.py`,
+`hackable_diffusion/lib/corruption/riemannian.py`,
+`hackable_diffusion/lib/corruption/interpolant_parity_test.py` (new),
+`hackable_diffusion/lib/loss/gaussian.py`,
+`hackable_diffusion/lib/sampling/gaussian_step_sampler.py`,
+`hackable_diffusion/lib/diffusion_network.py` (docstrings).
+
+Factor the legacy ``GaussianProcess.corrupt`` into three composable
+Protocol axes -- ``Coupling``, ``Interpolant``, ``TargetAdapter`` --
+and a ``InterpolantProcess`` orchestrator that wires them.  Every
+data-to-data generative framework becomes a triple:
+
+    InterpolantProcess(
+        coupling    = IndependentCoupling(StandardNormalSource()),   # or OT, or deterministic, or dataloader
+        interpolant = LinearInterpolant(schedule=...),               # or geodesic, or stochastic
+        targets     = GaussianSourceTargets(),                       # or VelocityOnlyTargets
+    )
+
+``GaussianProcess`` and ``RiemannianProcess`` remain as named shim
+classes that delegate to internally-built ``InterpolantProcess``
+instances; type annotations throughout downstream code keep working
+unchanged.
+
+**Why:** ``corrupt`` was fusing three distinct responsibilities --
+sampling ``x_1`` given ``x_0``, interpolating ``x_t = I(t, x_0, x_1)``,
+and computing the derived targets dict.  Splitting them enables:
+
+- Arbitrary couplings (mini-batch OT, deterministic blur-deblur,
+  data-to-data) without touching the interpolation or target logic.
+- Arbitrary interpolation paths (linear, geodesic, stochastic with
+  ``gamma(t) z`` augmentation) without touching the coupling or
+  target logic.
+- Target dicts that honestly advertise which parameterisations are
+  valid for the chosen source (a non-Gaussian source can't emit
+  ``score = -x_1/sigma``; ``VelocityOnlyTargets`` drops that key).
+
+**Global rename: ``epsilon`` -> ``x1``.**
+
+This refactor renames the Gaussian-source noise key from ``epsilon``
+to ``x1`` everywhere -- modality-agnostic endpoint naming.  Affected
+surfaces:
+
+- ``target_info`` dict emitted by ``corrupt``: ``epsilon`` -> ``x1``.
+- ``CONVERTERS`` table in ``targets.py`` (relocated from
+  ``gaussian.py``): source and target parameterisation names
+  ``epsilon`` -> ``x1``.  Callers of ``process.convert_predictions``
+  passing ``{"epsilon": value}`` must update to ``{"x1": value}``.
+- ``lib/loss/gaussian.py``: ``GaussianPredictionType`` literal, the
+  scaling-function conversion table, and the internal ``_*_to_*``
+  function names.
+- ``lib/sampling/gaussian_step_sampler.py``: ``AdjustedDDIMStep``
+  reads ``prediction_dict["x1"]`` instead of ``["epsilon"]``.
+- ``lib/diffusion_network.py``: docstring parameterisation examples.
+
+No aliases, no conditional shims -- the rename is total.  Downstream
+consumers training with ``prediction_type="epsilon"`` must update to
+``"x1"``.
+
+**Doing this without modifying upstream.** Not easily -- the refactor
+touches internal ``CorruptionProcess`` behaviour and the rename
+propagates through loss/sampling.  If you must stay off-fork, keep
+both names in ``target_info`` and in ``CONVERTERS`` under a wrapping
+``CompatCorruptionProcess`` subclass; but that's the kind of
+bidirectional-alias plumbing this refactor exists to kill.
+
 ## Rebasing on upstream
 
 ```bash

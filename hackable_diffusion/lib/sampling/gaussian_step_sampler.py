@@ -320,17 +320,17 @@ class AdjustedDDIMStep(SamplerStep):
         time=time,
     )
     x0 = prediction_dict["x0"]
-    epsilon = prediction_dict["epsilon"]
+    x1 = prediction_dict["x1"]
 
     # Estimation according to page 7 of the paper.
     xt_var = 0.1 / (2 + jnp.square(alpha / sigma))
     # Ajusted DDIM update.
     next_xt_var = jnp.square(next_alpha - alpha * next_sigma / sigma) * xt_var
-    norm_epsilon = jnp.mean(jnp.square(epsilon), keepdims=True)
+    norm_x1 = jnp.mean(jnp.square(x1), keepdims=True)
     new_xt = (
         alpha * x0
-        + jnp.sqrt(jnp.square(next_sigma) + next_xt_var / norm_epsilon)
-        * epsilon
+        + jnp.sqrt(jnp.square(next_sigma) + next_xt_var / norm_x1)
+        * x1
     )
 
     return DiffusionStep(

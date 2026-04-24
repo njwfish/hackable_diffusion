@@ -61,9 +61,9 @@ class DiffusionTest(absltest.TestCase):
     )
     chex.assert_shape(out["xt"], (2, 8, 8, 3))
     self.assertIsInstance(out["target"], dict)
-    chex.assert_shape(out["target"]["epsilon"], (2, 8, 8, 3))
+    chex.assert_shape(out["target"]["x1"], (2, 8, 8, 3))
     self.assertIsInstance(out["output"], dict)
-    chex.assert_shape(out["output"]["epsilon"], (2, 8, 8, 3))
+    chex.assert_shape(out["output"]["x1"], (2, 8, 8, 3))
     chex.assert_shape(out["output"]["x0"], (2, 8, 8, 3))
     self.assertIsInstance(out["noise_info"], dict)
 

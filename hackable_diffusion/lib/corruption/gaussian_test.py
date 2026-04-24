@@ -31,7 +31,7 @@ from absl.testing import parameterized
 ################################################################################
 
 
-_PRED_TYPES = ('x0', 'epsilon', 'score', 'velocity', 'v')
+_PRED_TYPES = ('x0', 'x1', 'score', 'velocity', 'v')
 
 ################################################################################
 # MARK: PredictionConverterTest

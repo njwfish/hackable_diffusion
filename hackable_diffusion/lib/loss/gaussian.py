@@ -37,7 +37,7 @@ import kauldron.ktyping as kt
 LossOutput = hd_typing.LossOutput
 TargetInfo = hd_typing.TargetInfo
 TimeArray = hd_typing.TimeArray
-GaussianPredictionType = Literal["x0", "epsilon", "score", "velocity", "v"]
+GaussianPredictionType = Literal["x0", "x1", "score", "velocity", "v"]
 
 GaussianSchedule = schedules.GaussianSchedule
 
@@ -86,7 +86,7 @@ def compute_continuous_diffusion_loss(
 
   Args:
     preds: Prediction dict from the model. Contains one or more of the
-      prediction types (x0, epsilon, score, velocity, v).
+      prediction types (x0, x1, score, velocity, v).
     targets: Target dict containing the same keys as preds.
     time: Time array used for noise computation.
     schedule: The GaussianSchedule to use for the loss. Should be the same as
@@ -94,7 +94,7 @@ def compute_continuous_diffusion_loss(
       schedule dependent, i.e, convert_to_logsnr_schedule is False and weight_fn
       is None. It might be used in the weighting function or in the conversion
       to logSNR parameterization.
-    loss_type: The type of loss to compute. Can be one of {x0, epsilon, score,
+    loss_type: The type of loss to compute. Can be one of {x0, x1, score,
       velocity, v}. If None, defaults to prediction_type.
     prediction_type: The type of prediction to compute the loss for. If None,
       defaults to the prediction type in preds, but only if it is unambiguous
@@ -269,7 +269,7 @@ class SiD2Loss(base.DiffusionLoss):
 ################################################################################
 
 
-def x0_to_epsilon_scaling(schedule, time: TimeArray) -> TimeArray:
+def x0_to_x1_scaling(schedule, time: TimeArray) -> TimeArray:
   sigma = schedule.sigma(time)
   alpha = schedule.alpha(time)
   return jnp.square(alpha / sigma)
@@ -296,20 +296,20 @@ def x0_to_v_scaling(schedule, time: TimeArray) -> TimeArray:
 
 
 ################################################################################
-# MARK: convert from epsilon
+# MARK: convert from x1
 ################################################################################
 
 
-def epsilon_to_x0_scaling(schedule, time: TimeArray) -> TimeArray:
-  return 1.0 / x0_to_epsilon_scaling(schedule, time)
+def x1_to_x0_scaling(schedule, time: TimeArray) -> TimeArray:
+  return 1.0 / x0_to_x1_scaling(schedule, time)
 
 
-def epsilon_to_score_scaling(schedule, time: TimeArray) -> TimeArray:
+def x1_to_score_scaling(schedule, time: TimeArray) -> TimeArray:
   sigma = schedule.sigma(time)
   return 1.0 / jnp.square(sigma)
 
 
-def epsilon_to_velocity_scaling(schedule, time: TimeArray) -> TimeArray:
+def x1_to_velocity_scaling(schedule, time: TimeArray) -> TimeArray:
   alpha = schedule.alpha(time)
   sigma = schedule.sigma(time)
   alpha_der = utils.egrad(schedule.alpha)(time)
@@ -317,7 +317,7 @@ def epsilon_to_velocity_scaling(schedule, time: TimeArray) -> TimeArray:
   return jnp.square(sigma * alpha_der / alpha - sigma_der)
 
 
-def epsilon_to_v_scaling(schedule, time: TimeArray) -> TimeArray:
+def x1_to_v_scaling(schedule, time: TimeArray) -> TimeArray:
   alpha = schedule.alpha(time)
   sigma = schedule.sigma(time)
   return jnp.square(alpha + jnp.square(sigma) / alpha)
@@ -332,8 +332,8 @@ def score_to_x0_scaling(schedule, time: TimeArray) -> TimeArray:
   return 1.0 / x0_to_score_scaling(schedule, time)
 
 
-def score_to_epsilon_scaling(schedule, time: TimeArray) -> TimeArray:
-  return 1.0 / epsilon_to_score_scaling(schedule, time)
+def score_to_x1_scaling(schedule, time: TimeArray) -> TimeArray:
+  return 1.0 / x1_to_score_scaling(schedule, time)
 
 
 def score_to_velocity_scaling(schedule, time: TimeArray) -> TimeArray:
@@ -359,8 +359,8 @@ def velocity_to_x0_scaling(schedule, time: TimeArray) -> TimeArray:
   return 1.0 / x0_to_velocity_scaling(schedule, time)
 
 
-def velocity_to_epsilon_scaling(schedule, time: TimeArray) -> TimeArray:
-  return 1.0 / epsilon_to_velocity_scaling(schedule, time)
+def velocity_to_x1_scaling(schedule, time: TimeArray) -> TimeArray:
+  return 1.0 / x1_to_velocity_scaling(schedule, time)
 
 
 def velocity_to_score_scaling(schedule, time: TimeArray) -> TimeArray:
@@ -387,8 +387,8 @@ def v_to_x0_scaling(schedule, time: TimeArray) -> TimeArray:
   return 1.0 / x0_to_v_scaling(schedule, time=time)
 
 
-def v_to_epsilon_scaling(schedule, time: TimeArray) -> TimeArray:
-  return 1.0 / epsilon_to_v_scaling(schedule, time=time)
+def v_to_x1_scaling(schedule, time: TimeArray) -> TimeArray:
+  return 1.0 / x1_to_v_scaling(schedule, time=time)
 
 
 def v_to_score_scaling(schedule, time: TimeArray) -> TimeArray:
@@ -412,35 +412,35 @@ def _not_implemented(schedule, time: TimeArray) -> TimeArray:
 CONVERTERS = immutabledict.immutabledict({
     "x0": {
         "x0": _identity,
-        "epsilon": x0_to_epsilon_scaling,
+        "x1": x0_to_x1_scaling,
         "score": x0_to_score_scaling,
         "velocity": x0_to_velocity_scaling,
         "v": x0_to_v_scaling,
     },
-    "epsilon": {
-        "x0": epsilon_to_x0_scaling,
-        "epsilon": _identity,
-        "score": epsilon_to_score_scaling,
-        "velocity": epsilon_to_velocity_scaling,
-        "v": epsilon_to_v_scaling,
+    "x1": {
+        "x0": x1_to_x0_scaling,
+        "x1": _identity,
+        "score": x1_to_score_scaling,
+        "velocity": x1_to_velocity_scaling,
+        "v": x1_to_v_scaling,
     },
     "score": {
         "x0": score_to_x0_scaling,
-        "epsilon": score_to_epsilon_scaling,
+        "x1": score_to_x1_scaling,
         "score": _identity,
         "velocity": score_to_velocity_scaling,
         "v": score_to_v_scaling,
     },
     "velocity": {
         "x0": velocity_to_x0_scaling,
-        "epsilon": velocity_to_epsilon_scaling,
+        "x1": velocity_to_x1_scaling,
         "score": velocity_to_score_scaling,
         "velocity": _identity,
         "v": velocity_to_v_scaling,
     },
     "v": {
         "x0": v_to_x0_scaling,
-        "epsilon": v_to_epsilon_scaling,
+        "x1": v_to_x1_scaling,
         "score": v_to_score_scaling,
         "velocity": v_to_velocity_scaling,
         "v": _identity,

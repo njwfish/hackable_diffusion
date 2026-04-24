@@ -95,7 +95,7 @@ class DiffusionNetwork(nn.Module, BaseDiffusionNetwork):
   instance). It wraps those modules in order to create a consistent interface
   for the model. The output of the __call__ method is a dictionary of model
   outputs. The keys of the dictionary are specified by the prediction function,
-  for instance ['x0', 'epsilon', 'score', 'velocity', 'v'] in the case of a
+  for instance ['x0', 'x1', 'score', 'velocity', 'v'] in the case of a
   Gaussian diffusion model.
 
   The processing is done as follows. First, it optionally rescales the time and
@@ -110,7 +110,7 @@ class DiffusionNetwork(nn.Module, BaseDiffusionNetwork):
       model.
     prediction_type: the type of prediction used by the diffusion model. For
       example, in the Gaussian diffusion model, the prediction type can be 'x0',
-      'epsilon', 'score', 'velocity', or 'v'.
+      'x1', 'score', 'velocity', or 'v'.
     input_rescaler: The input rescaler to use for the diffusion model,
       optionally schedule-dependent. By default, we do not use rescaler.
     time_rescaler: The time rescaler to use for the diffusion model, optionally
@@ -428,7 +428,7 @@ class MultiModalDiffusionNetwork(nn.Module, BaseDiffusionNetwork):
       model.
     prediction_type: the type of prediction used by the diffusion model. For
       example, in the Gaussian diffusion model, the prediction type can be 'x0',
-      'epsilon', 'score', 'velocity', or 'v'.
+      'x1', 'score', 'velocity', or 'v'.
     data_dtype: the dtype of the data.
     input_rescaler: The input rescaler to use for the diffusion model,
       optionally schedule-dependent. By default, we do not use rescaler.
