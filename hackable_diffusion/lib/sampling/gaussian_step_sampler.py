@@ -57,6 +57,78 @@ SamplerStep = base.SamplerStep
 
 GaussianProcess = gaussian.GaussianProcess
 TimeSchedule = time_scheduling.TimeSchedule
+StepKernel = base.StepKernel
+
+################################################################################
+# MARK: Gaussian proposal kernel
+################################################################################
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class GaussianStepKernel(StepKernel):
+  """Linear-Gaussian transition kernel for reverse-time Gaussian steppers.
+
+  Every Gaussian-forward stepper (DDIM, SDE, Velocity, AdjustedDDIM,
+  Heun) parameterises its step as
+
+      xt_next = coeff_x0 * xhat_0 + coeff_xt * xt + sigma_step * eps,
+                eps ~ N(0, I),
+
+  with scalar schedule-dependent coefficients
+  ``(coeff_x0, coeff_xt, sigma_step)``.  The ODE and SDE limits are the
+  single knob ``sigma_step``:
+
+    - ``sigma_step = 0``: deterministic proposal (ODE / probability
+      flow).  Log-ratio is identically zero.
+    - ``sigma_step > 0``: stochastic proposal (Euler-Maruyama / DDPM
+      ancestral).  Log-ratio is the quadratic Gaussian form.
+
+  ``xhat_0_uncorrected`` and ``xhat_0_corrected`` are captured at
+  construction time so :meth:`log_density_ratio` has a uniform
+  ``(xt_prev, xt_next)`` signature across all modalities.
+  """
+
+  coeff_x0: jax.Array
+  coeff_xt: jax.Array
+  sigma_step: jax.Array
+  x0_uncorrected: jax.Array
+  x0_corrected: jax.Array
+
+  def log_density_ratio(
+      self, xt_prev: jax.Array, xt_next: jax.Array,
+  ) -> jax.Array:
+    mu_p = self.coeff_x0 * self.x0_uncorrected + self.coeff_xt * xt_prev
+    mu_q = self.coeff_x0 * self.x0_corrected + self.coeff_xt * xt_prev
+    sq_p = jnp.sum(
+        (xt_next - mu_p).reshape(xt_next.shape[0], -1) ** 2, axis=-1,
+    )
+    sq_q = jnp.sum(
+        (xt_next - mu_q).reshape(xt_next.shape[0], -1) ** 2, axis=-1,
+    )
+    # sigma_step == 0 is the deterministic / ODE limit: proposal is a
+    # Dirac, ratio is identically zero.  Guard the division and mask via
+    # jnp.where so the branch works under jit / scan (sigma_step is
+    # traced when constructed from the time-dependent schedule).
+    deterministic = self.sigma_step == 0.0
+    denom = 2.0 * jnp.where(deterministic, 1.0, self.sigma_step ** 2)
+    raw = (sq_q - sq_p) / denom
+    return jnp.where(deterministic, jnp.zeros_like(raw), raw)
+
+
+def _scalar(time, schedule_fn) -> jax.Array:
+  t = jnp.atleast_1d(time).reshape(-1)[0:1]
+  return schedule_fn(t).reshape(())
+
+
+def _x0_from_prediction(
+    corruption_process: GaussianProcess,
+    prediction: TargetInfo,
+    xt: DataArray,
+    time: jax.Array,
+) -> jax.Array:
+  """Convert any native prediction parameterisation to ``x0``."""
+  return corruption_process.convert_predictions(prediction, xt, time)["x0"]
+
 
 ################################################################################
 # MARK: SDE Step
@@ -151,6 +223,45 @@ class SdeStep(SamplerStep):
         stochastic=self.stochastic_last_step,
     )
 
+  def kernel(
+      self,
+      *,
+      prediction_uncorrected: TargetInfo,
+      prediction_corrected: TargetInfo,
+      xt: DataArray,
+      time_prev: jax.Array,
+      time_next: jax.Array,
+  ) -> GaussianStepKernel:
+    """Score-form Euler-Maruyama kernel.
+
+    ``mu = xt + dt * (-f xt + 0.5 g^2 (1 + churn^2) score)`` with
+    ``score = (alpha xhat_0 - xt) / sigma^2``.  ``sigma_step = sqrt(dt) g churn``
+    (= 0 in the ODE limit ``churn = 0``).
+    """
+    schedule = self.corruption_process.schedule
+    alpha = _scalar(time_prev, schedule.alpha)
+    sigma = _scalar(time_prev, schedule.sigma)
+    g_t = _scalar(time_prev, schedule.g)
+    f_t = _scalar(time_prev, schedule.f)
+    dt = _scalar(time_prev, lambda t: t) - _scalar(time_next, lambda t: t)
+
+    sigma2_safe = jnp.maximum(sigma ** 2, 1e-12)
+    coeff_x0 = 0.5 * g_t ** 2 * (1.0 + self.churn ** 2) * dt * alpha / sigma2_safe
+    coeff_xt = (
+        1.0 - dt * f_t
+        - 0.5 * g_t ** 2 * (1.0 + self.churn ** 2) * dt / sigma2_safe
+    )
+    sigma_step = jnp.sqrt(dt) * g_t * self.churn
+    return GaussianStepKernel(
+        coeff_x0=coeff_x0, coeff_xt=coeff_xt, sigma_step=sigma_step,
+        x0_uncorrected=_x0_from_prediction(
+            self.corruption_process, prediction_uncorrected, xt, time_prev,
+        ),
+        x0_corrected=_x0_from_prediction(
+            self.corruption_process, prediction_corrected, xt, time_prev,
+        ),
+    )
+
 
 ################################################################################
 # MARK: Adjusted DDIM Step
@@ -239,6 +350,30 @@ class AdjustedDDIMStep(SamplerStep):
         prediction,
         current_step,
         last_step_info,
+    )
+
+  def kernel(
+      self,
+      *,
+      prediction_uncorrected: TargetInfo,
+      prediction_corrected: TargetInfo,
+      xt: DataArray,
+      time_prev: jax.Array,
+      time_next: jax.Array,
+  ) -> GaussianStepKernel:
+    """Deterministic (Dirac) kernel -- ``sigma_step = 0``.
+
+    ``AdjustedDDIMStep``'s adjusted-noise formula has no driving ``z``
+    term; the proposal is a deterministic function of ``(xt, xhat_0)``.
+    We return ``sigma_step = 0`` and leave the mean coefficients at
+    zero since the ratio is identically zero regardless of the mean.
+    """
+    del prediction_uncorrected, prediction_corrected, time_next
+    zero = jnp.asarray(0.0, dtype=xt.dtype)
+    return GaussianStepKernel(
+        coeff_x0=zero, coeff_xt=zero, sigma_step=zero,
+        x0_uncorrected=jnp.zeros_like(xt),
+        x0_corrected=jnp.zeros_like(xt),
     )
 
 
@@ -344,6 +479,49 @@ class DDIMStep(SamplerStep):
         stochastic=self.stochastic_last_step,
     )
 
+  def kernel(
+      self,
+      *,
+      prediction_uncorrected: TargetInfo,
+      prediction_corrected: TargetInfo,
+      xt: DataArray,
+      time_prev: jax.Array,
+      time_next: jax.Array,
+  ) -> GaussianStepKernel:
+    """Linear-mean-shift DDIM kernel.
+
+    ``mu = coeff_x0 xhat_0 + coeff_xt xt`` with
+
+        coeff_x0 = alpha_s - alpha_r sigma_s sqrt(1 - eta^2) / sigma_r
+        coeff_xt = sigma_s sqrt(1 - eta^2) / sigma_r
+
+    and ``sigma_step = sigma_s eta``.  ODE limit ``eta = 0``:
+    ``sigma_step = 0`` and the ratio is identically zero.
+    """
+    schedule = self.corruption_process.schedule
+    alpha_r = _scalar(time_prev, schedule.alpha)
+    sigma_r = _scalar(time_prev, schedule.sigma)
+    alpha_s = _scalar(time_next, schedule.alpha)
+    sigma_s = _scalar(time_next, schedule.sigma)
+    eta = self.stoch_coeff
+
+    det_factor = jnp.sqrt(jnp.maximum(1.0 - eta ** 2, 0.0))
+    coeff_x0 = (
+        alpha_s - alpha_r * sigma_s * det_factor / jnp.maximum(sigma_r, 1e-12)
+    )
+    coeff_xt = sigma_s * det_factor / jnp.maximum(sigma_r, 1e-12)
+    sigma_step = sigma_s * eta
+
+    return GaussianStepKernel(
+        coeff_x0=coeff_x0, coeff_xt=coeff_xt, sigma_step=sigma_step,
+        x0_uncorrected=_x0_from_prediction(
+            self.corruption_process, prediction_uncorrected, xt, time_prev,
+        ),
+        x0_corrected=_x0_from_prediction(
+            self.corruption_process, prediction_corrected, xt, time_prev,
+        ),
+    )
+
 
 ################################################################################
 # MARK: Velocity Step
@@ -429,6 +607,61 @@ class VelocityStep(SamplerStep):
         current_step,
         last_step_info,
         stochastic=False,
+    )
+
+  def kernel(
+      self,
+      *,
+      prediction_uncorrected: TargetInfo,
+      prediction_corrected: TargetInfo,
+      xt: DataArray,
+      time_prev: jax.Array,
+      time_next: jax.Array,
+  ) -> GaussianStepKernel:
+    """Velocity-form Euler-Maruyama kernel.
+
+    ``mu = xt + dt * (-velocity(xhat_0) + 0.5 eps^2 g^2 score(xhat_0))``
+    with ``velocity = alpha_der xhat_0 + (sigma_der/sigma)(xt - alpha xhat_0)``
+    and ``score = (alpha xhat_0 - xt) / sigma^2``.  Schedule derivatives
+    are obtained with ``jax.grad``.
+
+    ODE limit ``epsilon = 0``: ``sigma_step = 0``.
+    """
+    schedule = self.corruption_process.schedule
+    alpha = _scalar(time_prev, schedule.alpha)
+    sigma = _scalar(time_prev, schedule.sigma)
+    g_t = _scalar(time_prev, schedule.g)
+    t_scalar = jnp.atleast_1d(time_prev).reshape(-1)[0:1].reshape(())
+    t_next_scalar = jnp.atleast_1d(time_next).reshape(-1)[0:1].reshape(())
+    dt = t_scalar - t_next_scalar
+
+    alpha_der = jax.grad(
+        lambda t: schedule.alpha(t[None]).reshape(())
+    )(t_scalar)
+    sigma_der = jax.grad(
+        lambda t: schedule.sigma(t[None]).reshape(())
+    )(t_scalar)
+
+    sigma2_safe = jnp.maximum(sigma ** 2, 1e-12)
+    sigma_safe = jnp.maximum(sigma, 1e-12)
+
+    v_x0 = alpha_der - alpha * sigma_der / sigma_safe
+    v_xt = sigma_der / sigma_safe
+    s_x0 = alpha / sigma2_safe
+    s_xt = -1.0 / sigma2_safe
+
+    coeff_x0 = dt * (-v_x0 + 0.5 * self.epsilon ** 2 * g_t ** 2 * s_x0)
+    coeff_xt = 1.0 + dt * (-v_xt + 0.5 * self.epsilon ** 2 * g_t ** 2 * s_xt)
+    sigma_step = jnp.sqrt(dt) * g_t * self.epsilon
+
+    return GaussianStepKernel(
+        coeff_x0=coeff_x0, coeff_xt=coeff_xt, sigma_step=sigma_step,
+        x0_uncorrected=_x0_from_prediction(
+            self.corruption_process, prediction_uncorrected, xt, time_prev,
+        ),
+        x0_corrected=_x0_from_prediction(
+            self.corruption_process, prediction_corrected, xt, time_prev,
+        ),
     )
 
 
@@ -700,4 +933,29 @@ class HeunStep(SamplerStep):
         prediction,
         current_step,
         last_step_info,
+    )
+
+  def kernel(
+      self,
+      *,
+      prediction_uncorrected: TargetInfo,
+      prediction_corrected: TargetInfo,
+      xt: DataArray,
+      time_prev: jax.Array,
+      time_next: jax.Array,
+  ) -> GaussianStepKernel:
+    """Deterministic predictor-corrector kernel -- ``sigma_step = 0``.
+
+    Heun's method is a two-stage deterministic ODE integrator with no
+    driving noise.  Both the predictor (first_step) and the corrector
+    (second_step) produce a deterministic ``xt_next`` from
+    ``(xt, xhat_0)``, so the Gaussian log-ratio is identically zero
+    regardless of which internal stage produced the transition.
+    """
+    del prediction_uncorrected, prediction_corrected, time_next
+    zero = jnp.asarray(0.0, dtype=xt.dtype)
+    return GaussianStepKernel(
+        coeff_x0=zero, coeff_xt=zero, sigma_step=zero,
+        x0_uncorrected=jnp.zeros_like(xt),
+        x0_corrected=jnp.zeros_like(xt),
     )

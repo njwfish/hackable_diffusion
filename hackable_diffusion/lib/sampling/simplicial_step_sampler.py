@@ -56,9 +56,52 @@ TimeArray = hd_typing.TimeArray
 DiffusionStep = base.DiffusionStep
 StepInfo = base.StepInfo
 SamplerStep = base.SamplerStep
+StepKernel = base.StepKernel
 
 SimplicialProcess = simplicial.SimplicialProcess
 SimplicialSchedule = schedules.SimplicialSchedule
+
+
+################################################################################
+# MARK: Simplicial proposal kernel
+################################################################################
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class SimplicialStepKernel(StepKernel):
+  """Churn=0 simplicial DDIM transition kernel.
+
+  The simplicial step at ``churn = 0`` draws a per-site token
+
+      i ~ Categorical(softmax(logits(xhat_0)))
+
+  and data-independent beta weights ``(w, 1-w) ~ Beta(schedule)`` to
+  combine ``xt_prev`` with the one-hot of ``i``.  Under a correction
+  that shifts ``xhat_0``, only the categorical draw changes -- the
+  beta-density factor cancels between the corrected and uncorrected
+  proposals.  Conditional on the sampled ``i``, the log-density ratio
+  reduces to the categorical log-prob difference at that token.
+
+  The sampled token is recovered site-wise from
+  ``argmax(xt_next - xt_prev)``; the per-position difference is
+  ``log(1-w)`` at the sampled index and ``log w`` everywhere else, so
+  the argmax identifies ``i`` without needing to know ``w``.
+  """
+
+  log_probs_uncorrected: jax.Array  # (B, *sites, K) = log_softmax(logits at x0_unc)
+  log_probs_corrected: jax.Array
+
+  def log_density_ratio(
+      self, xt_prev: jax.Array, xt_next: jax.Array,
+  ) -> jax.Array:
+    sampled_idx = jnp.argmax(xt_next - xt_prev, axis=-1)
+    one_hot = jax.nn.one_hot(
+        sampled_idx, self.log_probs_uncorrected.shape[-1],
+        dtype=self.log_probs_uncorrected.dtype,
+    )
+    per_site_unc = jnp.sum(self.log_probs_uncorrected * one_hot, axis=-1)
+    per_site_cor = jnp.sum(self.log_probs_corrected * one_hot, axis=-1)
+    return jnp.sum(per_site_unc - per_site_cor, axis=-1)
 
 
 ################################################################################
@@ -281,4 +324,39 @@ class SimplicialDDIMStep(SamplerStep):
         prediction,
         current_step,
         last_step_info,
+    )
+
+  def kernel(
+      self,
+      *,
+      prediction_uncorrected: TargetInfo,
+      prediction_corrected: TargetInfo,
+      xt: DataArray,
+      time_prev: jax.Array,
+      time_next: jax.Array,
+  ) -> SimplicialStepKernel:
+    """Categorical log-prob kernel (churn=0).
+
+    Requires ``churn = 0``: at ``churn > 0`` the transition involves a
+    Dirichlet-shrinkage step whose exact proposal-ratio inversion is
+    not yet derived.  Run bootstrap (correction-free) SMC for
+    ``churn > 0``.
+    """
+    del time_next
+    if float(self.churn) != 0.0:
+      raise NotImplementedError(
+          "SimplicialDDIMStep.kernel only supports churn=0; for churn>0 "
+          "the Dirichlet-shrinkage step needs a dedicated kernel.  Run "
+          "bootstrap (correction-free) SMC, or implement a shrinkage "
+          "kernel and return it here."
+      )
+    logits_unc = self.corruption_process.convert_predictions(
+        prediction_uncorrected, xt, time_prev,
+    )["logits"]
+    logits_cor = self.corruption_process.convert_predictions(
+        prediction_corrected, xt, time_prev,
+    )["logits"]
+    return SimplicialStepKernel(
+        log_probs_uncorrected=jax.nn.log_softmax(logits_unc, axis=-1),
+        log_probs_corrected=jax.nn.log_softmax(logits_cor, axis=-1),
     )

@@ -92,9 +92,55 @@ Key public objects:
   re-evaluation (closes the intermediate-H non-Gaussian bump).
 - `GaussianLikelihoodTwistFn` / `DiscreteCompositionTwistFn`: canonical
   log-potentials for linear-Gaussian and multinomial observations.
-- `proposal_log_ratio`: closed-form `log p_theta - log q` dispatcher
-  (isinstance-based registry).  Pre-registered for `DDIMStep` and
-  `SimplicialDDIMStep(churn=0)`; extend via `register_proposal_ratio`.
+- `proposal_log_ratio`: one-line polymorphic dispatcher that calls
+  `stepper.kernel(...).log_density_ratio(xt_prev, xt_next)`.  No
+  registry and no isinstance checks -- the math lives on each
+  stepper's `kernel` method (see patch 6).
+
+### 6. `StepKernel` protocol on `SamplerStep`
+**Files:** `hackable_diffusion/lib/sampling/base.py`,
+`hackable_diffusion/lib/sampling/gaussian_step_sampler.py`,
+`hackable_diffusion/lib/sampling/simplicial_step_sampler.py`
+
+Adds a `StepKernel` Protocol to `lib/sampling/base.py` and a `kernel(...)`
+method to every Gaussian stepper (`DDIMStep`, `SdeStep`, `VelocityStep`,
+`AdjustedDDIMStep`, `HeunStep`) and to `SimplicialDDIMStep`.  Each
+method returns a concrete `StepKernel` (``GaussianStepKernel`` or
+``SimplicialStepKernel``) with a single universal operation,
+`log_density_ratio(xt_prev, xt_next) -> (B,)`.
+
+**Why:** every Gaussian-forward stepper parameterises its transition as
+``xt_next = coeff_x0 xhat_0 + coeff_xt xt + sigma_step eps`` -- one
+formula with three scalar schedule-dependent coefficients.  ODE (DDIM
+η=0, AdjustedDDIM, Heun) and SDE (SdeStep, DDIM η>0, VelocityStep ε>0)
+differ only in whether ``sigma_step`` is zero or positive.  Centering
+the kernel primitive lets `lib/guidance/proposal_ratio.py` collapse
+from a per-stepper registry (~250 lines, five parallel formulas) to a
+three-line polymorphic dispatcher.  ODE stays a noiseless limit of the
+same primitive rather than a parallel code path.
+
+**Doing this without modifying upstream.** If you can't add `kernel`
+to a stepper class, wrap it -- the polymorphic dispatcher only looks
+for a `kernel` attribute on the object you hand in.  For example:
+
+```python
+@dataclasses.dataclass(frozen=True)
+class _KerneledWrapper:
+    base: SamplerStep
+    kernel_fn: Callable[..., StepKernel]
+
+    def initialize(self, *args, **kwargs): return self.base.initialize(*args, **kwargs)
+    def update(self, *args, **kwargs):     return self.base.update(*args, **kwargs)
+    def finalize(self, *args, **kwargs):   return self.base.finalize(*args, **kwargs)
+    def kernel(self, **kwargs):            return self.kernel_fn(self.base, **kwargs)
+
+wrapped = _KerneledWrapper(base=third_party_stepper, kernel_fn=my_factory)
+sampler = DiffusionSampler(..., stepper=wrapped, ...)
+```
+
+No framework-side registry needed; wrapping is how external steppers
+opt in.  This patch is only needed because we prefer the primary path
+(one method on each upstream stepper) to be the clean one.
 
 ## Rebasing on upstream
 

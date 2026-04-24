@@ -304,7 +304,6 @@ class ConditionalDiffusionSampler:
 
       log_proposal_ratio = proposal_log_ratio(
           stepper=stepper,
-          corruption_process=self.corruption_process,
           outputs_uncorrected=outputs_uncorrected,
           outputs_corrected=outputs_corrected,
           xt_prev=xt, xt_next=xt_new,
@@ -351,7 +350,6 @@ class ConditionalDiffusionSampler:
       xt_final, time_final = _xt_time(final_step)
       log_proposal_ratio_final = proposal_log_ratio(
           stepper=stepper,
-          corruption_process=self.corruption_process,
           outputs_uncorrected=final_outputs_uncorrected,
           outputs_corrected=final_outputs_corrected,
           xt_prev=xt_last, xt_next=xt_final,

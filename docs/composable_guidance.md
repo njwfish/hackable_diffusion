@@ -50,9 +50,9 @@ own entry.
 | `LinearForwardFn`, `SubsampleForwardFn`, `InpaintingForwardFn`, `ConvForwardFn`, `ComposeForwardFn` | ✓ | ✓ | ~§ | ✓ |
 | **Resamplers** | | | | |
 | `NoResamplerFn`, `Systematic/Multinomial/ESSThresholded` | ✓ | ✓ | ✓ | ✓ |
-| **Proposal-ratio registry** | | | | |
-| `DDIMStep`, `SdeStep`, `VelocityStep`, `AdjustedDDIMStep`, `HeunStep` | ✓ | ✓ | ✗ | ✓ |
-| `SimplicialDDIMStep` (churn=0) | ✗ | ✗ | ✓ | ✗ |
+| **Step kernels (via `stepper.kernel()`)** | | | | |
+| `GaussianStepKernel` (DDIM, Sde, Velocity, AdjustedDDIM, Heun) | ✓ | ✓ | ✗ | ✓ |
+| `SimplicialStepKernel` (`SimplicialDDIMStep`, churn=0) | ✗ | ✗ | ✓ | ✗ |
 
 Footnotes:
 
@@ -74,7 +74,7 @@ Footnotes:
 
 ## Protocols
 
-Six callable Protocols are the design axes.
+Seven callable Protocols are the design axes.
 
 | Protocol | Signature | Role |
 | --- | --- | --- |
@@ -84,6 +84,7 @@ Six callable Protocols are the design axes.
 | `CorrectionFn` | `(outputs, xt, time, *, schedule, corruption_process, ...) -> outputs` | Modifies the denoiser's outputs before the stepper advances. |
 | `TwistFn` | `(xt, time, *, inference_fn, schedule, corruption_process, ...) -> log_psi` | SMC log-potential; gradient source for DPS-style corrections. |
 | `ResamplerFn` | `(particles, log_weights, *, rng) -> (particles, log_weights)` | Pure resample. |
+| `StepKernel` | `.log_density_ratio(xt_prev, xt_next) -> (B,)` | Transition-kernel log-density ratio under shifted `xhat_0`; each `SamplerStep` builds the appropriate concrete kernel via `stepper.kernel(...)`. |
 
 ## Taxonomy
 
@@ -162,28 +163,91 @@ delta log w = log p_theta(x_s | x_r) - log q(x_s | x_r)
             + log psi(y | x_s) - log psi(y | x_r)
 ```
 
-where `r = prev, s = next`.  The proposal log-ratio is computed in
-closed form by `proposal_log_ratio`, which dispatches by `isinstance`:
+where `r = prev, s = next`.  The proposal log-ratio math lives on each
+stepper's `kernel(...)` method, which returns a concrete `StepKernel`
+(`GaussianStepKernel` or `SimplicialStepKernel`).  `proposal_log_ratio`
+is a three-line polymorphic dispatcher -- no registry, no isinstance
+checks.
 
-| Stepper | Formula | Deterministic limit |
-| --- | --- | --- |
-| `DDIMStep` | Linear-mean-shift Gaussian | `stoch_coeff = 0` → 0 |
-| `SdeStep` | Score-form Euler-Maruyama | `churn = 0` → 0 |
-| `VelocityStep` | Velocity-form Euler-Maruyama | `epsilon = 0` → 0 |
-| `AdjustedDDIMStep` | Deterministic (ratio = 0) | always 0 |
-| `HeunStep` | Deterministic predictor-corrector | always 0 |
-| `SimplicialDDIMStep` | Categorical log-prob on sampled token | `churn = 0` required |
+### Universal Gaussian kernel
 
-Register a new stepper type with
+Every Gaussian-forward stepper (DDIM, SdeStep, VelocityStep,
+AdjustedDDIMStep, HeunStep) parameterises its reverse-time transition
+as
 
-```python
-from hackable_diffusion.lib.guidance import register_proposal_ratio
-register_proposal_ratio(MyStepType, my_ratio_fn)
+```
+xt_next = coeff_x0 * xhat_0 + coeff_xt * xt + sigma_step * eps
 ```
 
-where `my_ratio_fn` has the uniform signature
-`(stepper, corruption_process, outputs_uncorrected, outputs_corrected,
-xt_prev, xt_next, time_prev, time_next) -> (K,)`.
+with three scalar schedule-dependent coefficients
+`(coeff_x0, coeff_xt, sigma_step)`.  ODE vs. SDE is the single knob
+`sigma_step`:
+
+- `sigma_step = 0`: deterministic proposal (ODE / probability flow).
+  Log-ratio identically zero.
+- `sigma_step > 0`: stochastic proposal (Euler-Maruyama / DDPM
+  ancestral).  Log-ratio is the quadratic Gaussian form.
+
+`GaussianStepKernel.log_density_ratio(xt_prev, xt_next)` computes the
+universal formula at the kernel's stored coefficients.
+
+| Stepper | `sigma_step` | Determined by |
+| --- | --- | --- |
+| `DDIMStep` | `sigma_s * eta` | `stoch_coeff = eta` |
+| `SdeStep` | `sqrt(dt) * g * churn` | `churn` |
+| `VelocityStep` | `sqrt(dt) * g * epsilon` | `epsilon` |
+| `AdjustedDDIMStep` | `0` | (deterministic by construction) |
+| `HeunStep` | `0` | (predictor-corrector, no noise term) |
+
+### Simplicial kernel
+
+`SimplicialDDIMStep.kernel(...)` returns a `SimplicialStepKernel` at
+`churn = 0`: the transition mixture reduces to a categorical draw
+against `softmax(logits)`, and the log-density ratio at a shifted
+`xhat_0` collapses to the per-site categorical log-prob difference at
+the sampled token (the beta-weight factor cancels).  `churn > 0`
+raises -- the full Dirichlet-shrinkage kernel is not yet derived.
+
+### Adding a new stepper
+
+Implement `kernel` on the stepper class, returning either a built-in
+`StepKernel` or your own.  Example for a hypothetical
+`MyExoticStep`:
+
+```python
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class MyExoticStep(SamplerStep):
+    ...
+
+    def kernel(self, *, prediction_uncorrected, prediction_corrected,
+               xt, time_prev, time_next) -> StepKernel:
+        return GaussianStepKernel(
+            coeff_x0=..., coeff_xt=..., sigma_step=...,
+            x0_uncorrected=..., x0_corrected=...,
+        )
+```
+
+### External steppers (not owned by you)
+
+If you can't modify a third-party `SamplerStep`, wrap it:
+
+```python
+@dataclasses.dataclass(frozen=True)
+class _KerneledWrapper:
+    base: SamplerStep
+    kernel_factory: Callable[..., StepKernel]
+
+    def initialize(self, *a, **kw): return self.base.initialize(*a, **kw)
+    def update(self, *a, **kw):     return self.base.update(*a, **kw)
+    def finalize(self, *a, **kw):   return self.base.finalize(*a, **kw)
+    def kernel(self, **kw):         return self.kernel_factory(self.base, **kw)
+
+wrapped = _KerneledWrapper(base=third_party_stepper, kernel_factory=my_factory)
+```
+
+Hand the wrapped object to `DiffusionSampler` / `ConditionalDiffusionSampler`.
+The polymorphic dispatcher only looks for a `kernel` attribute on the
+stepper it receives; there's no framework-side registry.
 
 ## Example: TDS + Pi-GDM on image inpainting
 

@@ -60,13 +60,13 @@ from hackable_diffusion.lib.guidance.protocols import (
     ResamplerFn,
     TwistFn,
 )
-from hackable_diffusion.lib.guidance.proposal_ratio import (
-    ddim_proposal_log_ratio,
-    proposal_log_ratio,
-    register_proposal_ratio,
-    sde_proposal_log_ratio,
-    simplicial_ddim_proposal_log_ratio,
-    velocity_proposal_log_ratio,
+from hackable_diffusion.lib.guidance.proposal_ratio import proposal_log_ratio
+from hackable_diffusion.lib.sampling.base import StepKernel
+from hackable_diffusion.lib.sampling.gaussian_step_sampler import (
+    GaussianStepKernel,
+)
+from hackable_diffusion.lib.sampling.simplicial_step_sampler import (
+    SimplicialStepKernel,
 )
 from hackable_diffusion.lib.guidance.resamplers import (
     ESSThresholdedResamplerFn,
@@ -111,6 +111,7 @@ __all__ = [
     "FixedPriorPosteriorCovarianceFn",
     "ForwardFn",
     "GaussianLikelihoodTwistFn",
+    "GaussianStepKernel",
     "GradientCorrectionFn",
     "InpaintingForwardFn",
     "IsotropicPosteriorCovarianceFn",
@@ -124,6 +125,8 @@ __all__ = [
     "PrefactorFn",
     "ResamplerFn",
     "ScaleFn",
+    "SimplicialStepKernel",
+    "StepKernel",
     "SubsampleForwardFn",
     "SystematicResamplerFn",
     "TweediePosteriorCovarianceFn",
@@ -132,7 +135,6 @@ __all__ = [
     "batch_inner",
     "batched_cg",
     "call_inference_fn",
-    "ddim_proposal_log_ratio",
     "dps_prefactor",
     "linear_adjoint",
     "make_denoiser_fn",
@@ -140,11 +142,7 @@ __all__ = [
     "miyasawa_scale",
     "normalised_weights",
     "proposal_log_ratio",
-    "register_proposal_ratio",
     "replace_x0",
     "scalar_alpha",
     "scalar_alpha_sigma",
-    "sde_proposal_log_ratio",
-    "simplicial_ddim_proposal_log_ratio",
-    "velocity_proposal_log_ratio",
 ]

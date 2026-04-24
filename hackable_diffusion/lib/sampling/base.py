@@ -132,8 +132,38 @@ DiffusionStepTree = PyTree[DiffusionStep]
 ################################################################################
 
 
+class StepKernel(Protocol):
+  """Reverse-time transition kernel at a single step, with corrected and
+  uncorrected denoiser predictions already baked in.
+
+  The atomic object for computing SMC proposal log-ratios.  Each
+  modality (Gaussian, simplicial, ...) has its own concrete kernel class
+  with a modality-specific internal parameterisation.  They share a
+  single operation -- :meth:`log_density_ratio` -- which returns
+
+      log p_theta(xt_next | xt_prev, xhat_0_cor)
+          - log q(xt_next | xt_prev, xhat_0_unc)
+
+  per-particle (shape ``(B,)``).  At a deterministic (ODE / Dirac)
+  proposal the ratio is identically zero.
+  """
+
+  def log_density_ratio(
+      self,
+      xt_prev: DataTree,
+      xt_next: DataTree,
+  ) -> jax.Array: ...
+
+
 class SamplerStep(Protocol):
-  """A protocol defining the diffusion sampling algorithm (e.g., DDIM)."""
+  """A protocol defining the diffusion sampling algorithm (e.g., DDIM).
+
+  Steppers that support SMC-weighted conditional sampling additionally
+  implement :meth:`kernel` returning a :class:`StepKernel`.  The method
+  is optional in the Protocol sense -- see
+  ``lib.guidance.proposal_ratio`` for the fallback (external registry)
+  path when a stepper can't be modified in place.
+  """
 
   def initialize(
       self,

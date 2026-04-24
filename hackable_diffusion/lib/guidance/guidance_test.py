@@ -71,13 +71,7 @@ from hackable_diffusion.lib.guidance.posterior_covariance import (
     TweediePosteriorCovarianceFn,
     miyasawa_scale,
 )
-from hackable_diffusion.lib.guidance.proposal_ratio import (
-    ddim_proposal_log_ratio,
-    proposal_log_ratio,
-    register_proposal_ratio,
-    sde_proposal_log_ratio,
-    velocity_proposal_log_ratio,
-)
+from hackable_diffusion.lib.guidance.proposal_ratio import proposal_log_ratio
 from hackable_diffusion.lib.guidance.resamplers import (
     ESSThresholdedResamplerFn,
     MultinomialResamplerFn,
@@ -410,19 +404,31 @@ class IteratedCorrectionTest(unittest.TestCase):
 ################################################################################
 
 
+def _proposal_log_ratio_for(stepper, corruption_process, x0_unc, x0_cor,
+                            xt_prev, xt_next, time_prev, time_next):
+  """Test helper: invoke the polymorphic dispatcher with x0 dicts."""
+  return proposal_log_ratio(
+      stepper=stepper,
+      outputs_uncorrected={"x0": x0_unc},
+      outputs_corrected={"x0": x0_cor},
+      xt_prev=xt_prev, xt_next=xt_next,
+      time_prev=time_prev, time_next=time_next,
+      correction_identity=False,
+  )
+
+
 class DDIMProposalRatioTest(unittest.TestCase):
+  """Polymorphic ratio via ``DDIMStep.kernel``."""
 
   def test_deterministic_eta_returns_zero(self):
     _, corruption, _ = _gaussian_pieces(eta=0.0)
     stepper = DDIMStep(corruption_process=corruption, stoch_coeff=0.0)
     xt = jnp.ones((3, 8), dtype=jnp.float64)
-    ratio = ddim_proposal_log_ratio(
-        stepper=stepper, corruption_process=corruption,
-        outputs_uncorrected={"x0": jnp.zeros_like(xt)},
-        outputs_corrected={"x0": jnp.ones_like(xt)},
-        xt_prev=xt, xt_next=xt + 0.1,
-        time_prev=jnp.asarray([0.5]),
-        time_next=jnp.asarray([0.4]),
+    ratio = _proposal_log_ratio_for(
+        stepper, corruption,
+        jnp.zeros_like(xt), jnp.ones_like(xt),
+        xt, xt + 0.1,
+        jnp.asarray([0.5]), jnp.asarray([0.4]),
     )
     self.assertTrue(bool(jnp.all(ratio == 0.0)))
 
@@ -431,13 +437,13 @@ class DDIMProposalRatioTest(unittest.TestCase):
     stepper = DDIMStep(corruption_process=corruption, stoch_coeff=0.5)
     xt = jnp.ones((2, 4), dtype=jnp.float64)
     x0 = jnp.zeros_like(xt)
-    ratio = ddim_proposal_log_ratio(
-        stepper=stepper, corruption_process=corruption,
+    ratio = proposal_log_ratio(
+        stepper=stepper,
         outputs_uncorrected={"x0": x0},
         outputs_corrected={"x0": x0},
         xt_prev=xt, xt_next=xt + 0.1,
-        time_prev=jnp.asarray([0.5]),
-        time_next=jnp.asarray([0.4]),
+        time_prev=jnp.asarray([0.5]), time_next=jnp.asarray([0.4]),
+        correction_identity=True,
     )
     self.assertTrue(jnp.allclose(ratio, jnp.zeros(2), atol=1e-12))
 
@@ -445,26 +451,25 @@ class DDIMProposalRatioTest(unittest.TestCase):
     _, corruption, _ = _gaussian_pieces(eta=0.5)
     stepper = DDIMStep(corruption_process=corruption, stoch_coeff=0.5)
     xt = jnp.ones((2, 4), dtype=jnp.float64)
-    ratio = ddim_proposal_log_ratio(
-        stepper=stepper, corruption_process=corruption,
-        outputs_uncorrected={"x0": jnp.zeros_like(xt)},
-        outputs_corrected={"x0": jnp.full_like(xt, 0.3)},
-        xt_prev=xt, xt_next=jnp.full_like(xt, 0.2),
-        time_prev=jnp.asarray([0.5]),
-        time_next=jnp.asarray([0.4]),
+    ratio = _proposal_log_ratio_for(
+        stepper, corruption,
+        jnp.zeros_like(xt), jnp.full_like(xt, 0.3),
+        xt, jnp.full_like(xt, 0.2),
+        jnp.asarray([0.5]), jnp.asarray([0.4]),
     )
     self.assertTrue(bool(jnp.all(jnp.isfinite(ratio))))
     self.assertTrue(bool(jnp.all(ratio != 0.0)))
 
 
-class RegistryTest(unittest.TestCase):
+class PolymorphicDispatchTest(unittest.TestCase):
+  """``proposal_log_ratio`` only asks for ``stepper.kernel``."""
 
-  def test_identity_short_circuits_before_dispatch(self):
-    # Any fake stepper works because correction_identity=True short-circuits.
+  def test_identity_correction_short_circuits(self):
+    # Any fake stepper works because correction_identity=True skips the kernel.
     class _FakeStepper: pass
     xt = jnp.zeros((2, 4), dtype=jnp.float64)
     ratio = proposal_log_ratio(
-        stepper=_FakeStepper(), corruption_process=None,
+        stepper=_FakeStepper(),
         outputs_uncorrected={}, outputs_corrected={},
         xt_prev=xt, xt_next=xt,
         time_prev=jnp.asarray([0.5]), time_next=jnp.asarray([0.4]),
@@ -472,35 +477,16 @@ class RegistryTest(unittest.TestCase):
     )
     self.assertTrue(jnp.allclose(ratio, jnp.zeros(2), atol=1e-12))
 
-  def test_unknown_stepper_raises(self):
-    class _Unknown: pass
-    with self.assertRaises(NotImplementedError):
+  def test_stepper_without_kernel_raises(self):
+    class _Unkernelled: pass
+    with self.assertRaises(AttributeError):
       proposal_log_ratio(
-          stepper=_Unknown(), corruption_process=None,
+          stepper=_Unkernelled(),
           outputs_uncorrected={}, outputs_corrected={},
           xt_prev=jnp.zeros((1, 2)), xt_next=jnp.zeros((1, 2)),
           time_prev=jnp.zeros((1,)), time_next=jnp.zeros((1,)),
           correction_identity=False,
       )
-
-  def test_register_dispatches_to_new_stepper(self):
-    class _Mock: pass
-    called = {"yes": False}
-
-    def fake_ratio(*, stepper, corruption_process, outputs_uncorrected,
-                   outputs_corrected, xt_prev, xt_next, time_prev, time_next):
-      called["yes"] = True
-      return jnp.zeros(xt_prev.shape[0])
-
-    register_proposal_ratio(_Mock, fake_ratio)
-    proposal_log_ratio(
-        stepper=_Mock(), corruption_process=None,
-        outputs_uncorrected={}, outputs_corrected={},
-        xt_prev=jnp.zeros((2, 1)), xt_next=jnp.zeros((2, 1)),
-        time_prev=jnp.zeros((1,)), time_next=jnp.zeros((1,)),
-        correction_identity=False,
-    )
-    self.assertTrue(called["yes"])
 
 
 ################################################################################
@@ -898,13 +884,11 @@ class SdeProposalRatioTest(unittest.TestCase):
     corruption = GaussianProcess(schedule=schedule)
     stepper = SdeStep(corruption_process=corruption, churn=0.0)
     xt = jnp.ones((3, 8), dtype=jnp.float64)
-    ratio = sde_proposal_log_ratio(
-        stepper=stepper, corruption_process=corruption,
-        outputs_uncorrected={"x0": jnp.zeros_like(xt)},
-        outputs_corrected={"x0": jnp.ones_like(xt)},
-        xt_prev=xt, xt_next=xt + 0.1,
-        time_prev=jnp.asarray([0.5]),
-        time_next=jnp.asarray([0.4]),
+    ratio = _proposal_log_ratio_for(
+        stepper, corruption,
+        jnp.zeros_like(xt), jnp.ones_like(xt),
+        xt, xt + 0.1,
+        jnp.asarray([0.5]), jnp.asarray([0.4]),
     )
     self.assertTrue(bool(jnp.all(ratio == 0.0)))
 
@@ -913,32 +897,14 @@ class SdeProposalRatioTest(unittest.TestCase):
     corruption = GaussianProcess(schedule=schedule)
     stepper = SdeStep(corruption_process=corruption, churn=1.0)
     xt = jnp.ones((2, 4), dtype=jnp.float64)
-    ratio = sde_proposal_log_ratio(
-        stepper=stepper, corruption_process=corruption,
-        outputs_uncorrected={"x0": jnp.zeros_like(xt)},
-        outputs_corrected={"x0": jnp.full_like(xt, 0.3)},
-        xt_prev=xt, xt_next=jnp.full_like(xt, 0.2),
-        time_prev=jnp.asarray([0.5]),
-        time_next=jnp.asarray([0.4]),
+    ratio = _proposal_log_ratio_for(
+        stepper, corruption,
+        jnp.zeros_like(xt), jnp.full_like(xt, 0.3),
+        xt, jnp.full_like(xt, 0.2),
+        jnp.asarray([0.5]), jnp.asarray([0.4]),
     )
     self.assertTrue(bool(jnp.all(jnp.isfinite(ratio))))
     self.assertTrue(bool(jnp.all(ratio != 0.0)))
-
-  def test_registry_dispatches_sde_step(self):
-    schedule = schedules.CosineSchedule()
-    corruption = GaussianProcess(schedule=schedule)
-    stepper = SdeStep(corruption_process=corruption, churn=0.5)
-    xt = jnp.ones((2, 4), dtype=jnp.float64)
-    ratio = proposal_log_ratio(
-        stepper=stepper, corruption_process=corruption,
-        outputs_uncorrected={"x0": jnp.zeros_like(xt)},
-        outputs_corrected={"x0": jnp.full_like(xt, 0.2)},
-        xt_prev=xt, xt_next=jnp.full_like(xt, 0.5),
-        time_prev=jnp.asarray([0.5]),
-        time_next=jnp.asarray([0.4]),
-        correction_identity=False,
-    )
-    self.assertTrue(bool(jnp.all(jnp.isfinite(ratio))))
 
 
 ################################################################################
@@ -949,18 +915,16 @@ class SdeProposalRatioTest(unittest.TestCase):
 class DeterministicStepperRatioTest(unittest.TestCase):
   """AdjustedDDIMStep and HeunStep are deterministic; ratio must be 0."""
 
-  def test_adjusted_ddim_ratio_is_zero_via_registry(self):
+  def test_adjusted_ddim_ratio_is_zero(self):
     schedule = schedules.CosineSchedule()
     corruption = GaussianProcess(schedule=schedule)
     stepper = AdjustedDDIMStep(corruption_process=corruption)
     xt = jnp.ones((3, 8), dtype=jnp.float64)
-    ratio = proposal_log_ratio(
-        stepper=stepper, corruption_process=corruption,
-        outputs_uncorrected={"x0": jnp.zeros_like(xt)},
-        outputs_corrected={"x0": jnp.ones_like(xt)},
-        xt_prev=xt, xt_next=xt + 0.1,
-        time_prev=jnp.asarray([0.5]), time_next=jnp.asarray([0.4]),
-        correction_identity=False,
+    ratio = _proposal_log_ratio_for(
+        stepper, corruption,
+        jnp.zeros_like(xt), jnp.ones_like(xt),
+        xt, xt + 0.1,
+        jnp.asarray([0.5]), jnp.asarray([0.4]),
     )
     self.assertTrue(bool(jnp.all(ratio == 0.0)))
 
@@ -972,12 +936,11 @@ class VelocityProposalRatioTest(unittest.TestCase):
     corruption = GaussianProcess(schedule=schedule)
     stepper = VelocityStep(corruption_process=corruption, epsilon=0.0)
     xt = jnp.ones((3, 8), dtype=jnp.float64)
-    ratio = velocity_proposal_log_ratio(
-        stepper=stepper, corruption_process=corruption,
-        outputs_uncorrected={"x0": jnp.zeros_like(xt)},
-        outputs_corrected={"x0": jnp.ones_like(xt)},
-        xt_prev=xt, xt_next=xt + 0.1,
-        time_prev=jnp.asarray([0.5]), time_next=jnp.asarray([0.4]),
+    ratio = _proposal_log_ratio_for(
+        stepper, corruption,
+        jnp.zeros_like(xt), jnp.ones_like(xt),
+        xt, xt + 0.1,
+        jnp.asarray([0.5]), jnp.asarray([0.4]),
     )
     self.assertTrue(bool(jnp.all(ratio == 0.0)))
 
@@ -986,12 +949,11 @@ class VelocityProposalRatioTest(unittest.TestCase):
     corruption = GaussianProcess(schedule=schedule)
     stepper = VelocityStep(corruption_process=corruption, epsilon=0.5)
     xt = jnp.ones((2, 4), dtype=jnp.float64)
-    ratio = velocity_proposal_log_ratio(
-        stepper=stepper, corruption_process=corruption,
-        outputs_uncorrected={"x0": jnp.zeros_like(xt)},
-        outputs_corrected={"x0": jnp.full_like(xt, 0.3)},
-        xt_prev=xt, xt_next=jnp.full_like(xt, 0.2),
-        time_prev=jnp.asarray([0.5]), time_next=jnp.asarray([0.4]),
+    ratio = _proposal_log_ratio_for(
+        stepper, corruption,
+        jnp.zeros_like(xt), jnp.full_like(xt, 0.3),
+        xt, jnp.full_like(xt, 0.2),
+        jnp.asarray([0.5]), jnp.asarray([0.4]),
     )
     self.assertTrue(bool(jnp.all(jnp.isfinite(ratio))))
     self.assertTrue(bool(jnp.all(ratio != 0.0)))
