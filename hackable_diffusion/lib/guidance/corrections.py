@@ -26,6 +26,17 @@
   :class:`PosteriorCovarianceFn`.  Combined with
   :class:`TweediePosteriorCovarianceFn` it yields the exact
   second-order correction for any prior the denoiser represents.
+
+Modality compatibility
+----------------------
+- ``GradientCorrectionFn``: Gaussian ODE / Gaussian SDE / distributional.
+  Requires Euclidean xhat_0 for the gradient step direction; on a simplex
+  the Euclidean gradient leaves the constraint set.
+- ``PiGDMCorrectionFn``: Gaussian ODE / Gaussian SDE / distributional.
+  The Kalman update ``xhat_0 + Sigma Aᵀ (...) r`` assumes Euclidean
+  inner product; for simplicial x_0 use a dedicated simplex-aware
+  correction.
+- ``IteratedCorrectionFn``: modality of its ``base``.
 """
 
 from __future__ import annotations

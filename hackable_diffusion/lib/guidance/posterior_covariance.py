@@ -30,6 +30,14 @@ Kalman-guidance variant:
 
 All three satisfy :class:`PosteriorCovarianceFn` and so plug into
 :class:`PiGDMCorrectionFn` interchangeably.
+
+Modality compatibility
+----------------------
+All three assume ``x_0`` lives in a Euclidean space where ``Cov`` is a
+well-defined linear operator against the canonical inner product.  That
+covers Gaussian (ODE + SDE) and distributional diffusion.  For
+simplicial diffusion the "covariance" would need to be defined in the
+tangent space of the simplex -- use a simplex-aware correction instead.
 """
 
 from __future__ import annotations

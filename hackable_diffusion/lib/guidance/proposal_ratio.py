@@ -31,9 +31,30 @@ Built-in implementations:
 
 - :func:`ddim_proposal_log_ratio` for Gaussian :class:`DDIMStep`
   (linear-mean-shift formula; returns 0 at ``eta=0``).
+- :func:`sde_proposal_log_ratio` for :class:`SdeStep` (score-form
+  Euler-Maruyama; returns 0 at ``churn=0``).
+- :func:`velocity_proposal_log_ratio` for :class:`VelocityStep`
+  (velocity-form Euler-Maruyama; returns 0 at ``epsilon=0``).
+- :class:`AdjustedDDIMStep`, :class:`HeunStep`: deterministic
+  predictor / predictor-corrector; ratio is identically 0.
 - :func:`simplicial_ddim_proposal_log_ratio` for
   :class:`SimplicialDDIMStep` with ``churn=0`` (categorical log-prob
   ratio on the sampled token).
+
+Modality compatibility
+----------------------
+Every Gaussian-forward stepper (DDIM, SDE, Velocity, Heun, AdjustedDDIM)
+parameterises its step as a Gaussian proposal with mean linear in
+``xhat_0`` and a scalar step-std ``sigma_step``.  The formulas below
+all reduce to
+
+    log p - log q = (||x - mu_q||^2 - ||x - mu_p||^2) / (2 sigma_step^2)
+                    with mu_p - mu_q = coeff * (xhat_0_unc - xhat_0_cor)
+
+at ``sigma_step > 0`` (stochastic) and ``0`` at ``sigma_step = 0``
+(deterministic / ODE).  Simplicial DDIM uses the discrete categorical
+form; distributional diffusion inherits the Gaussian formulas per
+ensemble member.
 """
 
 from __future__ import annotations

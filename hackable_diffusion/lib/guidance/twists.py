@@ -32,6 +32,21 @@ Four published shapes of twist are covered:
 
 All depend only on a :class:`ForwardFn` / user-supplied callable; none
 hard-codes a state-space.
+
+Modality compatibility
+----------------------
+- ``GaussianLikelihoodTwistFn``: Gaussian (ODE/SDE) and distributional.
+  Requires a linear ``ForwardFn A`` whose range is Euclidean -- the
+  twist is the log-density of a Gaussian at ``A xhat_0``.  Not
+  applicable when ``x_0`` is on a simplex (use the discrete twists).
+- ``DiscreteCompositionTwistFn`` /
+  ``DiscreteMultiHeadCompositionTwistFn``: simplicial only.  The
+  observation is a per-block multinomial / composition vector and
+  ``forward_fn`` aggregates over sites.
+- ``ClassifierTwistFn``: universal.  The ``log_prob_fn`` sees whatever
+  ``x_0`` the corruption process produces -- simplex, Euclidean, or
+  ensemble -- so the caller decides what's valid.
+- ``EnergyTwistFn``: universal, same reasoning as classifier.
 """
 
 from __future__ import annotations

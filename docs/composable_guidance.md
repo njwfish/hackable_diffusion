@@ -1,65 +1,122 @@
 # Composable Guidance Framework
 
-The `lib/guidance/` subpackage exposes a small set of Protocol-based
-primitives that compose to express every posterior-sampling / guidance
-method in the published diffusion literature.  The framework is strictly
-additive -- it complements `lib/inference/guidance.py` (classifier-free
-guidance combinators) rather than replacing it.
+The `lib/guidance/` subpackage is a set of Protocol-based primitives for
+conditional sampling.  Every published posterior-sampling method
+(Pi-GDM, DPS, TDS, MCGDiff, CFG, classifier guidance, iterated Pi-GDM,
+...) is a configuration over these primitives.
 
 [TOC]
 
-## Design
+## Modality compatibility
 
-Six Protocols cover every axis of variation:
+The framework supports four diffusion modalities:
 
-| Protocol | Role | Example implementations |
+| Modality | Corruption process | ``x_0`` shape | Canonical stepper |
+| --- | --- | --- | --- |
+| Gaussian ODE | ``GaussianProcess`` | ``(B, *euclidean)`` | ``DDIMStep(stoch_coeff=0)``, ``VelocityStep(epsilon=0)``, ``HeunStep``, ``AdjustedDDIMStep`` |
+| Gaussian SDE | ``GaussianProcess`` | ``(B, *euclidean)`` | ``DDIMStep(stoch_coeff>0)``, ``SdeStep(churn>0)``, ``VelocityStep(epsilon>0)`` |
+| Simplicial | ``SimplicialProcess`` | ``(B, *sites, K)`` on probability simplex | ``SimplicialDDIMStep`` |
+| Distributional | any | ``(B, M, *shape)`` ensemble | matches the base modality |
+
+Not every primitive works in every modality.  The table below is the
+authoritative compatibility map; each primitive's docstring repeats its
+own entry.
+
+| Primitive | Gaussian ODE | Gaussian SDE | Simplicial | Distributional |
+| --- | :-: | :-: | :-: | :-: |
+| **Orchestrator** | | | | |
+| `ConditionalDiffusionSampler` | ✓ | ✓ | ✓ | ✓ |
+| **Protocols** | | | | |
+| `DenoiserFn`, `ForwardFn`, `ResamplerFn` | ✓ | ✓ | ✓ | ✓ |
+| `CorrectionFn`, `TwistFn` | ✓ | ✓ | ✓ | ✓ |
+| `PosteriorCovarianceFn` | ✓ | ✓ | ✗ | ✓ |
+| **Corrections** | | | | |
+| `GradientCorrectionFn` | ✓ | ✓ | ~* | ✓ |
+| `PiGDMCorrectionFn` | ✓ | ✓ | ✗** | ~† |
+| `IteratedCorrectionFn` | (base) | (base) | (base) | (base) |
+| `CFGCorrectionFn` | ✓ | ✓ | ✓ | ✓ |
+| `BoundAggregateGuidanceFn` | (project-specific) | (project-specific) | (project-specific) | (project-specific) |
+| **Posterior-covariance operators** | | | | |
+| `IsotropicPosteriorCovarianceFn` | ✓ | ✓ | ✗ | ~ |
+| `FixedPriorPosteriorCovarianceFn` | ✓ | ✓ | ✗ | ~ |
+| `TweediePosteriorCovarianceFn` | ✓ | ✓ | ✓ | ✓‡ |
+| **Twists** | | | | |
+| `GaussianLikelihoodTwistFn` | ✓ | ✓ | ✗ | ✓ |
+| `DiscreteCompositionTwistFn` | ✗ | ✗ | ✓ | ✗ |
+| `DiscreteMultiHeadCompositionTwistFn` | ✗ | ✗ | ✓ | ✗ |
+| `ClassifierTwistFn` | ✓ | ✓ | ✓ | ✓ |
+| `EnergyTwistFn` | ✓ | ✓ | ✓ | ✓ |
+| **Forward operators** | | | | |
+| `LinearForwardFn`, `SubsampleForwardFn`, `InpaintingForwardFn`, `ConvForwardFn`, `ComposeForwardFn` | ✓ | ✓ | ~§ | ✓ |
+| **Resamplers** | | | | |
+| `NoResamplerFn`, `Systematic/Multinomial/ESSThresholded` | ✓ | ✓ | ✓ | ✓ |
+| **Proposal-ratio registry** | | | | |
+| `DDIMStep`, `SdeStep`, `VelocityStep`, `AdjustedDDIMStep`, `HeunStep` | ✓ | ✓ | ✗ | ✓ |
+| `SimplicialDDIMStep` (churn=0) | ✗ | ✗ | ✓ | ✗ |
+
+Footnotes:
+
+- `*` Gradient on a simplex is a *tangent-space* object; the Euclidean
+  gradient step leaves the simplex without projection.  Use a
+  simplex-aware correction on simplicial ``x_0``.
+- `**` The Kalman update ``x_0 + Sigma Aᵀ (...) r`` assumes a Euclidean
+  inner product on ``x_0``.  For simplicial ``x_0`` use a
+  logit-space or tangent-space correction.
+- `†` Works per-ensemble-member; batched CG solves ``B*M`` systems if
+  the distributional denoiser returns an explicit ``(B, M, n)``
+  ensemble.  Make sure the ``ForwardFn`` preserves the ensemble axis.
+- `‡` JVP through a distributional denoiser sees the ensemble axis
+  natively.
+- `§` Forward ops with numerical outputs (`LinearForwardFn`, `ConvForwardFn`)
+  can operate on simplex-valued ``x_0`` *if* the map itself is defined on
+  the simplex (aggregation of probabilities, for example).  The
+  ``InpaintingForwardFn`` mask is always modality-agnostic.
+
+## Protocols
+
+Six callable Protocols are the design axes.
+
+| Protocol | Signature | Role |
 | --- | --- | --- |
-| `DenoiserFn` | Pure `xt -> xhat_0(xt)` closure at fixed `(time, cond, rng)` | built from `make_denoiser_fn` |
-| `ForwardFn` | Linear / non-linear measurement `y = A(x_0)`; adjoint via VJP | `LinearForwardFn`, `InpaintingForwardFn`, `ConvForwardFn`, `SubsampleForwardFn`, `ComposeForwardFn` |
-| `PosteriorCovarianceFn` | Linear operator `v -> Cov(x_0\|x_t) v` | `IsotropicPosteriorCovarianceFn`, `FixedPriorPosteriorCovarianceFn`, `TweediePosteriorCovarianceFn` |
-| `CorrectionFn` | `outputs -> outputs` denoiser-side correction | `PiGDMCorrectionFn`, `GradientCorrectionFn`, `IteratedCorrectionFn`, `CFGCorrectionFn`, `BoundAggregateGuidanceFn` |
-| `TwistFn` | `(xt, t) -> log psi(y\|xt)` SMC log-potential | `GaussianLikelihoodTwistFn`, `DiscreteCompositionTwistFn`, `ClassifierTwistFn`, `EnergyTwistFn` |
-| `ResamplerFn` | `(particles, log_w) -> (particles, log_w)` | `NoResamplerFn`, `SystematicResamplerFn`, `MultinomialResamplerFn`, `ESSThresholdedResamplerFn` |
-
-`ConditionalDiffusionSampler` wraps a `DiffusionSampler` with any
-combination of `(correction_fn, twist_fn, resampler_fn)`.  The `K=1`
-case with no correction / twist / resampler delegates to the base
-sampler bit-for-bit, so adding the wrapper to an existing pipeline is
-zero-cost when unused.
+| `DenoiserFn` | `(xt, time) -> xhat_0` | The learned object.  Built from a raw `inference_fn` via `make_denoiser_fn`. |
+| `ForwardFn` | `.forward(x) -> y` | Linear (or non-linear) measurement map `A`.  Adjoint free via `jax.vjp`. |
+| `PosteriorCovarianceFn` | `(v, *, xt, time, schedule, denoiser_fn) -> Cov v` | Linear operator for the Kalman gain.  Gaussian-modality only. |
+| `CorrectionFn` | `(outputs, xt, time, *, schedule, corruption_process, ...) -> outputs` | Modifies the denoiser's outputs before the stepper advances. |
+| `TwistFn` | `(xt, time, *, inference_fn, schedule, corruption_process, ...) -> log_psi` | SMC log-potential; gradient source for DPS-style corrections. |
+| `ResamplerFn` | `(particles, log_weights, *, rng) -> (particles, log_weights)` | Pure resample. |
 
 ## Taxonomy
 
-Every posterior-sampling method reduces to a one-line expression:
+Every posterior-sampling method reduces to a one-line expression.
+Modality tag in brackets.
 
 ```python
-# --- DPS (Chung et al. 2023) ------------------------------------------
+# --- DPS (Chung et al. 2023) -- Gaussian ODE / SDE, distributional ----
 GradientCorrectionFn(
     twist=GaussianLikelihoodTwistFn(observation=y, forward_fn=A),
     prefactor_fn=dps_prefactor,
 )
 
-# --- Pi-GDM (Song et al. 2023), cov-aware variant --------------------
+# --- Pi-GDM (Song et al. 2023), cov-aware -- Gaussian ODE / SDE --------
 PiGDMCorrectionFn(
     observation=y, forward_fn=A,
     posterior_covariance_fn=FixedPriorPosteriorCovarianceFn(prior_covariance=C),
 )
 
-# --- Pi-GDM via Miyasawa/Tweedie -- exact under any prior ------------
+# --- Pi-GDM via Miyasawa/Tweedie -- universal* -------------------------
 PiGDMCorrectionFn(
     observation=y, forward_fn=A,
     posterior_covariance_fn=TweediePosteriorCovarianceFn(),
 )
+# (*) exact for any prior the denoiser represents; still Euclidean-x_0.
 
-# --- Iterated Pi-GDM -- closes the non-Gaussian intermediate-H bump --
+# --- Iterated Pi-GDM -- modality of the base ---------------------------
 IteratedCorrectionFn(
-    base=PiGDMCorrectionFn(
-        observation=y, forward_fn=A,
-        posterior_covariance_fn=TweediePosteriorCovarianceFn(),
-    ),
+    base=PiGDMCorrectionFn(..., posterior_covariance_fn=TweediePosteriorCovarianceFn()),
     num_iters=3,
 )
 
-# --- TDS (Wu et al. 2023) -- any correction + twist + SMC ------------
+# --- TDS (Wu et al. 2023) -- any Gaussian ODE/SDE correction + twist + SMC --
 ConditionalDiffusionSampler(
     base_sampler=...,
     correction_fn=any_correction_above,
@@ -68,32 +125,28 @@ ConditionalDiffusionSampler(
     num_particles=K,
 )
 
-# --- Classifier guidance (Dhariwal & Nichol 2021) --------------------
+# --- Classifier guidance -- universal ---------------------------------
 GradientCorrectionFn(
     twist=ClassifierTwistFn(log_prob_fn=lambda x0: classifier(x0, y_class)),
 )
 
-# --- Classifier-free guidance (Ho & Salimans 2022) -------------------
+# --- CFG -- universal -------------------------------------------------
 CFGCorrectionFn(
     unconditional_inference_fn=uncond_model,
     guidance_fn=ScalarGuidanceFn(guidance=w),  # lib.inference.guidance
 )
 
-# --- Inverse-problem benchmarks --------------------------------------
-# Image inpainting:
+# --- Inverse-problem benchmarks -- Gaussian ODE / SDE -----------------
 PiGDMCorrectionFn(forward_fn=InpaintingForwardFn(mask=m), ...)
-# Gaussian-blur deblurring:
 PiGDMCorrectionFn(forward_fn=ConvForwardFn(kernel=k), ...)
-# Super-resolution (blur + downsample):
 PiGDMCorrectionFn(
     forward_fn=ComposeForwardFn(
         first=ConvForwardFn(kernel=blur),
         second=SubsampleForwardFn(indices=stride_idx),
-    ),
-    ...,
+    ), ...,
 )
 
-# --- Energy / constraint guidance ------------------------------------
+# --- Energy / constraint guidance -- universal ------------------------
 GradientCorrectionFn(
     twist=EnergyTwistFn(energy_fn=lambda x0: penalty(x0), temperature=1.0),
 )
@@ -101,27 +154,25 @@ GradientCorrectionFn(
 
 ## SMC weight accounting
 
-When a `CorrectionFn` shifts the denoiser output, the proposal density
-is no longer the base sampler's transition; to stay unbiased under SMC,
-we accumulate a per-step importance-weight increment
+When a `CorrectionFn` shifts the denoiser output, SMC importance
+weights require a per-step increment
 
 ```
-delta log w(t -> s) = log p_theta(x_s | x_t) - log q(x_s | x_t)
-                    + log psi(y | x_s) - log psi(y | x_t)
+delta log w = log p_theta(x_s | x_r) - log q(x_s | x_r)
+            + log psi(y | x_s) - log psi(y | x_r)
 ```
 
-The proposal log-ratio `log p_theta - log q` is computed in closed form
-by `proposal_log_ratio`, which dispatches by `isinstance` against a
-registry of stepper types.  Pre-registered:
+where `r = prev, s = next`.  The proposal log-ratio is computed in
+closed form by `proposal_log_ratio`, which dispatches by `isinstance`:
 
-| Stepper | Formula | Notes |
+| Stepper | Formula | Deterministic limit |
 | --- | --- | --- |
-| `DDIMStep` | Linear-mean-shift Gaussian | Returns 0 at `stoch_coeff=0` (deterministic) |
-| `SdeStep` | Score-form Euler-Maruyama; B = 0.5 g² (1+churn²) dt α/σ² | Returns 0 at `churn=0` |
-| `VelocityStep` | Velocity-form Euler-Maruyama | Returns 0 at `epsilon=0` |
-| `AdjustedDDIMStep` | Deterministic (ratio = 0) | Heuristic: uniform-weight SMC |
-| `HeunStep` | Deterministic predictor-corrector (ratio = 0) | Same |
-| `SimplicialDDIMStep` | Categorical log-prob ratio on sampled token | Requires `churn=0` |
+| `DDIMStep` | Linear-mean-shift Gaussian | `stoch_coeff = 0` → 0 |
+| `SdeStep` | Score-form Euler-Maruyama | `churn = 0` → 0 |
+| `VelocityStep` | Velocity-form Euler-Maruyama | `epsilon = 0` → 0 |
+| `AdjustedDDIMStep` | Deterministic (ratio = 0) | always 0 |
+| `HeunStep` | Deterministic predictor-corrector | always 0 |
+| `SimplicialDDIMStep` | Categorical log-prob on sampled token | `churn = 0` required |
 
 Register a new stepper type with
 
@@ -130,11 +181,11 @@ from hackable_diffusion.lib.guidance import register_proposal_ratio
 register_proposal_ratio(MyStepType, my_ratio_fn)
 ```
 
-where `my_ratio_fn` matches the uniform signature
+where `my_ratio_fn` has the uniform signature
 `(stepper, corruption_process, outputs_uncorrected, outputs_corrected,
 xt_prev, xt_next, time_prev, time_next) -> (K,)`.
 
-## Example: end-to-end TDS-Pi-GDM on an image inpainting task
+## Example: TDS + Pi-GDM on image inpainting
 
 ```python
 from hackable_diffusion.lib.guidance import (
@@ -147,7 +198,7 @@ from hackable_diffusion.lib.guidance import (
 )
 
 mask = ...   # (H, W) of 0/1
-y    = mask * x_observed  # partial observation
+y    = mask * x_observed
 fwd  = InpaintingForwardFn(mask=mask)
 
 correction = PiGDMCorrectionFn(
@@ -186,4 +237,4 @@ final_step, _, log_weights = sampler(
 | `proposal_ratio.py` | Per-stepper closed-form ratios and the dispatch registry |
 | `adapters.py` | `BoundAggregateGuidanceFn`, `CFGCorrectionFn` |
 | `sampler.py` | `ConditionalDiffusionSampler` (the orchestrator) |
-| `guidance_test.py` | 56 pure unit tests (no external project deps) |
+| `guidance_test.py`, `guidance_literature_test.py` | 63 pure unit + literature-validation tests |
