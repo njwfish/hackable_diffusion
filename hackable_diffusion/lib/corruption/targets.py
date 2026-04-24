@@ -14,18 +14,24 @@
 
 """Concrete :class:`TargetAdapter` implementations.
 
-- :class:`GaussianSourceTargets`: emits ``{x0, x1, epsilon, score,
-  velocity, v}``.  Owns the ``CONVERTERS`` table of bidirectional
-  parameterisation conversions.  Valid only when the coupling's source
-  is ``StandardNormalSource``.
+- :class:`GaussianSourceTargets`: emits ``{x0, x1, score, velocity, v}``.
+  Owns the ``CONVERTERS`` table of bidirectional parameterisation
+  conversions.  Valid only when the coupling's source is
+  ``StandardNormalSource``.
 - :class:`RiemannianVelocityTargets`: emits ``{x0, x1, velocity}`` with
   the Riemannian velocity from the geodesic chain rule.
 - :class:`VelocityOnlyTargets`: emits ``{x0, x1, velocity}`` for any
-  source.  The minimum set valid under data-to-data flow matching.
+  source.  The minimum set valid under data-to-data flow matching;
+  also the adapter used with :class:`StochasticInterpolant` (``z`` is
+  drawn by ``InterpolantProcess.corrupt`` and threaded into
+  ``interpolant.eval`` so ``velocity`` already carries the
+  ``gamma_dot z`` term).
 
-The conversion tables for Gaussian parameterisations (``x0 <-> epsilon
-<-> score <-> velocity <-> v``) relocate here from the legacy
-``gaussian.py`` module.  Behaviour is byte-identical.
+The conversion tables for Gaussian parameterisations (``x0 <-> x1 <->
+score <-> velocity <-> v``) relocate here from the legacy
+``gaussian.py`` module.  ``epsilon`` is renamed to ``x1`` throughout;
+callers of ``process.convert_predictions`` passing
+``{"epsilon": value}`` must update to ``{"x1": value}``.
 """
 
 from __future__ import annotations
@@ -347,6 +353,11 @@ class VelocityOnlyTargets(TargetAdapter):
   non-Gaussian ``x_1``, so they're not emitted.  ``velocity`` is
   whatever the interpolant's :meth:`Interpolant.eval` returns as its
   second element.
+
+  Works unchanged for :class:`StochasticInterpolant`: the noise ``z``
+  threads through to ``interpolant.eval`` so ``velocity`` contains the
+  full ``alpha_dot x_0 + beta_dot x_1 + gamma_dot z`` term.  SI training
+  then reduces to a single-head regression on ``x_0`` or ``velocity``.
   """
 
   emitted_keys: ClassVar[frozenset[str]] = frozenset({'x0', 'x1', 'velocity'})
@@ -361,8 +372,8 @@ class VelocityOnlyTargets(TargetAdapter):
       t: TimeTree,
       interpolant,
   ) -> TargetInfoTree:
-    del z, xt
-    _, dxt_dt = interpolant.eval(x0, x1, t)
+    del xt
+    _, dxt_dt = interpolant.eval(x0, x1, t, z)
     return {'x0': x0, 'x1': x1, 'velocity': dxt_dt}
 
   def convert(
