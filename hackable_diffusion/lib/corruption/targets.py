@@ -18,20 +18,15 @@
   Owns the ``CONVERTERS`` table of bidirectional parameterisation
   conversions.  Valid only when the coupling's source is
   ``StandardNormalSource``.
-- :class:`RiemannianVelocityTargets`: emits ``{x0, x1, velocity}`` with
-  the Riemannian velocity from the geodesic chain rule.
 - :class:`VelocityOnlyTargets`: emits ``{x0, x1, velocity}`` for any
-  source.  The minimum set valid under data-to-data flow matching;
-  also the adapter used with :class:`StochasticInterpolant` (``z`` is
-  drawn by ``InterpolantProcess.corrupt`` and threaded into
-  ``interpolant.eval`` so ``velocity`` already carries the
-  ``gamma_dot z`` term).
+  interpolant / source.  Threads ``z`` into ``interpolant.eval`` so it
+  works unchanged for :class:`GeodesicInterpolant` (``z`` is ``None``
+  and ignored) and :class:`StochasticInterpolant` (``z`` contributes
+  the ``gamma(t) z`` term).
 
 The conversion tables for Gaussian parameterisations (``x0 <-> x1 <->
-score <-> velocity <-> v``) relocate here from the legacy
-``gaussian.py`` module.  ``epsilon`` is renamed to ``x1`` throughout;
-callers of ``process.convert_predictions`` passing
-``{"epsilon": value}`` must update to ``{"x1": value}``.
+score <-> velocity <-> v``) live here; see LOCAL_PATCHES.md patch 7
+for the ``epsilon -> x1`` rename.
 """
 
 from __future__ import annotations
@@ -230,7 +225,7 @@ def _alpha_sigma_and_der(schedule, time, ndim):
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class GaussianSourceTargets(TargetAdapter):
-  """Emits ``{x0, x1, epsilon, score, velocity, v}`` for a Gaussian source.
+  """Emits ``{x0, x1, score, velocity, v}`` for a Gaussian source.
 
   Byte-equivalent to legacy ``GaussianProcess.corrupt``'s ``target_info``
   dict when composed with :class:`LinearInterpolant` and a
@@ -252,23 +247,19 @@ class GaussianSourceTargets(TargetAdapter):
       x1: DataTree,
       z: DataTree | None,
       xt: DataTree,
+      dxt_dt: DataTree,
       t: TimeTree,
       interpolant,
   ) -> TargetInfoTree:
-    # Global rename: legacy ``GaussianProcess`` emitted ``epsilon`` for
-    # the Gaussian-source noise.  Renamed to ``x1`` everywhere so the
-    # ``x_1`` endpoint name is modality-agnostic (data-to-data couplings
-    # emit the same key).  No alias: callers previously reading
-    # ``target_info['epsilon']`` now read ``target_info['x1']``.
     del z, xt
-    alpha, sigma, alpha_der, sigma_der = _alpha_sigma_and_der(
-        interpolant.schedule, t, x0.ndim,
-    )
+    time = utils.bcast_right(t, x0.ndim)
+    alpha = interpolant.schedule.alpha(time)
+    sigma = interpolant.schedule.sigma(time)
     return {
         'x0': x0,
         'x1': x1,
         'score': -x1 / sigma,
-        'velocity': alpha_der * x0 + sigma_der * x1,
+        'velocity': dxt_dt,
         'v': alpha * x1 - sigma * x0,
     }
 
@@ -300,64 +291,24 @@ class GaussianSourceTargets(TargetAdapter):
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
-class RiemannianVelocityTargets(TargetAdapter):
-  """Emits ``{x0, x1, velocity}`` with a manifold-aware velocity.
-
-  Byte-equivalent to legacy ``RiemannianProcess.corrupt``'s
-  ``target_info``.  ``convert`` passes a ``velocity`` prediction through
-  unchanged; other parameterisations are not supported on a Riemannian
-  process (matches legacy behaviour).
-  """
-
-  emitted_keys: ClassVar[frozenset[str]] = frozenset({'x0', 'x1', 'velocity'})
-
-  def emit(
-      self,
-      *,
-      x0: DataTree,
-      x1: DataTree,
-      z: DataTree | None,
-      xt: DataTree,
-      t: TimeTree,
-      interpolant,
-  ) -> TargetInfoTree:
-    del z, xt
-    # Recompute velocity from the interpolant.  Geodesic-velocity evaluation
-    # is one extra ``alpha_dot()`` on top of the interpolant's forward pass --
-    # negligible and keeps the adapter modular.
-    _, dxt_dt = interpolant.eval(x0, x1, t)
-    return {'x0': x0, 'x1': x1, 'velocity': dxt_dt}
-
-  def convert(
-      self,
-      *,
-      prediction: TargetInfoTree,
-      xt: DataTree,
-      t: TimeTree,
-      interpolant,
-  ) -> TargetInfoTree:
-    del xt, t, interpolant
-    if 'velocity' in prediction:
-      return prediction
-    raise NotImplementedError(
-        'Only velocity prediction is supported for RFM currently.'
-    )
-
-
-@dataclasses.dataclass(kw_only=True, frozen=True)
 class VelocityOnlyTargets(TargetAdapter):
-  """Emits ``{x0, x1, velocity}`` for an arbitrary source.
+  """Emits ``{x0, x1, velocity}`` for an arbitrary interpolant / source.
 
   The minimum valid target set under data-to-data flow matching: the
   Gaussian identities (``score = -x1/sigma`` etc.) do not hold for a
   non-Gaussian ``x_1``, so they're not emitted.  ``velocity`` is
-  whatever the interpolant's :meth:`Interpolant.eval` returns as its
-  second element.
+  whatever :meth:`Interpolant.eval` returns as its second element.
 
-  Works unchanged for :class:`StochasticInterpolant`: the noise ``z``
-  threads through to ``interpolant.eval`` so ``velocity`` contains the
-  full ``alpha_dot x_0 + beta_dot x_1 + gamma_dot z`` term.  SI training
-  then reduces to a single-head regression on ``x_0`` or ``velocity``.
+  Works unchanged for all three interpolants:
+
+  - :class:`LinearInterpolant` -- ``z`` is ``None``, ignored.
+  - :class:`GeodesicInterpolant` -- ``z`` is ``None``, ignored;
+    geodesic-velocity chain rule lives in ``eval``.  This is the
+    Riemannian flow matching adapter (byte-equivalent to legacy
+    ``RiemannianProcess.corrupt``'s ``target_info``).
+  - :class:`StochasticInterpolant` -- ``z`` threads through so
+    ``velocity`` carries the ``gamma_dot z`` term; training reduces
+    to a single-head regression on ``x_0`` or ``velocity``.
   """
 
   emitted_keys: ClassVar[frozenset[str]] = frozenset({'x0', 'x1', 'velocity'})
@@ -369,11 +320,11 @@ class VelocityOnlyTargets(TargetAdapter):
       x1: DataTree,
       z: DataTree | None,
       xt: DataTree,
+      dxt_dt: DataTree,
       t: TimeTree,
       interpolant,
   ) -> TargetInfoTree:
-    del xt
-    _, dxt_dt = interpolant.eval(x0, x1, t, z)
+    del z, xt, t, interpolant
     return {'x0': x0, 'x1': x1, 'velocity': dxt_dt}
 
   def convert(

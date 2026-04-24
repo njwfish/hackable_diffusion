@@ -26,7 +26,8 @@
   of ``x_0``.  Per-sample, vmap-friendly.
 - :class:`DeterministicCoupling`: ``x_1 = map_fn(x_0)``.  Per-sample,
   vmap-friendly.  No ``marginal`` (depends on ``p_0``).
-- :class:`MiniBatchOTCoupling`: deferred to M4.
+- :class:`MiniBatchOTCoupling`: entropic-OT matching via ott-jax
+  Sinkhorn.  Batch-level (``is_batch_level = True``).
 """
 
 from __future__ import annotations

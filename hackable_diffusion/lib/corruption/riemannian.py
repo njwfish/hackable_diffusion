@@ -16,7 +16,7 @@
 
 ``RiemannianProcess(manifold=..., schedule=...)`` wraps an
 ``InterpolantProcess`` with ``(IndependentCoupling(UniformManifoldSource),
-GeodesicInterpolant, RiemannianVelocityTargets)``.  Based on
+GeodesicInterpolant, VelocityOnlyTargets)``.  Based on
 https://arxiv.org/abs/2302.03660.
 
 See ``lib/corruption/base.py`` for the protocol design.
@@ -45,7 +45,7 @@ class RiemannianProcess(base.CorruptionProcess):
 
   Shim over :class:`InterpolantProcess` with
   ``(IndependentCoupling(UniformManifoldSource), GeodesicInterpolant,
-  RiemannianVelocityTargets)``.
+  VelocityOnlyTargets)``.
   """
 
   manifold: manifolds.Manifold
@@ -64,7 +64,7 @@ class RiemannianProcess(base.CorruptionProcess):
             interpolant=interpolants.GeodesicInterpolant(
                 manifold=self.manifold, schedule=self.schedule,
             ),
-            targets=targets.RiemannianVelocityTargets(),
+            targets=targets.VelocityOnlyTargets(),
         ),
     )
 

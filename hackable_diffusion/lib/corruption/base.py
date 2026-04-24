@@ -171,13 +171,16 @@ class Interpolant(Protocol):
 
 
 class TargetAdapter(Protocol):
-  """Emits ``target_info`` from ``(x_0, x_1, z, x_t, t, interpolant)``.
+  """Emits ``target_info`` from ``(x_0, x_1, z, x_t, dx_t/dt, t, interpolant)``.
 
   Different adapters are valid for different sources.  Each adapter
   declares the keys it emits via :attr:`emitted_keys`; downstream
   compatibility checks (e.g. ``DiffusionSampler``'s stepper wiring)
   consult this to fail-fast when a stepper asks for a key the adapter
   doesn't produce.
+
+  ``dxt_dt`` is the velocity computed by :meth:`Interpolant.eval`,
+  threaded through so adapters don't redundantly re-call ``eval``.
 
   ``convert`` replaces the legacy ``CorruptionProcess.convert_predictions``
   method -- takes a single-key prediction dict in any of the supported
@@ -193,6 +196,7 @@ class TargetAdapter(Protocol):
       x1: DataTree,
       z: DataTree | None,
       xt: DataTree,
+      dxt_dt: DataTree,
       t: TimeTree,
       interpolant: 'Interpolant',
   ) -> TargetInfoTree: ...
@@ -242,7 +246,7 @@ class InterpolantProcess(CorruptionProcess):
       InterpolantProcess(
           coupling=IndependentCoupling(source),
           interpolant=StochasticInterpolant(alpha, beta, gamma),
-          targets=StochasticInterpolantTargets(),
+          targets=VelocityOnlyTargets(),
       )
   """
 
@@ -274,9 +278,10 @@ class InterpolantProcess(CorruptionProcess):
     else:
       key_coupling, z = key, None
     x1 = self.coupling.sample(key_coupling, x0)
-    xt, _ = self.interpolant.eval(x0, x1, time, z)
+    xt, dxt_dt = self.interpolant.eval(x0, x1, time, z)
     target_info = self.targets.emit(
-        x0=x0, x1=x1, z=z, xt=xt, t=time, interpolant=self.interpolant,
+        x0=x0, x1=x1, z=z, xt=xt, dxt_dt=dxt_dt,
+        t=time, interpolant=self.interpolant,
     )
     return xt, target_info
 
