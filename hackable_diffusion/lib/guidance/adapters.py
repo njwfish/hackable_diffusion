@@ -12,115 +12,84 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Adapters from other guidance APIs to the :class:`CorrectionFn` protocol.
+"""Adapters from project-specific guidance APIs to :class:`CorrectionFn`.
 
-- :class:`BoundAggregateGuidanceFn` wraps legacy guidance classes whose
-  ``__call__`` takes a concrete ``aggregate_target`` argument.
-- :class:`CFGCorrectionFn` wraps a ``lib.inference.guidance.GuidanceFn``
-  (classifier-free guidance) and an unconditional inference fn, combining
-  the conditional / unconditional outputs per the GuidanceFn's formula.
-  Lets CFG plug into :class:`ConditionalDiffusionSampler` alongside
-  Pi-GDM, TDS, DPS, etc.
+:class:`BoundAggregateGuidanceFn` wraps legacy / project-specific
+guidance classes whose ``__call__`` takes a concrete ``aggregate_target``
+argument and an ``outputs`` dict (the pre-refactor signature).  It
+adapts to the new :class:`CorrectionFn` sig -- ``(x0, xt, time, *,
+denoiser_fn, schedule) -> x0_new`` -- by internally roundtripping
+``x0`` through the bound ``corruption_process``.
+
+CFG intentionally has no adapter in this file: CFG is denoiser
+composition, not an observation-driven correction.  Use
+:func:`hackable_diffusion.lib.guidance.denoisers.make_cfg_inference_fn`
+to blend a conditional + unconditional model into a single
+``inference_fn`` before handing it to the sampler.
 """
 
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, Callable
+from typing import Any
 
 import jax
 
-from hackable_diffusion.lib.inference.guidance import GuidanceFn
-from hackable_diffusion.lib.guidance.protocols import CorrectionFn
-from hackable_diffusion.lib.guidance.utils import call_inference_fn
+from hackable_diffusion.lib.guidance.protocols import CorrectionFn, DenoiserFn
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class BoundAggregateGuidanceFn(CorrectionFn):
-  """Bind ``aggregate_target`` to a legacy guidance; expose ``CorrectionFn``.
+  """Adapt a legacy ``aggregate_target``-taking guidance class.
+
+  The legacy shape is
+
+      guidance(outputs, xt, time, *, schedule, corruption_process,
+               aggregate_target=y) -> outputs_new
+
+  which this adapter wraps as
+
+      correction(x0, xt, time, *, denoiser_fn, schedule) -> x0_new
+
+  by reconstructing a one-key outputs dict from ``x0``, calling the
+  legacy ``guidance`` with the bound ``corruption_process`` +
+  ``aggregate_target``, and converting the result back to ``x0`` via
+  ``convert_predictions``.  ``denoiser_fn`` is ignored by the legacy
+  class (it has no notion of a denoiser closure).
 
   Attributes:
-    guidance: the underlying guidance object whose ``__call__`` takes
-      ``(outputs, xt, time, schedule, corruption_process, aggregate_target=...)``
-      or the plural ``aggregate_targets=...`` variant.
-    aggregate_target: the pre-broadcast target ``y``.  Shape must match
-      what ``guidance`` expects (typically ``(batch, m)`` or
-      ``(batch, *spatial)``).
-    multi_head: set to ``True`` when ``guidance`` expects
-      ``aggregate_targets`` (plural) -- e.g. for multi-head Gaussian or
-      moment-family guidance.  When ``True``, ``aggregate_target`` must
-      be a sequence.
+    guidance: the legacy guidance instance.
+    aggregate_target: the pre-broadcast target ``y``.
+    corruption_process: bound at adapter-construction time so the
+      :class:`CorrectionFn` signature can stay clean of it.
+    multi_head: set to ``True`` if the legacy guidance takes plural
+      ``aggregate_targets=`` instead of singular ``aggregate_target=``.
   """
 
   guidance: Any
   aggregate_target: Any
+  corruption_process: Any
   multi_head: bool = False
 
   def __call__(
       self,
-      outputs: dict[str, jax.Array],
+      x0: jax.Array,
       xt: jax.Array,
       time: jax.Array,
       *,
+      denoiser_fn: DenoiserFn,
       schedule: Any,
-      corruption_process: Any,
-      conditioning: Any = None,
-      rng: jax.Array | None = None,
-  ) -> dict[str, jax.Array]:
-    del conditioning, rng
-    kwarg_name = "aggregate_targets" if self.multi_head else "aggregate_target"
-    return self.guidance(
-        outputs=outputs,
+  ) -> jax.Array:
+    del denoiser_fn
+    kwarg = "aggregate_targets" if self.multi_head else "aggregate_target"
+    legacy_outputs = self.guidance(
+        outputs={"x0": x0},
         xt=xt,
         time=time,
         schedule=schedule,
-        corruption_process=corruption_process,
-        **{kwarg_name: self.aggregate_target},
+        corruption_process=self.corruption_process,
+        **{kwarg: self.aggregate_target},
     )
-
-
-@dataclasses.dataclass(kw_only=True, frozen=True)
-class CFGCorrectionFn(CorrectionFn):
-  """Classifier-free guidance as a :class:`CorrectionFn`.
-
-  Calls ``unconditional_inference_fn`` at every step to obtain the
-  unconditional prediction, then combines conditional / unconditional
-  outputs via ``guidance_fn`` (any
-  :class:`hackable_diffusion.lib.inference.guidance.GuidanceFn`).
-
-  Composition:
-      Scalar CFG          : ``guidance_fn=ScalarGuidanceFn(guidance=w)``
-      Limited-interval    : ``guidance_fn=LimitedIntervalGuidanceFn(...)``
-      Nested / multi-CFG  : ``guidance_fn=NestedGuidanceFn(...)``
-
-  Plugs into :class:`ConditionalDiffusionSampler` alongside any other
-  correction / twist / resampler -- e.g. CFG + TDS is CFG-guided
-  posterior sampling.
-  """
-
-  unconditional_inference_fn: Callable
-  guidance_fn: GuidanceFn
-
-  def __call__(
-      self,
-      outputs: dict[str, jax.Array],
-      xt: jax.Array,
-      time: jax.Array,
-      *,
-      schedule: Any,
-      corruption_process: Any,
-      conditioning: Any = None,
-      rng: jax.Array | None = None,
-  ) -> dict[str, jax.Array]:
-    del schedule, corruption_process
-    uncond_outputs = call_inference_fn(
-        self.unconditional_inference_fn,
-        xt=xt, time=time, conditioning=None, rng=rng,
-    )
-    return self.guidance_fn(
-        xt=xt,
-        conditioning=conditioning,
-        time=time,
-        cond_outputs=outputs,
-        uncond_outputs=uncond_outputs,
-    )
+    return self.corruption_process.convert_predictions(
+        legacy_outputs, xt, time,
+    )["x0"]

@@ -12,31 +12,32 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Corrections built from other corrections / twists.
+"""Observation-driven ``x_0 -> x_0_new`` corrections.
 
-- :class:`IteratedCorrectionFn` wraps any ``CorrectionFn`` to run K inner
-  Kalman sweeps with denoiser re-evaluation (closes the intermediate-H
-  non-Gaussian bump on mixture priors).
-- :class:`GradientCorrectionFn` bridges ``TwistFn`` -> ``CorrectionFn``
-  by backpropagating the twist gradient through the denoiser
-  (generalises DPS).  The step-size prefactor is an injected callable
-  (:func:`miyasawa_prefactor` or :func:`dps_prefactor`).
-- :class:`PiGDMCorrectionFn` is the generic Pi-GDM / Kalman correction,
+Three primitives cover every posterior-sampling method:
+
+- :class:`KalmanCorrectionFn`: closed-form Kalman update
+  ``x_0 + Sigma A^T (A Sigma A^T + sigma_y^2 I)^{-1} (y - A x_0)``
   parameterised over a :class:`ForwardFn` and a
-  :class:`PosteriorCovarianceFn`.  Combined with
-  :class:`TweediePosteriorCovarianceFn` it yields the exact
-  second-order correction for any prior the denoiser represents.
+  :class:`PosteriorCovarianceFn`.  Pi-GDM family.
+- :class:`GradientCorrectionFn`: first-order shift
+  ``x_0 + prefactor * grad_{xt} log psi``.  DPS family.
+- :class:`IteratedCorrectionFn`: wrap any base correction to apply it
+  ``num_iters`` times with denoiser re-evaluation at each shifted xt.
+
+All three satisfy :class:`CorrectionFn`: they take ``(x0, xt, time)`` and
+a :class:`DenoiserFn` + schedule, and return the new ``x0``.  No
+``corruption_process``, no raw ``inference_fn``, no ``rng``/``conditioning``
+plumbing -- those are captured inside ``denoiser_fn``.
 
 Modality compatibility
 ----------------------
-- ``GradientCorrectionFn``: Gaussian ODE / Gaussian SDE / distributional.
-  Requires Euclidean xhat_0 for the gradient step direction; on a simplex
-  the Euclidean gradient leaves the constraint set.
-- ``PiGDMCorrectionFn``: Gaussian ODE / Gaussian SDE / distributional.
-  The Kalman update ``xhat_0 + Sigma Aᵀ (...) r`` assumes Euclidean
-  inner product; for simplicial x_0 use a dedicated simplex-aware
-  correction.
-- ``IteratedCorrectionFn``: modality of its ``base``.
+- ``KalmanCorrectionFn``: Euclidean-x0 only (Gaussian ODE / SDE /
+  distributional).  Kalman math assumes a standard inner product.
+- ``GradientCorrectionFn``: Euclidean-x0 in principle (the gradient
+  step is a Euclidean shift).  On a simplex the Euclidean step leaves
+  the constraint set; use a simplex-aware correction.
+- ``IteratedCorrectionFn``: inherits modality from its ``base``.
 """
 
 from __future__ import annotations
@@ -50,17 +51,20 @@ import jax.numpy as jnp
 from hackable_diffusion.lib.guidance.linalg import batched_cg, linear_adjoint
 from hackable_diffusion.lib.guidance.protocols import (
     CorrectionFn,
+    DenoiserFn,
     ForwardFn,
     PosteriorCovarianceFn,
     TwistFn,
 )
 from hackable_diffusion.lib.guidance.utils import (
-    call_inference_fn,
-    make_denoiser_fn,
-    replace_x0,
     scalar_alpha,
     scalar_alpha_sigma,
 )
+
+
+################################################################################
+# MARK: Prefactors for GradientCorrectionFn
+################################################################################
 
 
 def miyasawa_prefactor(
@@ -72,8 +76,8 @@ def miyasawa_prefactor(
 ) -> jax.Array:
   """Tweedie-identity prefactor ``sigma^2 / alpha``.
 
-  Exact in the single-Gaussian-prior limit via the Miyasawa identity
-  ``Cov(x0 | xt) = (sigma^2 / alpha) ∂xhat_0/∂xt``.
+  Exact in the single-Gaussian-prior limit via Miyasawa:
+  ``Cov(x0 | xt) = (sigma^2 / alpha) d xhat_0/d xt``.
   """
   del xt, x0
   return (sigma ** 2) / jnp.maximum(alpha, 1e-8)
@@ -88,181 +92,40 @@ def dps_prefactor(
 ) -> jax.Array:
   """Canonical DPS step ``1 / ||residual||``."""
   del sigma
-  flat = (x0 - xt / jnp.maximum(alpha, 1e-8))
+  flat = x0 - xt / jnp.maximum(alpha, 1e-8)
   norm = jnp.linalg.norm(
       flat.reshape(flat.shape[0], -1), axis=-1, keepdims=True,
   ) + 1e-8
   return 1.0 / jnp.maximum(norm, 1e-8)
 
 
-# Signature of a step-size prefactor callable used by GradientCorrectionFn.
-# Kept as a typing alias rather than a Protocol because it's a free
-# function, not an object with methods.
+# Signature of a step-size prefactor callable.
 PrefactorFn = Callable[..., jax.Array]
 
 
-@dataclasses.dataclass(kw_only=True, frozen=True)
-class IteratedCorrectionFn(CorrectionFn):
-  """Apply a base correction ``num_iters`` times with denoiser re-evaluation.
-
-  At each inner iteration:
-
-    1. Apply ``base`` correction to the current outputs → updated ``xhat_0``.
-    2. Shift ``xt`` by ``alpha_t (xhat_0_new - xhat_0_old)`` so the noise
-       realisation is preserved.
-    3. Re-evaluate the denoiser at the shifted ``xt``.
-    4. Repeat for ``num_iters`` total iterations; the final correction
-       applies without a further xt shift (the sampler advances from the
-       actual xt).
-
-  For a Pi-GDM-style base correction on a mixture prior, each inner
-  iteration lets the denoiser's implicit mixture weights respond to the
-  shifted ``xt``, reducing the linearisation error that gives the
-  intermediate-H bump on non-Gaussian posteriors.  K=3 is the empirical
-  sweet spot; K >= 8 destabilises.
-  """
-
-  base: CorrectionFn
-  num_iters: int = 3
-
-  def __call__(
-      self,
-      outputs: dict[str, jax.Array],
-      xt: jax.Array,
-      time: jax.Array,
-      *,
-      schedule: Any,
-      corruption_process: Any,
-      conditioning: Any = None,
-      rng: jax.Array | None = None,
-      inference_fn: Callable | None = None,
-  ) -> dict[str, jax.Array]:
-    if inference_fn is None:
-      raise ValueError(
-          "IteratedCorrectionFn needs ``inference_fn`` threaded through so "
-          "it can re-evaluate the denoiser at the shifted xt on each inner "
-          "iteration.  ConditionalDiffusionSampler wires this in "
-          "automatically; if invoking directly, pass inference_fn=... ."
-      )
-    alpha = scalar_alpha(schedule, time)
-
-    xt_curr = xt
-    outputs_curr = outputs
-
-    for _ in range(int(self.num_iters) - 1):
-      x0_before = corruption_process.convert_predictions(
-          outputs_curr, xt_curr, time,
-      )["x0"]
-      corrected = self.base(
-          outputs_curr, xt_curr, time,
-          schedule=schedule, corruption_process=corruption_process,
-          conditioning=conditioning, rng=rng,
-      )
-      x0_after = corruption_process.convert_predictions(
-          corrected, xt_curr, time,
-      )["x0"]
-      xt_curr = xt_curr + alpha * (x0_after - x0_before)
-      outputs_curr = call_inference_fn(
-          inference_fn, xt=xt_curr, time=time,
-          conditioning=conditioning, rng=rng,
-      )
-
-    return self.base(
-        outputs_curr, xt_curr, time,
-        schedule=schedule, corruption_process=corruption_process,
-        conditioning=conditioning, rng=rng,
-    )
+################################################################################
+# MARK: Kalman correction (Pi-GDM family)
+################################################################################
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
-class GradientCorrectionFn(CorrectionFn):
-  """Correction formed by backpropagating a twist gradient through the denoiser.
+class KalmanCorrectionFn(CorrectionFn):
+  """Closed-form Kalman update on ``x_0``.
 
-  Implements DPS-style guidance generically:
+      x_0_new = x_0 + Sigma A^T (A Sigma A^T + sigma_y^2 I)^{-1} (y - A x_0)
 
-      ``xhat_0_new = xhat_0 + strength * prefactor * ∇_{xt} log psi(y | xt)``
-
-  and hence a modified score ``s_guided = (alpha_t xhat_0_new - xt) / sigma_t^2``.
-
-  The prefactor is an injected callable, keyword-only:
-
-      ``prefactor_fn(alpha=, sigma=, xt=, x0=) -> scalar or (B, 1, ...)``
-
-  Built-ins in this module: :func:`miyasawa_prefactor` (default; exact
-  Bayes-linear scaling on Gaussian priors via the Miyasawa identity) and
-  :func:`dps_prefactor` (canonical DPS ``1 / ||residual||``).  Plug in
-  any callable matching the signature for custom schedules.
-  """
-
-  twist: TwistFn
-  strength: float = 1.0
-  prefactor_fn: PrefactorFn = miyasawa_prefactor
-
-  def __call__(
-      self,
-      outputs: dict[str, jax.Array],
-      xt: jax.Array,
-      time: jax.Array,
-      *,
-      schedule: Any,
-      corruption_process: Any,
-      conditioning: Any = None,
-      rng: jax.Array | None = None,
-      inference_fn: Callable | None = None,
-  ) -> dict[str, jax.Array]:
-    if inference_fn is None:
-      raise ValueError(
-          "GradientCorrectionFn needs ``inference_fn`` threaded through the "
-          "call.  Wire it via ConditionalDiffusionSampler or pass it "
-          "explicitly when invoking the correction."
-      )
-
-    alpha, sigma = scalar_alpha_sigma(schedule, time)
-
-    def scalar_twist(xt_inner: jax.Array) -> jax.Array:
-      return jnp.sum(self.twist(
-          xt=xt_inner, time=time,
-          inference_fn=inference_fn, schedule=schedule,
-          corruption_process=corruption_process,
-          conditioning=conditioning, rng=rng,
-      ))
-
-    grad_xt = jax.grad(scalar_twist)(xt)
-
-    x0 = corruption_process.convert_predictions(outputs, xt, time)["x0"]
-    prefactor = self.prefactor_fn(
-        alpha=alpha, sigma=sigma, xt=xt, x0=x0,
-    )
-
-    delta_x0 = float(self.strength) * prefactor * grad_xt
-    return replace_x0(outputs, x0 + delta_x0, xt, time, corruption_process)
-
-
-@dataclasses.dataclass(kw_only=True, frozen=True)
-class PiGDMCorrectionFn(CorrectionFn):
-  """Generic Pi-GDM / Kalman x_0-space correction.
-
-  Implements the closed-form Kalman update
-
-      xhat_0_new = xhat_0 + Sigma_hat A^T (A Sigma_hat A^T + sigma_y^2 I)^{-1}
-                                         (y - A xhat_0)
-
-  over any linear ``forward_fn`` ``A`` and any
-  ``posterior_covariance_fn`` ``Sigma_hat``.  The ``(A Sigma_hat A^T +
-  sigma_y^2 I) z = r`` solve is batched conjugate gradient
-  (:func:`batched_cg`), so the posterior-covariance operator only needs
-  to expose a matvec -- the Jacobian is never materialised.
-
-  Choice of ``posterior_covariance_fn`` picks the Pi-GDM variant:
+  over any linear :class:`ForwardFn` ``A`` and any
+  :class:`PosteriorCovarianceFn` ``Sigma``.  Choice of covariance picks
+  the Pi-GDM variant:
 
   - :class:`IsotropicPosteriorCovarianceFn`: DPS-style projection.
-  - :class:`FixedPriorPosteriorCovarianceFn`: "cov-aware" correction,
-    exact under a known Gaussian prior.
-  - :class:`TweediePosteriorCovarianceFn`: exact Pi-GDM under any prior
-    via the Miyasawa JVP through the denoiser.
+  - :class:`FixedPriorPosteriorCovarianceFn`: "cov-aware" (known prior).
+  - :class:`TweediePosteriorCovarianceFn`: exact under any prior via
+    Miyasawa JVP through the denoiser.
 
-  The adjoint of ``forward_fn`` is obtained automatically via VJP, so
-  the :class:`ForwardFn` protocol only needs ``.forward(x)``.
+  The ``(A Sigma A^T + sigma_y^2 I) z = r`` solve is batched CG --
+  posterior covariance only needs a matvec; the Jacobian is never
+  materialised.  The adjoint of ``forward_fn`` comes from ``jax.vjp``.
   """
 
   observation: jax.Array
@@ -274,21 +137,13 @@ class PiGDMCorrectionFn(CorrectionFn):
 
   def __call__(
       self,
-      outputs: dict[str, jax.Array],
+      x0: jax.Array,
       xt: jax.Array,
       time: jax.Array,
       *,
+      denoiser_fn: DenoiserFn,
       schedule: Any,
-      corruption_process: Any,
-      conditioning: Any = None,
-      rng: jax.Array | None = None,
-      inference_fn: Callable | None = None,
-  ) -> dict[str, jax.Array]:
-    x0 = corruption_process.convert_predictions(outputs, xt, time)["x0"]
-    denoiser_fn = make_denoiser_fn(
-        inference_fn, corruption_process,
-        time=time, conditioning=conditioning, rng=rng,
-    )
+  ) -> jax.Array:
     adjoint = linear_adjoint(self.forward_fn, x0)
     sigma_y2 = max(float(self.observation_noise) ** 2, 1e-30)
 
@@ -298,11 +153,103 @@ class PiGDMCorrectionFn(CorrectionFn):
           denoiser_fn=denoiser_fn,
       )
 
-    def matvec(w):  # (A Sigma_hat A^T + sigma_y^2 I) w
+    def matvec(w):  # (A Sigma A^T + sigma_y^2 I) w
       return self.forward_fn.forward(apply_cov(w)) + sigma_y2 * w
 
     residual = self.observation - self.forward_fn.forward(x0)
     w = batched_cg(
         matvec, residual, max_iter=self.cg_max_iter, tol=self.cg_tol,
     )
-    return replace_x0(outputs, x0 + apply_cov(w), xt, time, corruption_process)
+    return x0 + apply_cov(w)
+
+
+################################################################################
+# MARK: Gradient correction (DPS family)
+################################################################################
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class GradientCorrectionFn(CorrectionFn):
+  """First-order shift from a differentiable :class:`TwistFn`.
+
+      x_0_new = x_0 + strength * prefactor * grad_{xt} log psi(y | xt)
+
+  Implements DPS-style guidance generically: any differentiable twist
+  plugs in.  Step-size prefactor is an injected callable
+  (:func:`miyasawa_prefactor` exact on Gaussian priors;
+  :func:`dps_prefactor` canonical DPS ``1/||residual||``).
+  """
+
+  twist: TwistFn
+  strength: float = 1.0
+  prefactor_fn: PrefactorFn = miyasawa_prefactor
+
+  def __call__(
+      self,
+      x0: jax.Array,
+      xt: jax.Array,
+      time: jax.Array,
+      *,
+      denoiser_fn: DenoiserFn,
+      schedule: Any,
+  ) -> jax.Array:
+    alpha, sigma = scalar_alpha_sigma(schedule, time)
+
+    def scalar_twist(xt_inner: jax.Array) -> jax.Array:
+      return jnp.sum(self.twist(xt_inner, time, denoiser_fn=denoiser_fn))
+
+    grad_xt = jax.grad(scalar_twist)(xt)
+    prefactor = self.prefactor_fn(alpha=alpha, sigma=sigma, xt=xt, x0=x0)
+    return x0 + float(self.strength) * prefactor * grad_xt
+
+
+################################################################################
+# MARK: Iterated correction (meta)
+################################################################################
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class IteratedCorrectionFn(CorrectionFn):
+  """Apply ``base`` ``num_iters`` times with denoiser re-evaluation.
+
+  At each inner iteration:
+
+    1. Apply ``base`` to the current ``x_0`` -> updated ``x_0_new``.
+    2. Shift ``xt`` by ``alpha_t * (x_0_new - x_0_old)`` so the noise
+       realisation is preserved.
+    3. Re-evaluate the denoiser at the shifted xt -> new ``x_0``.
+    4. Repeat for ``num_iters`` total iterations; the final call to
+       ``base`` produces the returned ``x_0_new`` without a further
+       shift (the outer sampler advances from the actual xt).
+
+  For a Pi-GDM-family ``base`` on a mixture prior, the inner loop lets
+  the denoiser's implicit mixture weights respond to the shifted xt,
+  closing the intermediate-H bump on non-Gaussian posteriors.  K=3 is
+  the empirical sweet spot.
+  """
+
+  base: CorrectionFn
+  num_iters: int = 3
+
+  def __call__(
+      self,
+      x0: jax.Array,
+      xt: jax.Array,
+      time: jax.Array,
+      *,
+      denoiser_fn: DenoiserFn,
+      schedule: Any,
+  ) -> jax.Array:
+    alpha = scalar_alpha(schedule, time)
+    xt_curr, x0_curr = xt, x0
+    for _ in range(int(self.num_iters) - 1):
+      x0_new = self.base(
+          x0_curr, xt_curr, time,
+          denoiser_fn=denoiser_fn, schedule=schedule,
+      )
+      xt_curr = xt_curr + alpha * (x0_new - x0_curr)
+      x0_curr = denoiser_fn(xt_curr)
+    return self.base(
+        x0_curr, xt_curr, time,
+        denoiser_fn=denoiser_fn, schedule=schedule,
+    )

@@ -42,16 +42,20 @@ from hackable_diffusion.lib.sampling.gaussian_step_sampler import (
 )
 from hackable_diffusion.lib.inference.guidance import ScalarGuidanceFn
 
-from hackable_diffusion.lib.guidance.adapters import CFGCorrectionFn
 from hackable_diffusion.lib.sampling.sampling import DiffusionSampler
 from hackable_diffusion.lib.sampling.time_scheduling import UniformTimeSchedule
 
 from hackable_diffusion.lib.guidance.corrections import (
     GradientCorrectionFn,
     IteratedCorrectionFn,
-    PiGDMCorrectionFn,
+    KalmanCorrectionFn,
     dps_prefactor,
     miyasawa_prefactor,
+)
+from hackable_diffusion.lib.guidance.denoisers import (
+    LinearBlendDenoiserFn,
+    make_cfg_inference_fn,
+    make_denoiser_fn,
 )
 from hackable_diffusion.lib.guidance.forward_ops import (
     ComposeForwardFn,
@@ -113,6 +117,13 @@ def _identity_x0_inference_fn(x0_fixed: jax.Array):
     return {"x0": x0_fixed}
 
   return fn
+
+
+def _denoiser_from_x0(x0_fixed: jax.Array, corruption, time):
+  """Test fixture: build a DenoiserFn that returns a fixed x0."""
+  return make_denoiser_fn(
+      _identity_x0_inference_fn(x0_fixed), corruption, time=time,
+  )
 
 
 def _gaussian_pieces(eta: float = 0.0, num_steps: int = 8):
@@ -289,15 +300,14 @@ class GaussianTwistTest(unittest.TestCase):
     batch, n = 3, 8
     x0 = jax.random.normal(jax.random.PRNGKey(0), (batch, n), dtype=jnp.float64)
     y = fwd.forward(x0)
+    time = jnp.asarray([0.5], dtype=jnp.float64)
 
     twist = GaussianLikelihoodTwistFn(
         observation=y, forward_fn=fwd, observation_noise=1.0,
     )
     log_psi = twist(
-        xt=jnp.zeros_like(x0),
-        time=jnp.asarray([0.5], dtype=jnp.float64),
-        inference_fn=_identity_x0_inference_fn(x0),
-        schedule=schedule, corruption_process=corruption,
+        jnp.zeros_like(x0), time,
+        denoiser_fn=_denoiser_from_x0(x0, corruption, time),
     )
     self.assertTrue(jnp.allclose(log_psi, jnp.zeros(batch), atol=1e-12))
 
@@ -309,7 +319,8 @@ class GaussianTwistTest(unittest.TestCase):
     x0 = jax.random.normal(jax.random.PRNGKey(1), (batch, n), dtype=jnp.float64)
     y_true = fwd.forward(x0)
     y_off = y_true + 1.0
-    infer = _identity_x0_inference_fn(x0)
+    time = jnp.asarray([0.5], dtype=jnp.float64)
+    denoiser_fn = _denoiser_from_x0(x0, corruption, time)
 
     t_on = GaussianLikelihoodTwistFn(
         observation=y_true, forward_fn=fwd, observation_noise=1.0,
@@ -317,12 +328,11 @@ class GaussianTwistTest(unittest.TestCase):
     t_off = GaussianLikelihoodTwistFn(
         observation=y_off, forward_fn=fwd, observation_noise=1.0,
     )
-    t = jnp.asarray([0.5], dtype=jnp.float64)
-    kwargs = dict(
-        xt=jnp.zeros_like(x0), time=t, inference_fn=infer,
-        schedule=schedule, corruption_process=corruption,
-    )
-    self.assertTrue(bool(jnp.all(t_on(**kwargs) > t_off(**kwargs))))
+    xt = jnp.zeros_like(x0)
+    self.assertTrue(bool(jnp.all(
+        t_on(xt, time, denoiser_fn=denoiser_fn)
+        > t_off(xt, time, denoiser_fn=denoiser_fn),
+    )))
 
 
 ################################################################################
@@ -340,7 +350,7 @@ class GradientCorrectionTest(unittest.TestCase):
     batch, n = 1, 4
     y = jnp.asarray([[1.0]], dtype=jnp.float64)  # target observation
 
-    # Denoiser emits a fixed x0 that depends on xt (scalar mean = 0).
+    # Denoiser returns xt itself -- differentiable through the gradient step.
     def inference_fn(xt, time, conditioning=None):
       del time, conditioning
       return {"x0": xt}
@@ -354,17 +364,13 @@ class GradientCorrectionTest(unittest.TestCase):
 
     xt = jnp.zeros((batch, n), dtype=jnp.float64)
     time = jnp.asarray([0.5], dtype=jnp.float64)
-    outputs = {"x0": jnp.zeros_like(xt)}
-    corrected = correction(
-        outputs, xt, time,
-        schedule=schedule, corruption_process=corruption,
-        inference_fn=inference_fn,
+    denoiser_fn = make_denoiser_fn(inference_fn, corruption, time=time)
+    x0_corrected = correction(
+        denoiser_fn(xt), xt, time,
+        denoiser_fn=denoiser_fn, schedule=schedule,
     )
-    x0_corrected = corruption.convert_predictions(corrected, xt, time)["x0"]
     # Moved toward y: the per-site mean should have increased.
-    self.assertGreater(
-        float(jnp.mean(x0_corrected)), float(jnp.mean(xt)),
-    )
+    self.assertGreater(float(jnp.mean(x0_corrected)), float(jnp.mean(xt)))
 
 
 class IteratedCorrectionTest(unittest.TestCase):
@@ -375,11 +381,10 @@ class IteratedCorrectionTest(unittest.TestCase):
 
     @dataclasses.dataclass(kw_only=True, frozen=True)
     class _CountingCorrection:
-      def __call__(self, outputs, xt, time, *, schedule, corruption_process,
-                   conditioning=None, rng=None):
+      def __call__(self, x0, xt, time, *, denoiser_fn, schedule):
+        del xt, time, denoiser_fn, schedule
         call_count["n"] += 1
-        # Identity: no shift so xt stays put.
-        return outputs
+        return x0  # identity: no shift
 
     schedule = schedules.CosineSchedule()
     corruption = GaussianProcess(schedule=schedule)
@@ -391,10 +396,10 @@ class IteratedCorrectionTest(unittest.TestCase):
     iterated = IteratedCorrectionFn(base=_CountingCorrection(), num_iters=4)
     xt = jnp.zeros((1, 4), dtype=jnp.float64)
     time = jnp.asarray([0.5], dtype=jnp.float64)
+    denoiser_fn = make_denoiser_fn(inference_fn, corruption, time=time)
     iterated(
-        {"x0": jnp.zeros_like(xt)}, xt, time,
-        schedule=schedule, corruption_process=corruption,
-        inference_fn=inference_fn,
+        denoiser_fn(xt), xt, time,
+        denoiser_fn=denoiser_fn, schedule=schedule,
     )
     self.assertEqual(call_count["n"], 4)
 
@@ -672,69 +677,64 @@ class TweediePosteriorCovarianceTest(unittest.TestCase):
 
 
 ################################################################################
-# PiGDM correction
+# Kalman correction (Pi-GDM family)
 ################################################################################
 
 
-class PiGDMCorrectionTest(unittest.TestCase):
+class KalmanCorrectionTest(unittest.TestCase):
   """End-to-end Kalman update sanity checks on a linear-Gaussian setup."""
 
   def _setup(self, *, n=4, batch=2):
     schedule = schedules.CosineSchedule()
     corruption = GaussianProcess(schedule=schedule)
     fwd = _MeanForwardFn()  # maps (B, n) -> (B, 1)
-    # Arbitrary fixed x0 and target observation.
     x0 = jax.random.normal(jax.random.PRNGKey(0), (batch, n), dtype=jnp.float64)
     y_target = fwd.forward(x0) + 1.0  # shift target by 1 to create a residual
     return schedule, corruption, fwd, x0, y_target
 
-  def test_isotropic_pigdm_reduces_residual(self):
+  def test_isotropic_reduces_residual(self):
     schedule, corruption, fwd, x0, y = self._setup()
 
     def inference_fn(xt, time, conditioning=None):
       del xt, time, conditioning
       return {"x0": x0}
 
-    correction = PiGDMCorrectionFn(
+    correction = KalmanCorrectionFn(
         observation=y, forward_fn=fwd,
         posterior_covariance_fn=IsotropicPosteriorCovarianceFn(),
         observation_noise=0.1,
     )
     xt = jnp.zeros_like(x0)
     time = jnp.asarray([0.5], dtype=jnp.float64)
-    corrected = correction(
-        {"x0": x0}, xt, time,
-        schedule=schedule, corruption_process=corruption,
-        inference_fn=inference_fn,
+    denoiser_fn = make_denoiser_fn(inference_fn, corruption, time=time)
+    x0_new = correction(
+        x0, xt, time, denoiser_fn=denoiser_fn, schedule=schedule,
     )
-    x0_new = corruption.convert_predictions(corrected, xt, time)["x0"]
     res_old = jnp.abs(fwd.forward(x0) - y)
     res_new = jnp.abs(fwd.forward(x0_new) - y)
     self.assertTrue(bool(jnp.all(res_new < res_old)))
 
-  def test_tweedie_pigdm_runs_and_reduces_residual(self):
+  def test_tweedie_runs_and_reduces_residual(self):
     schedule, corruption, fwd, x0, y = self._setup()
+    del x0  # overridden below
 
     # Non-trivial denoiser: xhat_0 = tanh(xt).  Jacobian = diag(1 - tanh^2).
     def inference_fn(xt, time, conditioning=None):
       del time, conditioning
       return {"x0": jnp.tanh(xt)}
 
-    correction = PiGDMCorrectionFn(
+    correction = KalmanCorrectionFn(
         observation=y, forward_fn=fwd,
         posterior_covariance_fn=TweediePosteriorCovarianceFn(),
         observation_noise=0.1, cg_max_iter=25, cg_tol=1e-8,
     )
-    xt = jnp.full_like(x0, 0.3)  # tanh(xt) is non-identity
+    xt = jnp.full((y.shape[0], 4), 0.3, dtype=jnp.float64)
     time = jnp.asarray([0.5], dtype=jnp.float64)
-    # The denoiser's output at this xt is what x0 is set to.
-    x0_at_xt = jnp.tanh(xt)
-    corrected = correction(
-        {"x0": x0_at_xt}, xt, time,
-        schedule=schedule, corruption_process=corruption,
-        inference_fn=inference_fn,
+    denoiser_fn = make_denoiser_fn(inference_fn, corruption, time=time)
+    x0_at_xt = denoiser_fn(xt)
+    x0_new = correction(
+        x0_at_xt, xt, time, denoiser_fn=denoiser_fn, schedule=schedule,
     )
-    x0_new = corruption.convert_predictions(corrected, xt, time)["x0"]
     res_old = jnp.abs(fwd.forward(x0_at_xt) - y)
     res_new = jnp.abs(fwd.forward(x0_new) - y)
     self.assertTrue(bool(jnp.all(res_new < res_old)))
@@ -748,19 +748,17 @@ class PiGDMCorrectionTest(unittest.TestCase):
       del xt, time, conditioning
       return {"x0": x0}
 
-    correction = PiGDMCorrectionFn(
+    correction = KalmanCorrectionFn(
         observation=y_match, forward_fn=fwd,
         posterior_covariance_fn=IsotropicPosteriorCovarianceFn(),
         observation_noise=0.1,
     )
     xt = jnp.zeros_like(x0)
     time = jnp.asarray([0.5], dtype=jnp.float64)
-    corrected = correction(
-        {"x0": x0}, xt, time,
-        schedule=schedule, corruption_process=corruption,
-        inference_fn=inference_fn,
+    denoiser_fn = make_denoiser_fn(inference_fn, corruption, time=time)
+    x0_new = correction(
+        x0, xt, time, denoiser_fn=denoiser_fn, schedule=schedule,
     )
-    x0_new = corruption.convert_predictions(corrected, xt, time)["x0"]
     self.assertTrue(jnp.allclose(x0_new, x0, atol=1e-10))
 
 
@@ -837,20 +835,17 @@ class ClassifierEnergyTwistTest(unittest.TestCase):
     batch, n = 2, 4
     x0 = jax.random.normal(jax.random.PRNGKey(0), (batch, n), dtype=jnp.float64)
 
-    # log_prob_fn rewards matching a fixed target.
     target = jnp.zeros_like(x0)
     def log_prob(x):
       return -0.5 * jnp.sum((x - target) ** 2, axis=-1)
 
     twist = ClassifierTwistFn(log_prob_fn=log_prob)
+    time = jnp.asarray([0.5], dtype=jnp.float64)
     log_psi = twist(
-        xt=jnp.zeros_like(x0),
-        time=jnp.asarray([0.5], dtype=jnp.float64),
-        inference_fn=_identity_x0_inference_fn(x0),
-        schedule=schedule, corruption_process=corruption,
+        jnp.zeros_like(x0), time,
+        denoiser_fn=_denoiser_from_x0(x0, corruption, time),
     )
-    expected = log_prob(x0)
-    self.assertTrue(jnp.allclose(log_psi, expected, atol=1e-12))
+    self.assertTrue(jnp.allclose(log_psi, log_prob(x0), atol=1e-12))
 
   def test_energy_twist_is_negative_energy_over_temperature(self):
     schedule = schedules.CosineSchedule()
@@ -862,14 +857,12 @@ class ClassifierEnergyTwistTest(unittest.TestCase):
       return jnp.sum(x ** 2, axis=-1)
 
     twist = EnergyTwistFn(energy_fn=energy, temperature=2.0)
+    time = jnp.asarray([0.5], dtype=jnp.float64)
     log_psi = twist(
-        xt=jnp.zeros_like(x0),
-        time=jnp.asarray([0.5], dtype=jnp.float64),
-        inference_fn=_identity_x0_inference_fn(x0),
-        schedule=schedule, corruption_process=corruption,
+        jnp.zeros_like(x0), time,
+        denoiser_fn=_denoiser_from_x0(x0, corruption, time),
     )
-    expected = -energy(x0) / 2.0
-    self.assertTrue(jnp.allclose(log_psi, expected, atol=1e-12))
+    self.assertTrue(jnp.allclose(log_psi, -energy(x0) / 2.0, atol=1e-12))
 
 
 ################################################################################
@@ -964,12 +957,12 @@ class VelocityProposalRatioTest(unittest.TestCase):
 ################################################################################
 
 
-class CFGCorrectionTest(unittest.TestCase):
-  """CFGCorrectionFn blends conditional + unconditional outputs."""
+class CFGCompositionTest(unittest.TestCase):
+  """CFG is denoiser composition -- either via ``make_cfg_inference_fn``
+  at the inference-level, or via :class:`LinearBlendDenoiserFn` at the
+  denoiser-level.  Both express the same scalar-blend formula."""
 
-  def test_scalar_cfg_reproduces_linear_blend(self):
-    schedule = schedules.CosineSchedule()
-    corruption = GaussianProcess(schedule=schedule)
+  def test_make_cfg_inference_fn_reproduces_linear_blend(self):
     batch, n = 2, 4
     x0_cond = jax.random.normal(
         jax.random.PRNGKey(0), (batch, n), dtype=jnp.float64,
@@ -978,28 +971,40 @@ class CFGCorrectionTest(unittest.TestCase):
         jax.random.PRNGKey(1), (batch, n), dtype=jnp.float64,
     )
 
-    # Conditional branch: we hand it ``outputs`` directly.
-    # Unconditional branch: called through CFGCorrectionFn.
+    def cond_fn(xt, time, conditioning=None):
+      del xt, time, conditioning
+      return {"x0": x0_cond}
+
     def uncond_fn(xt, time, conditioning=None):
       del xt, time, conditioning
       return {"x0": x0_uncond}
 
     w = 1.5
-    correction = CFGCorrectionFn(
-        unconditional_inference_fn=uncond_fn,
-        guidance_fn=ScalarGuidanceFn(guidance=w),
-    )
-
-    xt = jnp.zeros_like(x0_cond)
-    time = jnp.asarray([0.5], dtype=jnp.float64)
-    out = correction(
-        {"x0": x0_cond}, xt, time,
-        schedule=schedule, corruption_process=corruption,
-        conditioning=None,
-    )
-    # ScalarGuidanceFn blends as ``cond * (1+w) - uncond * w`` per tree leaf.
+    blended = make_cfg_inference_fn(cond_fn, uncond_fn, ScalarGuidanceFn(guidance=w))
+    out = blended(xt=jnp.zeros((batch, n), dtype=jnp.float64),
+                  time=jnp.asarray([0.5], dtype=jnp.float64),
+                  conditioning=None)
     expected = x0_cond * (1.0 + w) - x0_uncond * w
     self.assertTrue(jnp.allclose(out["x0"], expected, atol=1e-12))
+
+  def test_linear_blend_denoiser_scalar_cfg(self):
+    batch, n = 2, 4
+    x0_cond = jax.random.normal(
+        jax.random.PRNGKey(0), (batch, n), dtype=jnp.float64,
+    )
+    x0_uncond = jax.random.normal(
+        jax.random.PRNGKey(1), (batch, n), dtype=jnp.float64,
+    )
+    cond_denoiser = lambda xt: x0_cond
+    uncond_denoiser = lambda xt: x0_uncond
+    w = 1.5
+    blended = LinearBlendDenoiserFn(
+        denoisers=(cond_denoiser, uncond_denoiser),
+        weights=(1.0 + w, -w),
+    )
+    out = blended(jnp.zeros((batch, n)))
+    expected = x0_cond * (1.0 + w) - x0_uncond * w
+    self.assertTrue(jnp.allclose(out, expected, atol=1e-12))
 
 
 if __name__ == "__main__":

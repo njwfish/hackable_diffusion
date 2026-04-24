@@ -32,9 +32,9 @@ own entry.
 | `PosteriorCovarianceFn` | ✓ | ✓ | ✗ | ✓ |
 | **Corrections** | | | | |
 | `GradientCorrectionFn` | ✓ | ✓ | ~* | ✓ |
-| `PiGDMCorrectionFn` | ✓ | ✓ | ✗** | ~† |
+| `KalmanCorrectionFn` | ✓ | ✓ | ✗** | ~† |
 | `IteratedCorrectionFn` | (base) | (base) | (base) | (base) |
-| `CFGCorrectionFn` | ✓ | ✓ | ✓ | ✓ |
+| `LinearBlendDenoiserFn` / `make_cfg_inference_fn` | ✓ | ✓ | ✓ | ✓ |
 | `BoundAggregateGuidanceFn` | (project-specific) | (project-specific) | (project-specific) | (project-specific) |
 | **Posterior-covariance operators** | | | | |
 | `IsotropicPosteriorCovarianceFn` | ✓ | ✓ | ✗ | ~ |
@@ -78,13 +78,13 @@ Seven callable Protocols are the design axes.
 
 | Protocol | Signature | Role |
 | --- | --- | --- |
-| `DenoiserFn` | `(xt, time) -> xhat_0` | The learned object.  Built from a raw `inference_fn` via `make_denoiser_fn`. |
-| `ForwardFn` | `.forward(x) -> y` | Linear (or non-linear) measurement map `A`.  Adjoint free via `jax.vjp`. |
+| `DenoiserFn` | `(xt) -> xhat_0` | Pure soft-x0 closure at fixed (time, cond, rng).  Built via `make_denoiser_fn`. |
+| `ForwardFn` | `.forward(x) -> y` | Measurement map `A`.  Adjoint free via `jax.vjp`. |
 | `PosteriorCovarianceFn` | `(v, *, xt, time, schedule, denoiser_fn) -> Cov v` | Linear operator for the Kalman gain.  Gaussian-modality only. |
-| `CorrectionFn` | `(outputs, xt, time, *, schedule, corruption_process, ...) -> outputs` | Modifies the denoiser's outputs before the stepper advances. |
-| `TwistFn` | `(xt, time, *, inference_fn, schedule, corruption_process, ...) -> log_psi` | SMC log-potential; gradient source for DPS-style corrections. |
+| `CorrectionFn` | `(x0, xt, time, *, denoiser_fn, schedule) -> x0_new` | Observation-driven x0 shift. |
+| `TwistFn` | `(xt, time, *, denoiser_fn) -> log_psi` | SMC log-potential; gradient source for DPS-style corrections. |
 | `ResamplerFn` | `(particles, log_weights, *, rng) -> (particles, log_weights)` | Pure resample. |
-| `StepKernel` | `.log_density_ratio(xt_prev, xt_next) -> (B,)` | Transition-kernel log-density ratio under shifted `xhat_0`; each `SamplerStep` builds the appropriate concrete kernel via `stepper.kernel(...)`. |
+| `StepKernel` | `.log_density_ratio(xt_prev, xt_next) -> (B,)` | Transition-kernel log-density ratio under shifted xhat_0; each `SamplerStep` builds a concrete kernel via `stepper.kernel(...)`. |
 
 ## Taxonomy
 
@@ -99,13 +99,13 @@ GradientCorrectionFn(
 )
 
 # --- Pi-GDM (Song et al. 2023), cov-aware -- Gaussian ODE / SDE --------
-PiGDMCorrectionFn(
+KalmanCorrectionFn(
     observation=y, forward_fn=A,
     posterior_covariance_fn=FixedPriorPosteriorCovarianceFn(prior_covariance=C),
 )
 
 # --- Pi-GDM via Miyasawa/Tweedie -- universal* -------------------------
-PiGDMCorrectionFn(
+KalmanCorrectionFn(
     observation=y, forward_fn=A,
     posterior_covariance_fn=TweediePosteriorCovarianceFn(),
 )
@@ -113,7 +113,7 @@ PiGDMCorrectionFn(
 
 # --- Iterated Pi-GDM -- modality of the base ---------------------------
 IteratedCorrectionFn(
-    base=PiGDMCorrectionFn(..., posterior_covariance_fn=TweediePosteriorCovarianceFn()),
+    base=KalmanCorrectionFn(..., posterior_covariance_fn=TweediePosteriorCovarianceFn()),
     num_iters=3,
 )
 
@@ -131,16 +131,22 @@ GradientCorrectionFn(
     twist=ClassifierTwistFn(log_prob_fn=lambda x0: classifier(x0, y_class)),
 )
 
-# --- CFG -- universal -------------------------------------------------
-CFGCorrectionFn(
+# --- CFG -- universal -- denoiser composition, not a correction ------
+# Preferred entry point: blend at the inference_fn level.
+inference_fn = make_cfg_inference_fn(
+    conditional_inference_fn=cond_model,
     unconditional_inference_fn=uncond_model,
     guidance_fn=ScalarGuidanceFn(guidance=w),  # lib.inference.guidance
 )
+# ... pass ``inference_fn`` to ConditionalDiffusionSampler.
+# Lower-level DenoiserFn compositions:
+#   cfg_denoiser_fn(cond_denoiser, uncond_denoiser, guidance=w)
+#   LinearBlendDenoiserFn(denoisers=(d1, d2, ...), weights=(w1, w2, ...))
 
 # --- Inverse-problem benchmarks -- Gaussian ODE / SDE -----------------
-PiGDMCorrectionFn(forward_fn=InpaintingForwardFn(mask=m), ...)
-PiGDMCorrectionFn(forward_fn=ConvForwardFn(kernel=k), ...)
-PiGDMCorrectionFn(
+KalmanCorrectionFn(forward_fn=InpaintingForwardFn(mask=m), ...)
+KalmanCorrectionFn(forward_fn=ConvForwardFn(kernel=k), ...)
+KalmanCorrectionFn(
     forward_fn=ComposeForwardFn(
         first=ConvForwardFn(kernel=blur),
         second=SubsampleForwardFn(indices=stride_idx),
@@ -255,7 +261,7 @@ stepper it receives; there's no framework-side registry.
 from hackable_diffusion.lib.guidance import (
     ConditionalDiffusionSampler,
     InpaintingForwardFn,
-    PiGDMCorrectionFn,
+    KalmanCorrectionFn,
     TweediePosteriorCovarianceFn,
     GaussianLikelihoodTwistFn,
     SystematicResamplerFn,
@@ -265,7 +271,7 @@ mask = ...   # (H, W) of 0/1
 y    = mask * x_observed
 fwd  = InpaintingForwardFn(mask=mask)
 
-correction = PiGDMCorrectionFn(
+correction = KalmanCorrectionFn(
     observation=y, forward_fn=fwd,
     posterior_covariance_fn=TweediePosteriorCovarianceFn(),
     observation_noise=0.05,
@@ -294,11 +300,12 @@ final_step, _, log_weights = sampler(
 | `utils.py` | `make_denoiser_fn`, `replace_x0`, `call_inference_fn`, schedule helpers |
 | `linalg.py` | `batched_cg`, `batch_inner`, `linear_adjoint` |
 | `resamplers.py` | The four resampler implementations |
-| `corrections.py` | `PiGDMCorrectionFn`, `IteratedCorrectionFn`, `GradientCorrectionFn`, prefactors |
+| `denoisers.py` | `make_denoiser_fn`, `LinearBlendDenoiserFn`, `cfg_denoiser_fn`, `make_cfg_inference_fn` |
+| `corrections.py` | `KalmanCorrectionFn`, `IteratedCorrectionFn`, `GradientCorrectionFn`, prefactors |
 | `posterior_covariance.py` | `Isotropic` / `FixedPrior` / `Tweedie` covariance operators |
 | `twists.py` | `GaussianLikelihood` / `DiscreteComposition` / `Classifier` / `Energy` twists |
 | `forward_ops.py` | `Linear` / `Subsample` / `Inpainting` / `Conv` / `Compose` forward operators |
 | `proposal_ratio.py` | Per-stepper closed-form ratios and the dispatch registry |
-| `adapters.py` | `BoundAggregateGuidanceFn`, `CFGCorrectionFn` |
+| `adapters.py` | `BoundAggregateGuidanceFn` (legacy-shape project guidance) |
 | `sampler.py` | `ConditionalDiffusionSampler` (the orchestrator) |
 | `guidance_test.py`, `guidance_literature_test.py` | 63 pure unit + literature-validation tests |

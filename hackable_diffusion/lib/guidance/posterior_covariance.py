@@ -29,7 +29,7 @@ Kalman-guidance variant:
   an extra denoiser evaluation per matvec.
 
 All three satisfy :class:`PosteriorCovarianceFn` and so plug into
-:class:`PiGDMCorrectionFn` interchangeably.
+:class:`KalmanCorrectionFn` interchangeably.
 
 Modality compatibility
 ----------------------
@@ -127,8 +127,8 @@ class TweediePosteriorCovarianceFn(PosteriorCovarianceFn):
   mode without materialising the Jacobian.  Exact for any prior the
   denoiser implicitly represents -- Gaussian, mixture, or learned.
 
-  Requires ``denoiser_fn`` to be passed by the caller (the PiGDM
-  correction threads it through from the sampler).
+  Requires ``denoiser_fn`` to be passed by the caller
+  (:class:`KalmanCorrectionFn` threads it through from the sampler).
   """
 
   def __call__(self, v, *, xt, time, schedule, denoiser_fn=None):
@@ -136,7 +136,7 @@ class TweediePosteriorCovarianceFn(PosteriorCovarianceFn):
       raise ValueError(
           "TweediePosteriorCovarianceFn requires ``denoiser_fn`` (a "
           "DenoiserFn closure evaluated at the current time); callers "
-          "through PiGDMCorrectionFn wire this in automatically."
+          "through KalmanCorrectionFn wire this in automatically."
       )
     alpha, sigma = scalar_alpha_sigma(schedule, time)
     _, jvp = jax.jvp(denoiser_fn, (xt,), (v,))

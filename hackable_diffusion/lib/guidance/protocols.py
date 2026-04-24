@@ -14,33 +14,36 @@
 
 """Core protocols for the composable guidance framework.
 
-Six protocols cover every published guidance method:
+Six callable Protocols cover every published guidance method as a
+composition:
 
-- ``DenoiserFn``: pure ``xt -> xhat_0(xt)`` map at a fixed ``(time,
-  conditioning, rng)``.  The atomic denoiser abstraction that PiGDM,
-  Tweedie-covariance, and gradient corrections all consume.
-- ``ForwardFn``: linear / non-linear measurement map ``y = A(x_0)``
-  (shared by twists and the Pi-GDM correction).
-- ``PosteriorCovarianceFn``: linear operator ``v -> Cov(x_0 | x_t) v``
-  (plug-in point for Isotropic / Tweedie / fixed-prior Kalman variants
-  of Pi-GDM).
-- ``CorrectionFn``: modifies the denoiser's outputs dict before the
-  sampler advances.  Covers Pi-GDM, covariance-aware, isotropic
-  projection, iterated Pi-GDM, and DPS (via ``GradientCorrectionFn``).
-- ``TwistFn``: evaluates the log-potential ``log psi(y | xt)``.  Used by
-  SMC methods (TDS, MCGDiff) for importance weights and by DPS-style
-  methods as a gradient source.
-- ``ResamplerFn``: pure operation on a particle/weight pair.
+- ``DenoiserFn``: pure ``xt -> xhat_0`` at a fixed ``(time, conditioning,
+  rng)``.  The single atomic learned object; every other primitive
+  consumes or produces one.
+- ``ForwardFn``: measurement map ``y = A(x_0)``.  Adjoint is picked up
+  automatically by ``jax.vjp``.
+- ``PosteriorCovarianceFn``: linear operator ``v -> Cov(x_0 | x_t) v``,
+  the Kalman-gain covariance term.
+- ``CorrectionFn``: ``(x_0, xt, t) -> x_0_new`` observation-driven shift.
+- ``TwistFn``: ``(xt, t) -> log psi(y | xt)``.
+- ``ResamplerFn``: particle resample.
 
-The orchestrator :class:`ConditionalDiffusionSampler` (in ``sampler.py``)
-composes the above around a ``DiffusionSampler`` to produce conditional
-samples.  The K=1 case with ``correction=None, twist=None`` delegates to
-the base sampler bit-for-bit.
+The :class:`StepKernel` from ``lib.sampling.base`` is the seventh
+design axis -- built into each ``SamplerStep`` via its ``kernel``
+method.
+
+Modality compatibility
+----------------------
+``DenoiserFn``, ``ForwardFn``, ``ResamplerFn`` are universal.
+``CorrectionFn`` and ``TwistFn`` are universal in shape but individual
+implementations may assume Euclidean or simplex ``x_0``; see each
+class's docstring.  ``PosteriorCovarianceFn`` implementations are
+Gaussian-modality.
 """
 
 from __future__ import annotations
 
-from typing import Any, Callable, Protocol
+from typing import Any, Protocol
 
 import jax
 
@@ -48,53 +51,51 @@ import jax
 class DenoiserFn(Protocol):
   """Pure ``xt -> xhat_0(xt)`` map at a fixed ``(time, conditioning, rng)``.
 
-  Obtained from a raw ``inference_fn`` + ``corruption_process`` via
-  :func:`make_denoiser_fn`.  Abstract enough that JVP / VJP / grad
-  compose directly: ``jax.jvp(denoiser, (xt,), (v,))`` is the atomic
-  Jacobian-action used by :class:`TweediePosteriorCovarianceFn`, and
-  ``jax.grad(lambda x: twist_fn(x, ...))`` composes with it cleanly for
-  DPS-style corrections.
+  The atomic object.  Every other primitive that needs to evaluate or
+  differentiate the denoiser consumes a ``DenoiserFn``: twists invoke it
+  to score at ``xhat_0``; Tweedie-covariance JVPs it to get the
+  Jacobian-vector product; iterated corrections re-call it at shifted
+  ``xt``; and linear-blend denoisers compose several into one.
 
-  The xt input and x0 output share the same shape (both ``(B, *space)``);
-  distributional / ensemble backbones should return the post-marginalised
-  mean.
+  Build one with :func:`make_denoiser_fn` from a raw ``inference_fn`` +
+  ``corruption_process``.  The returned closure captures ``time``,
+  ``conditioning``, and ``rng``, so JVP/grad through it trace a fixed
+  noise realisation -- essential for differentiability of stochastic
+  denoisers (distributional diffusion).
   """
 
   def __call__(self, xt: jax.Array) -> jax.Array: ...
 
 
 class ForwardFn(Protocol):
-  """Linear / non-linear forward map ``y = A(x)`` for inverse-problem twists.
+  """Measurement / aggregation map ``y = A(x_0)``.
 
-  A minimal Protocol: a single ``forward(x)`` method that takes a batched
-  input and returns the aggregated / measured output.  Any object with a
-  matching ``forward`` method satisfies this -- no base-class inheritance
-  required.  Used by :class:`GaussianLikelihoodTwistFn`, the discrete
-  composition twists, and :class:`PiGDMCorrectionFn`, which together
-  cover every first- and second-order guidance method in the framework.
-
-  The adjoint ``A^T`` is obtained automatically via ``jax.vjp`` for
-  linear ``forward`` implementations -- no need to supply it explicitly.
+  A minimal Protocol: one ``forward(x)`` method.  The adjoint ``A^T``
+  is obtained automatically via ``jax.vjp`` for linear maps -- no need
+  to expose it explicitly.  Works across modalities as long as the
+  caller supplies a map consistent with the ``x_0`` space (Euclidean
+  for Gaussian diffusion, simplex-valued for simplicial, etc.).
   """
 
-  def forward(self, x: jax.Array) -> jax.Array:
-    ...
+  def forward(self, x: jax.Array) -> jax.Array: ...
 
 
 class PosteriorCovarianceFn(Protocol):
   """Linear operator ``v -> Cov(x_0 | x_t) v`` at a given ``(xt, time)``.
 
-  Used by :class:`PiGDMCorrectionFn` as the Kalman-gain covariance term.
-  Three built-in variants cover the published choices:
+  Built-in variants:
 
-  - :class:`IsotropicPosteriorCovarianceFn` (``Cov = scale(alpha, sigma) I``)
-  - :class:`FixedPriorPosteriorCovarianceFn` (known prior covariance)
-  - :class:`TweediePosteriorCovarianceFn` (via Miyasawa JVP through the
-    denoiser -- exact under any prior the denoiser represents).
+  - :class:`IsotropicPosteriorCovarianceFn`: ``Cov = scale(alpha, sigma) I``.
+  - :class:`FixedPriorPosteriorCovarianceFn`: ``Cov = (sigma^2/alpha) C``
+    for a known prior covariance ``C``.
+  - :class:`TweediePosteriorCovarianceFn`: exact Miyasawa JVP through
+    the denoiser.  Requires a non-None ``denoiser_fn``.
 
-  Implementations may ignore any unused kwarg; the fully generic variant
-  needs ``denoiser_fn`` (a :class:`DenoiserFn` closure), state-independent
-  variants only use ``(time, schedule)``.
+  State-independent variants ignore ``denoiser_fn``; Tweedie requires
+  it and raises when absent.
+
+  Modality: assumes a Euclidean inner product on ``x_0``; use a
+  dedicated simplex-aware operator for simplicial diffusion.
   """
 
   def __call__(
@@ -109,51 +110,42 @@ class PosteriorCovarianceFn(Protocol):
 
 
 class CorrectionFn(Protocol):
-  """Modify the denoiser's outputs dict before the step advances.
+  """Observation-driven ``x_0 -> x_0_new`` shift applied per step.
 
-  ``outputs`` is the dict returned by ``inference_fn``, already converted
-  to whatever prediction type the corruption process exposes.  A
-  ``Correction`` returns a new outputs dict with the same keys; it should
-  modify only the keys that represent the denoiser's x0/logits prediction
-  (the remaining keys pass through unchanged, per the
-  ``corruption_process.convert_predictions`` contract).
+  Takes the denoiser's ``xhat_0`` estimate, returns a corrected one.
+  Composes polymorphically over an underlying ``DenoiserFn`` (for
+  corrections that re-evaluate at shifted xt -- iterated, Tweedie-cov
+  -- or differentiate through it -- gradient corrections).
 
-  Shape agnosticism: implementations must work for ``(B, ...)``
-  (single-particle), ``(B, M, ...)`` (distributional ensemble), and
-  folded ``(B*H, ...)`` (moment family) layouts.
+  Intentionally narrow signature: no ``outputs`` dict, no
+  ``corruption_process``, no ``inference_fn``/``conditioning``/``rng``
+  (all threaded via ``denoiser_fn``).  The sampler converts
+  ``{"x0": x0_new}`` back to the stepper's native prediction type at
+  the boundary -- once per step, not inside every correction.
   """
 
   def __call__(
       self,
-      outputs: dict[str, jax.Array],
+      x0: jax.Array,
       xt: jax.Array,
       time: jax.Array,
       *,
+      denoiser_fn: DenoiserFn,
       schedule: Any,
-      corruption_process: Any,
-      conditioning: Any = None,
-      rng: jax.Array | None = None,
-  ) -> dict[str, jax.Array]: ...
+  ) -> jax.Array: ...
 
 
 class TwistFn(Protocol):
-  """Evaluate the SMC log-potential ``log psi(y | xt)``.
+  """SMC log-potential ``log psi(y | xt)``.
 
-  Approximates the intractable ``log p(y | xt)`` by a tractable
-  surrogate; the canonical choice is the plug-in
-  ``log p(y | xhat_0(xt))`` where ``xhat_0`` is the Tweedie denoiser
-  output.
+  The canonical plug-in ``log psi := log p(y | xhat_0(xt))`` evaluates
+  the likelihood at the denoiser's Tweedie output.  Implementations
+  consume only a :class:`DenoiserFn` -- no raw ``inference_fn``,
+  ``corruption_process``, or ``rng`` plumbing.
 
-  The twist is separate from the correction because the two axes
-  compose independently:
-
-  - DPS uses a twist as a gradient source (no correction, no SMC).
-  - Pi-GDM uses a correction (no twist).
-  - TDS uses a twist for SMC weighting (any correction for the proposal).
-
-  Implementations typically call ``inference_fn`` internally to obtain
-  ``xhat_0``; the RNG is threaded through in case the denoiser is
-  stochastic (distributional diffusion).
+  ``jax.grad(twist_fn, argnums=0)`` (at fixed ``time, denoiser_fn``)
+  gives the DPS gradient: that's what :class:`GradientCorrectionFn`
+  consumes.
   """
 
   def __call__(
@@ -161,29 +153,17 @@ class TwistFn(Protocol):
       xt: jax.Array,
       time: jax.Array,
       *,
-      inference_fn: Callable,
-      schedule: Any,
-      corruption_process: Any,
-      conditioning: Any = None,
-      rng: jax.Array | None = None,
-  ) -> jax.Array:
-    """Return ``log psi`` shape ``(particle_batch,)``."""
-    ...
+      denoiser_fn: DenoiserFn,
+  ) -> jax.Array: ...
 
 
 class ResamplerFn(Protocol):
   """Resample particles according to log-weights.
 
-  Pure operation: no knowledge of the diffusion state space, the
-  schedule, or the twist.  Implementations include ``NoResamplerFn``
-  (identity, for deterministic samplers), ``MultinomialResamplerFn``,
-  ``SystematicResamplerFn``, and ``ESSThresholdedResamplerFn`` (resample
-  only when effective sample size falls below a fraction).
-
-  Contract: after resampling, ``log_weights`` is set to the log of the
-  mean weight so that cumulative-weight estimators remain unbiased
-  (Chopin and Papaspiliopoulos, "An Introduction to Sequential Monte
-  Carlo", Ch. 9).
+  Pure operation: no knowledge of the diffusion state space, schedule,
+  or twist.  After resampling, ``new_log_weights`` is set to
+  ``log(mean(weights))`` for every particle so cumulative-weight
+  estimators stay unbiased (Chopin and Papaspiliopoulos, Ch. 9).
   """
 
   def __call__(

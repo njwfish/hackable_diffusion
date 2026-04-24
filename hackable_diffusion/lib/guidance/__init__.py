@@ -14,24 +14,28 @@
 
 """Composable conditional-sampling framework.
 
-Independent Protocol axes -- :class:`CorrectionFn`, :class:`TwistFn`,
-:class:`ResamplerFn`, :class:`ForwardFn`, :class:`PosteriorCovarianceFn`
--- compose inside :class:`ConditionalDiffusionSampler` to express
-Pi-GDM, cov-aware, DPS, TDS, MCGDiff, and other published guidance
-methods as configurations over a common diffusion sampler.
+Six callable Protocols (``DenoiserFn``, ``ForwardFn``,
+``PosteriorCovarianceFn``, ``CorrectionFn``, ``TwistFn``,
+``ResamplerFn``) plus the step-level ``StepKernel`` compose inside
+:class:`ConditionalDiffusionSampler` to express Pi-GDM (Kalman), DPS,
+TDS, MCGDiff, CFG, classifier guidance, iterated Pi-GDM, and other
+posterior-sampling methods as configurations.
 """
 
-from hackable_diffusion.lib.guidance.adapters import (
-    BoundAggregateGuidanceFn,
-    CFGCorrectionFn,
-)
+from hackable_diffusion.lib.guidance.adapters import BoundAggregateGuidanceFn
 from hackable_diffusion.lib.guidance.corrections import (
     GradientCorrectionFn,
     IteratedCorrectionFn,
-    PiGDMCorrectionFn,
+    KalmanCorrectionFn,
     PrefactorFn,
     dps_prefactor,
     miyasawa_prefactor,
+)
+from hackable_diffusion.lib.guidance.denoisers import (
+    LinearBlendDenoiserFn,
+    cfg_denoiser_fn,
+    make_cfg_inference_fn,
+    make_denoiser_fn,
 )
 from hackable_diffusion.lib.guidance.forward_ops import (
     ComposeForwardFn,
@@ -61,13 +65,6 @@ from hackable_diffusion.lib.guidance.protocols import (
     TwistFn,
 )
 from hackable_diffusion.lib.guidance.proposal_ratio import proposal_log_ratio
-from hackable_diffusion.lib.sampling.base import StepKernel
-from hackable_diffusion.lib.sampling.gaussian_step_sampler import (
-    GaussianStepKernel,
-)
-from hackable_diffusion.lib.sampling.simplicial_step_sampler import (
-    SimplicialStepKernel,
-)
 from hackable_diffusion.lib.guidance.resamplers import (
     ESSThresholdedResamplerFn,
     MultinomialResamplerFn,
@@ -88,15 +85,19 @@ from hackable_diffusion.lib.guidance.twists import (
 from hackable_diffusion.lib.guidance.utils import (
     accepts_rng_kwarg,
     call_inference_fn,
-    make_denoiser_fn,
-    replace_x0,
     scalar_alpha,
     scalar_alpha_sigma,
+)
+from hackable_diffusion.lib.sampling.base import StepKernel
+from hackable_diffusion.lib.sampling.gaussian_step_sampler import (
+    GaussianStepKernel,
+)
+from hackable_diffusion.lib.sampling.simplicial_step_sampler import (
+    SimplicialStepKernel,
 )
 
 __all__ = [
     "BoundAggregateGuidanceFn",
-    "CFGCorrectionFn",
     "ClassifierTwistFn",
     "ComposeForwardFn",
     "ConditionalDiffusionSampler",
@@ -116,11 +117,12 @@ __all__ = [
     "InpaintingForwardFn",
     "IsotropicPosteriorCovarianceFn",
     "IteratedCorrectionFn",
+    "KalmanCorrectionFn",
+    "LinearBlendDenoiserFn",
     "LinearForwardFn",
     "LogProbFn",
     "MultinomialResamplerFn",
     "NoResamplerFn",
-    "PiGDMCorrectionFn",
     "PosteriorCovarianceFn",
     "PrefactorFn",
     "ResamplerFn",
@@ -135,14 +137,15 @@ __all__ = [
     "batch_inner",
     "batched_cg",
     "call_inference_fn",
+    "cfg_denoiser_fn",
     "dps_prefactor",
     "linear_adjoint",
+    "make_cfg_inference_fn",
     "make_denoiser_fn",
     "miyasawa_prefactor",
     "miyasawa_scale",
     "normalised_weights",
     "proposal_log_ratio",
-    "replace_x0",
     "scalar_alpha",
     "scalar_alpha_sigma",
 ]

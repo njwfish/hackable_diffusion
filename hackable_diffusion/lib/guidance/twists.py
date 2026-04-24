@@ -12,108 +12,58 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Twist functions: tractable surrogates for ``log p(y | xt)``.
+"""Twist functions: tractable log-potentials ``log psi(y | xt)``.
 
-A ``TwistFn`` evaluates ``log psi(y | xt)`` -- the SMC log-potential
-used by TDS, MCGDiff, and (via :class:`GradientCorrectionFn`) DPS-style
-score guidance.
-
-Four published shapes of twist are covered:
+Every implementation consumes a :class:`DenoiserFn` and evaluates a
+log-density at ``xhat_0(xt) = denoiser_fn(xt)``.  No raw
+``inference_fn``, ``corruption_process``, ``rng``, or ``conditioning``
+plumbing -- the closure lives inside ``denoiser_fn``.
 
 - :class:`GaussianLikelihoodTwistFn`: linear-Gaussian observations
-  ``y = A x_0 + N(0, sigma_y^2 I)``.  Canonical DPS / Pi-GDM choice.
-- :class:`DiscreteCompositionTwistFn` and its multi-head variant:
-  multinomial observations on a simplex (MCGDiff / cascade guidance).
-- :class:`ClassifierTwistFn`: arbitrary external log-probability model
-  ``log p(y | x_0)`` -- recovers classifier guidance when combined with
-  :class:`GradientCorrectionFn`.
-- :class:`EnergyTwistFn`: arbitrary scalar energy ``E(x_0)`` at an
-  inverse temperature ``1/T`` -- ``log psi = -E(x_0) / T``.
-
-All depend only on a :class:`ForwardFn` / user-supplied callable; none
-hard-codes a state-space.
+  ``y = A x_0 + N(0, sigma_y^2 I)``.
+- :class:`DiscreteCompositionTwistFn` / its multi-head variant:
+  multinomial observations on a simplex.
+- :class:`ClassifierTwistFn`: arbitrary ``log p(y | x_0)``.
+- :class:`EnergyTwistFn`: arbitrary scalar energy ``E(x_0)`` at
+  inverse temperature ``1/T``.
 
 Modality compatibility
 ----------------------
-- ``GaussianLikelihoodTwistFn``: Gaussian (ODE/SDE) and distributional.
-  Requires a linear ``ForwardFn A`` whose range is Euclidean -- the
-  twist is the log-density of a Gaussian at ``A xhat_0``.  Not
-  applicable when ``x_0`` is on a simplex (use the discrete twists).
-- ``DiscreteCompositionTwistFn`` /
-  ``DiscreteMultiHeadCompositionTwistFn``: simplicial only.  The
-  observation is a per-block multinomial / composition vector and
-  ``forward_fn`` aggregates over sites.
-- ``ClassifierTwistFn``: universal.  The ``log_prob_fn`` sees whatever
-  ``x_0`` the corruption process produces -- simplex, Euclidean, or
-  ensemble -- so the caller decides what's valid.
-- ``EnergyTwistFn``: universal, same reasoning as classifier.
+- ``GaussianLikelihoodTwistFn``: Euclidean-x0 (Gaussian ODE/SDE,
+  distributional).  Not meaningful on a simplex.
+- ``DiscreteCompositionTwistFn`` / multi-head: simplicial only.
+- ``ClassifierTwistFn`` / ``EnergyTwistFn``: universal -- the caller
+  decides what ``log_prob_fn`` / ``energy_fn`` accepts as input.
 """
 
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, Callable
+from typing import Callable
 
 import jax
 import jax.numpy as jnp
 
-from hackable_diffusion.lib.guidance.protocols import ForwardFn, TwistFn
-from hackable_diffusion.lib.guidance.utils import call_inference_fn
+from hackable_diffusion.lib.guidance.protocols import (
+    DenoiserFn, ForwardFn, TwistFn,
+)
 
 
-def _denoiser_x0(
-    inference_fn: Callable,
-    xt: jax.Array,
-    time: jax.Array,
-    *,
-    corruption_process: Any,
-    conditioning: Any = None,
-    rng: jax.Array | None = None,
-) -> jax.Array:
-  """Evaluate ``inference_fn`` and convert its outputs to ``x0``."""
-  outputs = call_inference_fn(
-      inference_fn, xt=xt, time=time, conditioning=conditioning, rng=rng,
-  )
-  converted = corruption_process.convert_predictions(outputs, xt, time)
-  return converted["x0"]
-
-
-def _denoiser_log_probs(
-    inference_fn: Callable,
-    xt: jax.Array,
-    time: jax.Array,
-    *,
-    corruption_process: Any,
-    conditioning: Any = None,
-    rng: jax.Array | None = None,
-) -> jax.Array:
-  """Evaluate ``inference_fn`` and return per-site categorical log-probs.
-
-  Prefers converted ``logits`` when available; falls back to a clipped-log
-  of the ``x0`` simplex prediction.
-  """
-  outputs = call_inference_fn(
-      inference_fn, xt=xt, time=time, conditioning=conditioning, rng=rng,
-  )
-  converted = corruption_process.convert_predictions(outputs, xt, time)
-  logits = converted.get("logits")
-  if logits is None:
-    logits = jnp.log(jnp.clip(converted["x0"], 1e-30, 1.0))
-  return jax.nn.log_softmax(logits, axis=-1)
+################################################################################
+# MARK: Gaussian likelihood
+################################################################################
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class GaussianLikelihoodTwistFn(TwistFn):
-  """Twist for linear-Gaussian observations ``y = A x_0 + N(0, sigma_y^2 I)``.
+  """Linear-Gaussian likelihood: ``y = A x_0 + N(0, sigma_y^2 I)``.
 
-  ``log psi(y | xt) = log N(y; A xhat_0(xt), sigma_y^2 I)`` computed via
-  the denoiser's Tweedie output.  Shape-agnostic on xt; the
-  :class:`ForwardFn` is applied to the per-particle x0 prediction.
+  ``log psi(y | xt) = log N(y; A xhat_0(xt), sigma_y^2 I)``
 
-  For a hard constraint (sigma_y -> 0) use a small positive
-  ``observation_noise`` so the twist remains smooth.  Setting
-  ``observation_noise`` to 0 gives a delta -- useful only at the final
-  step of an inpainting-style pipeline.
+  For a hard constraint (``sigma_y -> 0``), use a small positive
+  ``observation_noise`` to keep the twist smooth.  ``observation_noise = 0``
+  gives a delta -- useful only at the final step of an inpainting-style
+  pipeline.
   """
 
   observation: jax.Array
@@ -121,63 +71,51 @@ class GaussianLikelihoodTwistFn(TwistFn):
   observation_noise: float = 0.1
 
   def __call__(
-      self,
-      xt: jax.Array,
-      time: jax.Array,
-      *,
-      inference_fn: Callable,
-      schedule: Any,
-      corruption_process: Any,
-      conditioning: Any = None,
-      rng: jax.Array | None = None,
+      self, xt: jax.Array, time: jax.Array, *, denoiser_fn: DenoiserFn,
   ) -> jax.Array:
-    del schedule
-    x0 = _denoiser_x0(
-        inference_fn, xt, time,
-        corruption_process=corruption_process,
-        conditioning=conditioning, rng=rng,
-    )
+    del time
+    x0 = denoiser_fn(xt)
     residual = self.observation - self.forward_fn.forward(x0)
     flat = residual.reshape(residual.shape[0], -1)
-    sigma2 = float(self.observation_noise) ** 2
-    sigma2 = jnp.maximum(sigma2, 1e-30)
+    sigma2 = jnp.maximum(float(self.observation_noise) ** 2, 1e-30)
     return -0.5 * jnp.sum(flat ** 2, axis=-1) / sigma2
 
 
+################################################################################
+# MARK: Simplicial / discrete composition twists
+################################################################################
+
+
 def _categorical_block_log_likelihood(
-    log_p: jax.Array,
+    probs: jax.Array,
     forward_fn: ForwardFn,
     observation: jax.Array,
 ) -> jax.Array:
-  """Compute ``sum_b y_b . log p_b`` where ``p_b = forward_fn(exp(log_p))``.
+  """``sum_b y_b . log p_b`` where ``p_b`` is ``forward_fn`` applied to probs.
 
-  ``log_p`` has shape ``(B, n_child, K)`` (per-site categorical log-probs).
-  The forward map aggregates along the site axis; we temporarily swap the
-  category axis out of the way so ``forward_fn.forward`` sees the sites as
-  the last axis, matching :class:`ForwardFn`'s expected convention.
+  ``probs`` has shape ``(B, n_child, K)`` (categories on the last axis).
+  ``forward_fn`` aggregates along the site axis; we swap to expose
+  sites as the last axis, aggregate, then swap back.
   """
-  probs = jnp.exp(log_p)
-  probs_af = jnp.swapaxes(probs, -1, -2)           # (B, K, n_child)
-  p_block_af = forward_fn.forward(probs_af)         # (B, K, n_parent)
-  p_block = jnp.swapaxes(p_block_af, -1, -2)        # (B, n_parent, K)
+  probs_sites_last = jnp.swapaxes(probs, -1, -2)        # (B, K, n_child)
+  p_block_sites_last = forward_fn.forward(probs_sites_last)  # (B, K, n_parent)
+  p_block = jnp.swapaxes(p_block_sites_last, -1, -2)    # (B, n_parent, K)
   log_p_block = jnp.log(jnp.clip(p_block, 1e-30, 1.0))
-  y_block = jnp.broadcast_to(observation, p_block.shape)
-  return jnp.sum(y_block * log_p_block, axis=(-2, -1))
+  y = jnp.broadcast_to(observation, p_block.shape)
+  return jnp.sum(y * log_p_block, axis=(-2, -1))
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class DiscreteCompositionTwistFn(TwistFn):
-  """Twist for categorical composition observations on a child simplex.
+  """Multinomial log-likelihood of block-aggregated categorical probabilities.
 
-  ``log psi(y | xt) = sum_b log Multinomial(y_b ; n_b, p_b(xt))``
+  ``log psi(y | xt) = sum_b y_b . log p_b(xt)`` where ``p_b`` is the
+  block-averaged simplex vector under the denoiser's prediction.
+  ``softness`` scales the log-likelihood to widen the twist for
+  numerical stability when the composition is near-deterministic.
 
-  where ``p_b(xt)`` is the block-averaged categorical probability vector
-  under the denoiser's predicted log-probs, and ``y_b`` is the observed
-  per-block composition (counts or empirical-frequency vector).
-
-  ``softness`` divides the log-likelihood by a scalar to effectively
-  widen the twist -- useful for numerical stability when the composition
-  is near-deterministic.
+  Assumes ``xhat_0(xt) = denoiser_fn(xt)`` is a simplex vector
+  (``(B, n_child, K)``, softmax-normalised along the last axis).
   """
 
   observation: jax.Array
@@ -185,43 +123,21 @@ class DiscreteCompositionTwistFn(TwistFn):
   softness: float = 1.0
 
   def __call__(
-      self,
-      xt: jax.Array,
-      time: jax.Array,
-      *,
-      inference_fn: Callable,
-      schedule: Any,
-      corruption_process: Any,
-      conditioning: Any = None,
-      rng: jax.Array | None = None,
+      self, xt: jax.Array, time: jax.Array, *, denoiser_fn: DenoiserFn,
   ) -> jax.Array:
-    del schedule
-    log_p = _denoiser_log_probs(
-        inference_fn, xt, time,
-        corruption_process=corruption_process,
-        conditioning=conditioning, rng=rng,
-    )
-    log_lik = _categorical_block_log_likelihood(
-        log_p, self.forward_fn, self.observation,
-    )
-    return log_lik / float(self.softness)
+    del time
+    probs = denoiser_fn(xt)
+    return _categorical_block_log_likelihood(
+        probs, self.forward_fn, self.observation,
+    ) / float(self.softness)
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class DiscreteMultiHeadCompositionTwistFn(TwistFn):
-  """Multi-head categorical composition twist on the child simplex.
+  """Multi-head simplicial composition twist.
 
-  Discrete analog of :class:`GaussianLikelihoodTwistFn` with a stack of
-  forward maps: for each head in ``forward_fns`` we aggregate the
-  predicted per-site probabilities into block statistics and score the
-  corresponding multinomial log-likelihood against the observed head.
-
-  Reduces to :class:`DiscreteCompositionTwistFn` when the tuple has
-  length one.  The per-head log-likelihood is
-
-      log_psi_h = sum_{b} y_{b,h} * log p_{b,h}(xt)
-
-  and the total twist is ``sum_h log_psi_h / softness``.
+  One observation + forward_fn per head; total twist is the sum of
+  per-head multinomial log-likelihoods divided by ``softness``.
   """
 
   observations: tuple[jax.Array, ...]
@@ -231,47 +147,36 @@ class DiscreteMultiHeadCompositionTwistFn(TwistFn):
   def __post_init__(self):
     if len(self.observations) != len(self.forward_fns):
       raise ValueError(
-          "observations and forward_fns must have matching length; got "
-          f"{len(self.observations)} vs {len(self.forward_fns)}."
+          "observations and forward_fns must have matching length; "
+          f"got {len(self.observations)} vs {len(self.forward_fns)}."
       )
 
   def __call__(
-      self,
-      xt: jax.Array,
-      time: jax.Array,
-      *,
-      inference_fn: Callable,
-      schedule: Any,
-      corruption_process: Any,
-      conditioning: Any = None,
-      rng: jax.Array | None = None,
+      self, xt: jax.Array, time: jax.Array, *, denoiser_fn: DenoiserFn,
   ) -> jax.Array:
-    del schedule
-    log_p = _denoiser_log_probs(
-        inference_fn, xt, time,
-        corruption_process=corruption_process,
-        conditioning=conditioning, rng=rng,
-    )
-    total = jnp.zeros(log_p.shape[0], dtype=log_p.dtype)
-    for obs, forward_fn in zip(self.observations, self.forward_fns):
-      total = total + _categorical_block_log_likelihood(log_p, forward_fn, obs)
+    del time
+    probs = denoiser_fn(xt)
+    total = jnp.zeros(probs.shape[0], dtype=probs.dtype)
+    for obs, fwd in zip(self.observations, self.forward_fns):
+      total = total + _categorical_block_log_likelihood(probs, fwd, obs)
     return total / float(self.softness)
 
 
-# Signature of a log-prob callable used by ClassifierTwistFn: (x0,) -> (B,).
-LogProbFn = Callable[[jax.Array], jax.Array]
+################################################################################
+# MARK: Classifier / energy twists
+################################################################################
 
-# Signature of a scalar-energy callable used by EnergyTwistFn: (x0,) -> (B,).
-EnergyFn = Callable[[jax.Array], jax.Array]
+
+# Signatures of user-supplied callables for the generic twists.
+LogProbFn = Callable[[jax.Array], jax.Array]   # (x0,) -> (B,)
+EnergyFn = Callable[[jax.Array], jax.Array]    # (x0,) -> (B,)
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class ClassifierTwistFn(TwistFn):
   """``log psi(y | xt) = log_prob_fn(xhat_0(xt))``.
 
-  Generic classifier / external likelihood twist: any callable that
-  consumes ``x_0`` and returns a per-particle log-probability of the
-  observation ``y`` slot into this twist.  Composed with
+  Generic external-log-probability twist.  Composed with
   :class:`GradientCorrectionFn` this reproduces classifier guidance
   (Dhariwal & Nichol 2021); composed with an SMC resampler it gives
   the classifier-guided TDS variant.
@@ -283,55 +188,25 @@ class ClassifierTwistFn(TwistFn):
   log_prob_fn: LogProbFn
 
   def __call__(
-      self,
-      xt: jax.Array,
-      time: jax.Array,
-      *,
-      inference_fn: Callable,
-      schedule: Any,
-      corruption_process: Any,
-      conditioning: Any = None,
-      rng: jax.Array | None = None,
+      self, xt: jax.Array, time: jax.Array, *, denoiser_fn: DenoiserFn,
   ) -> jax.Array:
-    del schedule
-    x0 = _denoiser_x0(
-        inference_fn, xt, time,
-        corruption_process=corruption_process,
-        conditioning=conditioning, rng=rng,
-    )
-    return self.log_prob_fn(x0)
+    del time
+    return self.log_prob_fn(denoiser_fn(xt))
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class EnergyTwistFn(TwistFn):
   """``log psi(y | xt) = -energy_fn(xhat_0(xt)) / temperature``.
 
-  Generic unnormalised-density twist: any scalar per-particle energy
-  ``E(x_0)`` defines a Boltzmann log-potential at inverse temperature
-  ``1/T``.  Useful for constraint-style guidance where the target is
-  expressed as "minimise this functional" rather than a Bayesian
-  likelihood (hard clipping, sparsity penalties, physics-informed
-  regularisers).
+  Constraint-style guidance: sparsity / physics / smoothness penalties
+  expressed as scalar energies.
   """
 
   energy_fn: EnergyFn
   temperature: float = 1.0
 
   def __call__(
-      self,
-      xt: jax.Array,
-      time: jax.Array,
-      *,
-      inference_fn: Callable,
-      schedule: Any,
-      corruption_process: Any,
-      conditioning: Any = None,
-      rng: jax.Array | None = None,
+      self, xt: jax.Array, time: jax.Array, *, denoiser_fn: DenoiserFn,
   ) -> jax.Array:
-    del schedule
-    x0 = _denoiser_x0(
-        inference_fn, xt, time,
-        corruption_process=corruption_process,
-        conditioning=conditioning, rng=rng,
-    )
-    return -self.energy_fn(x0) / float(self.temperature)
+    del time
+    return -self.energy_fn(denoiser_fn(xt)) / float(self.temperature)
