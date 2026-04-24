@@ -33,7 +33,10 @@ import jax.numpy as jnp
 
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.corruption.gaussian import GaussianProcess
-from hackable_diffusion.lib.sampling.gaussian_step_sampler import DDIMStep
+from hackable_diffusion.lib.sampling.gaussian_step_sampler import (
+    DDIMStep,
+    SdeStep,
+)
 from hackable_diffusion.lib.sampling.sampling import DiffusionSampler
 from hackable_diffusion.lib.sampling.time_scheduling import UniformTimeSchedule
 
@@ -43,6 +46,13 @@ from hackable_diffusion.lib.guidance.corrections import (
     PiGDMCorrectionFn,
     dps_prefactor,
     miyasawa_prefactor,
+)
+from hackable_diffusion.lib.guidance.forward_ops import (
+    ComposeForwardFn,
+    ConvForwardFn,
+    InpaintingForwardFn,
+    LinearForwardFn,
+    SubsampleForwardFn,
 )
 from hackable_diffusion.lib.guidance.linalg import (
     batch_inner,
@@ -59,6 +69,7 @@ from hackable_diffusion.lib.guidance.proposal_ratio import (
     ddim_proposal_log_ratio,
     proposal_log_ratio,
     register_proposal_ratio,
+    sde_proposal_log_ratio,
 )
 from hackable_diffusion.lib.guidance.resamplers import (
     ESSThresholdedResamplerFn,
@@ -68,7 +79,11 @@ from hackable_diffusion.lib.guidance.resamplers import (
     normalised_weights,
 )
 from hackable_diffusion.lib.guidance.sampler import ConditionalDiffusionSampler
-from hackable_diffusion.lib.guidance.twists import GaussianLikelihoodTwistFn
+from hackable_diffusion.lib.guidance.twists import (
+    ClassifierTwistFn,
+    EnergyTwistFn,
+    GaussianLikelihoodTwistFn,
+)
 from hackable_diffusion.lib.guidance.utils import (
     accepts_rng_kwarg,
     call_inference_fn,
@@ -754,6 +769,169 @@ class PiGDMCorrectionTest(unittest.TestCase):
     )
     x0_new = corruption.convert_predictions(corrected, xt, time)["x0"]
     self.assertTrue(jnp.allclose(x0_new, x0, atol=1e-10))
+
+
+################################################################################
+# Forward operators
+################################################################################
+
+
+class ForwardOpsTest(unittest.TestCase):
+
+  def test_linear_dense_matches_matmul(self):
+    W = jnp.asarray([[1.0, 0.0, 2.0], [0.0, 1.0, 0.0]], dtype=jnp.float64)
+    fwd = LinearForwardFn(matrix=W)
+    x = jnp.asarray([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]], dtype=jnp.float64)
+    out = fwd.forward(x)
+    self.assertTrue(jnp.allclose(out, x @ W.T, atol=1e-12))
+
+  def test_linear_apply_fn_matches_matrix(self):
+    W = jnp.asarray([[2.0, 0.0], [0.0, 3.0]], dtype=jnp.float64)
+    fwd_dense = LinearForwardFn(matrix=W)
+    fwd_apply = LinearForwardFn(apply_fn=lambda x: x @ W.T)
+    x = jnp.asarray([[1.0, 1.0]], dtype=jnp.float64)
+    self.assertTrue(jnp.allclose(fwd_dense.forward(x), fwd_apply.forward(x)))
+
+  def test_linear_requires_exactly_one_operator(self):
+    with self.assertRaises(ValueError):
+      LinearForwardFn()
+    with self.assertRaises(ValueError):
+      LinearForwardFn(matrix=jnp.eye(2), apply_fn=lambda x: x)
+
+  def test_subsample_selects_indices(self):
+    fwd = SubsampleForwardFn(indices=jnp.asarray([0, 2, 4]))
+    x = jnp.arange(12.0).reshape(2, 6)
+    out = fwd.forward(x)
+    self.assertEqual(out.shape, (2, 3))
+    self.assertTrue(jnp.allclose(out, x[:, [0, 2, 4]]))
+
+  def test_inpainting_masks_entries(self):
+    mask = jnp.asarray([1.0, 0.0, 1.0, 0.0], dtype=jnp.float64)
+    fwd = InpaintingForwardFn(mask=mask)
+    x = jnp.asarray([[10.0, 20.0, 30.0, 40.0]], dtype=jnp.float64)
+    out = fwd.forward(x)
+    self.assertTrue(jnp.allclose(out, jnp.asarray([[10.0, 0.0, 30.0, 0.0]])))
+
+  def test_conv_identity_kernel_is_identity(self):
+    # 1-D NCL conv with a length-1 kernel = 1.0 is the identity.
+    kernel = jnp.ones((1, 1, 1), dtype=jnp.float64)  # (out_ch, in_ch, len)
+    fwd = ConvForwardFn(kernel=kernel, stride=(1,), padding="VALID")
+    x = jnp.arange(10.0).reshape(1, 1, 10)
+    out = fwd.forward(x)
+    self.assertTrue(jnp.allclose(out, x, atol=1e-12))
+
+  def test_compose_is_function_composition(self):
+    W1 = jnp.asarray([[1.0, 2.0], [0.0, 1.0]], dtype=jnp.float64)
+    W2 = jnp.asarray([[0.5, 0.0], [0.0, 0.5]], dtype=jnp.float64)
+    fwd = ComposeForwardFn(
+        first=LinearForwardFn(matrix=W1),
+        second=LinearForwardFn(matrix=W2),
+    )
+    x = jnp.asarray([[1.0, 1.0]], dtype=jnp.float64)
+    self.assertTrue(jnp.allclose(fwd.forward(x), (x @ W1.T) @ W2.T))
+
+
+################################################################################
+# Classifier / Energy twists
+################################################################################
+
+
+class ClassifierEnergyTwistTest(unittest.TestCase):
+
+  def test_classifier_twist_returns_log_prob_of_denoiser_x0(self):
+    schedule = schedules.CosineSchedule()
+    corruption = GaussianProcess(schedule=schedule)
+    batch, n = 2, 4
+    x0 = jax.random.normal(jax.random.PRNGKey(0), (batch, n), dtype=jnp.float64)
+
+    # log_prob_fn rewards matching a fixed target.
+    target = jnp.zeros_like(x0)
+    def log_prob(x):
+      return -0.5 * jnp.sum((x - target) ** 2, axis=-1)
+
+    twist = ClassifierTwistFn(log_prob_fn=log_prob)
+    log_psi = twist(
+        xt=jnp.zeros_like(x0),
+        time=jnp.asarray([0.5], dtype=jnp.float64),
+        inference_fn=_identity_x0_inference_fn(x0),
+        schedule=schedule, corruption_process=corruption,
+    )
+    expected = log_prob(x0)
+    self.assertTrue(jnp.allclose(log_psi, expected, atol=1e-12))
+
+  def test_energy_twist_is_negative_energy_over_temperature(self):
+    schedule = schedules.CosineSchedule()
+    corruption = GaussianProcess(schedule=schedule)
+    batch, n = 3, 5
+    x0 = jax.random.normal(jax.random.PRNGKey(1), (batch, n), dtype=jnp.float64)
+
+    def energy(x):
+      return jnp.sum(x ** 2, axis=-1)
+
+    twist = EnergyTwistFn(energy_fn=energy, temperature=2.0)
+    log_psi = twist(
+        xt=jnp.zeros_like(x0),
+        time=jnp.asarray([0.5], dtype=jnp.float64),
+        inference_fn=_identity_x0_inference_fn(x0),
+        schedule=schedule, corruption_process=corruption,
+    )
+    expected = -energy(x0) / 2.0
+    self.assertTrue(jnp.allclose(log_psi, expected, atol=1e-12))
+
+
+################################################################################
+# SDE proposal ratio
+################################################################################
+
+
+class SdeProposalRatioTest(unittest.TestCase):
+
+  def test_deterministic_churn_returns_zero(self):
+    schedule = schedules.CosineSchedule()
+    corruption = GaussianProcess(schedule=schedule)
+    stepper = SdeStep(corruption_process=corruption, churn=0.0)
+    xt = jnp.ones((3, 8), dtype=jnp.float64)
+    ratio = sde_proposal_log_ratio(
+        stepper=stepper, corruption_process=corruption,
+        outputs_uncorrected={"x0": jnp.zeros_like(xt)},
+        outputs_corrected={"x0": jnp.ones_like(xt)},
+        xt_prev=xt, xt_next=xt + 0.1,
+        time_prev=jnp.asarray([0.5]),
+        time_next=jnp.asarray([0.4]),
+    )
+    self.assertTrue(bool(jnp.all(ratio == 0.0)))
+
+  def test_stochastic_churn_finite_and_nonzero(self):
+    schedule = schedules.CosineSchedule()
+    corruption = GaussianProcess(schedule=schedule)
+    stepper = SdeStep(corruption_process=corruption, churn=1.0)
+    xt = jnp.ones((2, 4), dtype=jnp.float64)
+    ratio = sde_proposal_log_ratio(
+        stepper=stepper, corruption_process=corruption,
+        outputs_uncorrected={"x0": jnp.zeros_like(xt)},
+        outputs_corrected={"x0": jnp.full_like(xt, 0.3)},
+        xt_prev=xt, xt_next=jnp.full_like(xt, 0.2),
+        time_prev=jnp.asarray([0.5]),
+        time_next=jnp.asarray([0.4]),
+    )
+    self.assertTrue(bool(jnp.all(jnp.isfinite(ratio))))
+    self.assertTrue(bool(jnp.all(ratio != 0.0)))
+
+  def test_registry_dispatches_sde_step(self):
+    schedule = schedules.CosineSchedule()
+    corruption = GaussianProcess(schedule=schedule)
+    stepper = SdeStep(corruption_process=corruption, churn=0.5)
+    xt = jnp.ones((2, 4), dtype=jnp.float64)
+    ratio = proposal_log_ratio(
+        stepper=stepper, corruption_process=corruption,
+        outputs_uncorrected={"x0": jnp.zeros_like(xt)},
+        outputs_corrected={"x0": jnp.full_like(xt, 0.2)},
+        xt_prev=xt, xt_next=jnp.full_like(xt, 0.5),
+        time_prev=jnp.asarray([0.5]),
+        time_next=jnp.asarray([0.4]),
+        correction_identity=False,
+    )
+    self.assertTrue(bool(jnp.all(jnp.isfinite(ratio))))
 
 
 if __name__ == "__main__":

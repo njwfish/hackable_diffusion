@@ -30,6 +30,13 @@ from hackable_diffusion.lib.guidance.corrections import (
     dps_prefactor,
     miyasawa_prefactor,
 )
+from hackable_diffusion.lib.guidance.forward_ops import (
+    ComposeForwardFn,
+    ConvForwardFn,
+    InpaintingForwardFn,
+    LinearForwardFn,
+    SubsampleForwardFn,
+)
 from hackable_diffusion.lib.guidance.linalg import (
     batch_inner,
     batched_cg,
@@ -44,6 +51,7 @@ from hackable_diffusion.lib.guidance.posterior_covariance import (
 )
 from hackable_diffusion.lib.guidance.protocols import (
     CorrectionFn,
+    DenoiserFn,
     ForwardFn,
     PosteriorCovarianceFn,
     ResamplerFn,
@@ -53,6 +61,7 @@ from hackable_diffusion.lib.guidance.proposal_ratio import (
     ddim_proposal_log_ratio,
     proposal_log_ratio,
     register_proposal_ratio,
+    sde_proposal_log_ratio,
     simplicial_ddim_proposal_log_ratio,
 )
 from hackable_diffusion.lib.guidance.resamplers import (
@@ -64,30 +73,45 @@ from hackable_diffusion.lib.guidance.resamplers import (
 )
 from hackable_diffusion.lib.guidance.sampler import ConditionalDiffusionSampler
 from hackable_diffusion.lib.guidance.twists import (
+    ClassifierTwistFn,
     DiscreteCompositionTwistFn,
     DiscreteMultiHeadCompositionTwistFn,
+    EnergyFn,
+    EnergyTwistFn,
     GaussianLikelihoodTwistFn,
+    LogProbFn,
 )
 from hackable_diffusion.lib.guidance.utils import (
     accepts_rng_kwarg,
     call_inference_fn,
+    make_denoiser_fn,
+    replace_x0,
     scalar_alpha,
     scalar_alpha_sigma,
 )
 
 __all__ = [
     "BoundAggregateGuidanceFn",
+    "ClassifierTwistFn",
+    "ComposeForwardFn",
     "ConditionalDiffusionSampler",
+    "ConvForwardFn",
     "CorrectionFn",
+    "DenoiserFn",
     "DiscreteCompositionTwistFn",
     "DiscreteMultiHeadCompositionTwistFn",
     "ESSThresholdedResamplerFn",
+    "EnergyFn",
+    "EnergyTwistFn",
     "FixedPriorPosteriorCovarianceFn",
     "ForwardFn",
     "GaussianLikelihoodTwistFn",
     "GradientCorrectionFn",
+    "InpaintingForwardFn",
     "IsotropicPosteriorCovarianceFn",
     "IteratedCorrectionFn",
+    "LinearForwardFn",
+    "LogProbFn",
     "MultinomialResamplerFn",
     "NoResamplerFn",
     "PiGDMCorrectionFn",
@@ -95,6 +119,7 @@ __all__ = [
     "PrefactorFn",
     "ResamplerFn",
     "ScaleFn",
+    "SubsampleForwardFn",
     "SystematicResamplerFn",
     "TweediePosteriorCovarianceFn",
     "TwistFn",
@@ -105,12 +130,15 @@ __all__ = [
     "ddim_proposal_log_ratio",
     "dps_prefactor",
     "linear_adjoint",
+    "make_denoiser_fn",
     "miyasawa_prefactor",
     "miyasawa_scale",
     "normalised_weights",
     "proposal_log_ratio",
     "register_proposal_ratio",
+    "replace_x0",
     "scalar_alpha",
     "scalar_alpha_sigma",
+    "sde_proposal_log_ratio",
     "simplicial_ddim_proposal_log_ratio",
 ]

@@ -18,13 +18,20 @@ A ``TwistFn`` evaluates ``log psi(y | xt)`` -- the SMC log-potential
 used by TDS, MCGDiff, and (via :class:`GradientCorrectionFn`) DPS-style
 score guidance.
 
-The canonical choice for linear-Gaussian observations
-``y = A x0 + N(0, sigma_y^2 I)`` is the plug-in
-``log psi(y | xt) := log N(y; A xhat_0(xt), sigma_y^2 I)``, realised by
-:class:`GaussianLikelihoodTwistFn`.  For multinomial observations on a
-simplex, :class:`DiscreteCompositionTwistFn` does the analogous thing
-with the multinomial log-likelihood.  Both depend only on a
-:class:`ForwardFn` abstraction; neither hard-codes a state-space.
+Four published shapes of twist are covered:
+
+- :class:`GaussianLikelihoodTwistFn`: linear-Gaussian observations
+  ``y = A x_0 + N(0, sigma_y^2 I)``.  Canonical DPS / Pi-GDM choice.
+- :class:`DiscreteCompositionTwistFn` and its multi-head variant:
+  multinomial observations on a simplex (MCGDiff / cascade guidance).
+- :class:`ClassifierTwistFn`: arbitrary external log-probability model
+  ``log p(y | x_0)`` -- recovers classifier guidance when combined with
+  :class:`GradientCorrectionFn`.
+- :class:`EnergyTwistFn`: arbitrary scalar energy ``E(x_0)`` at an
+  inverse temperature ``1/T`` -- ``log psi = -E(x_0) / T``.
+
+All depend only on a :class:`ForwardFn` / user-supplied callable; none
+hard-codes a state-space.
 """
 
 from __future__ import annotations
@@ -234,3 +241,82 @@ class DiscreteMultiHeadCompositionTwistFn(TwistFn):
     for obs, forward_fn in zip(self.observations, self.forward_fns):
       total = total + _categorical_block_log_likelihood(log_p, forward_fn, obs)
     return total / float(self.softness)
+
+
+# Signature of a log-prob callable used by ClassifierTwistFn: (x0,) -> (B,).
+LogProbFn = Callable[[jax.Array], jax.Array]
+
+# Signature of a scalar-energy callable used by EnergyTwistFn: (x0,) -> (B,).
+EnergyFn = Callable[[jax.Array], jax.Array]
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class ClassifierTwistFn(TwistFn):
+  """``log psi(y | xt) = log_prob_fn(xhat_0(xt))``.
+
+  Generic classifier / external likelihood twist: any callable that
+  consumes ``x_0`` and returns a per-particle log-probability of the
+  observation ``y`` slot into this twist.  Composed with
+  :class:`GradientCorrectionFn` this reproduces classifier guidance
+  (Dhariwal & Nichol 2021); composed with an SMC resampler it gives
+  the classifier-guided TDS variant.
+
+  ``log_prob_fn`` closes over the target ``y`` -- e.g.
+  ``lambda x0: jax.nn.log_softmax(classifier(x0))[:, y_class]``.
+  """
+
+  log_prob_fn: LogProbFn
+
+  def __call__(
+      self,
+      xt: jax.Array,
+      time: jax.Array,
+      *,
+      inference_fn: Callable,
+      schedule: Any,
+      corruption_process: Any,
+      conditioning: Any = None,
+      rng: jax.Array | None = None,
+  ) -> jax.Array:
+    del schedule
+    x0 = _denoiser_x0(
+        inference_fn, xt, time,
+        corruption_process=corruption_process,
+        conditioning=conditioning, rng=rng,
+    )
+    return self.log_prob_fn(x0)
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class EnergyTwistFn(TwistFn):
+  """``log psi(y | xt) = -energy_fn(xhat_0(xt)) / temperature``.
+
+  Generic unnormalised-density twist: any scalar per-particle energy
+  ``E(x_0)`` defines a Boltzmann log-potential at inverse temperature
+  ``1/T``.  Useful for constraint-style guidance where the target is
+  expressed as "minimise this functional" rather than a Bayesian
+  likelihood (hard clipping, sparsity penalties, physics-informed
+  regularisers).
+  """
+
+  energy_fn: EnergyFn
+  temperature: float = 1.0
+
+  def __call__(
+      self,
+      xt: jax.Array,
+      time: jax.Array,
+      *,
+      inference_fn: Callable,
+      schedule: Any,
+      corruption_process: Any,
+      conditioning: Any = None,
+      rng: jax.Array | None = None,
+  ) -> jax.Array:
+    del schedule
+    x0 = _denoiser_x0(
+        inference_fn, xt, time,
+        corruption_process=corruption_process,
+        conditioning=conditioning, rng=rng,
+    )
+    return -self.energy_fn(x0) / float(self.temperature)

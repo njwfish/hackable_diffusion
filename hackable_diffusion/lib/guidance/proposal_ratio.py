@@ -43,7 +43,10 @@ from typing import Any, Callable
 import jax
 import jax.numpy as jnp
 
-from hackable_diffusion.lib.sampling.gaussian_step_sampler import DDIMStep
+from hackable_diffusion.lib.sampling.gaussian_step_sampler import (
+    DDIMStep,
+    SdeStep,
+)
 from hackable_diffusion.lib.sampling.simplicial_step_sampler import (
     SimplicialDDIMStep,
 )
@@ -113,6 +116,76 @@ def ddim_proposal_log_ratio(
 
 
 ################################################################################
+# MARK: SDE / DDPM ancestral
+################################################################################
+
+
+def sde_proposal_log_ratio(
+    *,
+    stepper: SdeStep,
+    corruption_process: Any,
+    outputs_uncorrected: dict[str, jax.Array],
+    outputs_corrected: dict[str, jax.Array],
+    xt_prev: jax.Array,
+    xt_next: jax.Array,
+    time_prev: jax.Array,
+    time_next: jax.Array,
+) -> jax.Array:
+  """Exact ``log p_theta - log q`` for a score-SDE Euler-Maruyama step.
+
+  The SDE step has mean
+
+      mu(xhat_0) = xt + dt * [-f(t) xt + 0.5 g(t)^2 (1 + churn^2) score(xhat_0)]
+
+  where ``score = (alpha xhat_0 - xt) / sigma^2``.  The mean is linear in
+  ``xhat_0`` with coefficient
+
+      B = 0.5 * g^2 * (1 + churn^2) * dt * alpha / sigma^2,
+
+  and the proposal has standard deviation ``sqrt(dt) g churn``.  A
+  correction that shifts ``xhat_0`` by ``Delta`` shifts the mean by
+  ``B Delta``; the Gaussian log-ratio is the usual
+
+      log p - log q = (||x - mu_q||^2 - ||x - mu_p||^2) / (2 sigma_step^2).
+
+  At ``churn = 0`` the proposal collapses to a deterministic Dirac and
+  importance sampling degenerates; we return zero there.
+  """
+  churn = float(getattr(stepper, "churn", 0.0))
+  if churn == 0.0:
+    return jnp.zeros(xt_next.shape[0], dtype=xt_next.dtype)
+
+  schedule = corruption_process.schedule
+  t_prev = jnp.atleast_1d(time_prev).reshape(-1)[0:1]
+  t_next = jnp.atleast_1d(time_next).reshape(-1)[0:1]
+  alpha = schedule.alpha(t_prev).reshape(())
+  sigma = schedule.sigma(t_prev).reshape(())
+  f_t = schedule.f(t_prev).reshape(())
+  g_t = schedule.g(t_prev).reshape(())
+  dt = (t_prev - t_next).reshape(())
+
+  x0_unc = corruption_process.convert_predictions(
+      outputs_uncorrected, xt_prev, time_prev,
+  )["x0"]
+  x0_cor = corruption_process.convert_predictions(
+      outputs_corrected, xt_prev, time_prev,
+  )["x0"]
+
+  # mu(xhat_0) = xt + dt * (-f xt + 0.5 g^2 (1+churn^2) * score(xhat_0))
+  # with score = (alpha xhat_0 - xt) / sigma^2.  Factor common terms:
+  base = xt_prev * (1.0 - dt * f_t) \
+      - 0.5 * g_t ** 2 * (1.0 + churn ** 2) * dt * xt_prev / jnp.maximum(sigma ** 2, 1e-12)
+  coeff_b = 0.5 * g_t ** 2 * (1.0 + churn ** 2) * dt * alpha / jnp.maximum(sigma ** 2, 1e-12)
+  mu_p = base + coeff_b * x0_unc
+  mu_q = base + coeff_b * x0_cor
+  sigma_step = jnp.sqrt(dt) * g_t * churn
+
+  sq_p = jnp.sum((xt_next - mu_p).reshape(xt_next.shape[0], -1) ** 2, axis=-1)
+  sq_q = jnp.sum((xt_next - mu_q).reshape(xt_next.shape[0], -1) ** 2, axis=-1)
+  return (sq_q - sq_p) / (2.0 * sigma_step ** 2)
+
+
+################################################################################
 # MARK: Simplicial DDIM
 ################################################################################
 
@@ -175,6 +248,7 @@ ProposalRatioFn = Callable[..., jax.Array]
 
 _PROPOSAL_RATIO_REGISTRY: dict[type, ProposalRatioFn] = {
     DDIMStep: ddim_proposal_log_ratio,
+    SdeStep: sde_proposal_log_ratio,
     SimplicialDDIMStep: simplicial_ddim_proposal_log_ratio,
 }
 
