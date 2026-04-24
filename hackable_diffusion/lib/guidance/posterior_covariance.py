@@ -67,8 +67,8 @@ class IsotropicPosteriorCovarianceFn(PosteriorCovarianceFn):
 
   scale_fn: ScaleFn = miyasawa_scale
 
-  def __call__(self, v, *, xt, time, schedule, denoiser_x0=None):
-    del xt, denoiser_x0  # state-independent
+  def __call__(self, v, *, xt, time, schedule, denoiser_fn=None):
+    del xt, denoiser_fn  # state-independent
     alpha, sigma = scalar_alpha_sigma(schedule, time)
     return self.scale_fn(alpha, sigma) * v
 
@@ -101,8 +101,8 @@ class FixedPriorPosteriorCovarianceFn(PosteriorCovarianceFn):
       return self.apply_fn(v_flat)
     return v_flat @ self.prior_covariance.T  # (B, n) @ (n, n)
 
-  def __call__(self, v, *, xt, time, schedule, denoiser_x0=None):
-    del xt, denoiser_x0  # state-independent
+  def __call__(self, v, *, xt, time, schedule, denoiser_fn=None):
+    del xt, denoiser_fn  # state-independent
     alpha, sigma = scalar_alpha_sigma(schedule, time)
     scale = (sigma ** 2) / jnp.maximum(alpha, 1e-8)
     v_flat = v.reshape(v.shape[0], -1)
@@ -112,24 +112,24 @@ class FixedPriorPosteriorCovarianceFn(PosteriorCovarianceFn):
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class TweediePosteriorCovarianceFn(PosteriorCovarianceFn):
-  """``Cov(x_0 | x_t) v = (sigma^2 / alpha) * JVP(denoiser_x0, xt, v)``.
+  """``Cov(x_0 | x_t) v = (sigma^2 / alpha) * JVP(denoiser_fn, xt, v)``.
 
   The Miyasawa/Stein identity gives ``Cov(x_0 | x_t) = (sigma^2 / alpha)
   d(xhat_0)/d(xt)``; the JVP computes the product with ``v`` in forward
   mode without materialising the Jacobian.  Exact for any prior the
   denoiser implicitly represents -- Gaussian, mixture, or learned.
 
-  Requires ``denoiser_x0`` to be passed by the caller (the PiGDM
+  Requires ``denoiser_fn`` to be passed by the caller (the PiGDM
   correction threads it through from the sampler).
   """
 
-  def __call__(self, v, *, xt, time, schedule, denoiser_x0=None):
-    if denoiser_x0 is None:
+  def __call__(self, v, *, xt, time, schedule, denoiser_fn=None):
+    if denoiser_fn is None:
       raise ValueError(
-          "TweediePosteriorCovarianceFn requires ``denoiser_x0`` (an xt -> "
-          "xhat_0 closure evaluated at the current time); callers through "
-          "PiGDMCorrectionFn wire this in automatically."
+          "TweediePosteriorCovarianceFn requires ``denoiser_fn`` (a "
+          "DenoiserFn closure evaluated at the current time); callers "
+          "through PiGDMCorrectionFn wire this in automatically."
       )
     alpha, sigma = scalar_alpha_sigma(schedule, time)
-    _, jvp = jax.jvp(denoiser_x0, (xt,), (v,))
+    _, jvp = jax.jvp(denoiser_fn, (xt,), (v,))
     return (sigma ** 2 / jnp.maximum(alpha, 1e-8)) * jvp

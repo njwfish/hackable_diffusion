@@ -45,6 +45,8 @@ from hackable_diffusion.lib.guidance.protocols import (
 )
 from hackable_diffusion.lib.guidance.utils import (
     call_inference_fn,
+    make_denoiser_fn,
+    replace_x0,
     scalar_alpha,
     scalar_alpha_sigma,
 )
@@ -222,12 +224,7 @@ class GradientCorrectionFn(CorrectionFn):
     )
 
     delta_x0 = float(self.strength) * prefactor * grad_xt
-    x0_guided = x0 + delta_x0
-    guided_outputs = corruption_process.convert_predictions(
-        {"x0": x0_guided}, xt, time,
-    )
-    pred_type = next(iter(outputs.keys()))
-    return {pred_type: guided_outputs[pred_type]}
+    return replace_x0(outputs, x0 + delta_x0, xt, time, corruption_process)
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
@@ -277,40 +274,24 @@ class PiGDMCorrectionFn(CorrectionFn):
       inference_fn: Callable | None = None,
   ) -> dict[str, jax.Array]:
     x0 = corruption_process.convert_predictions(outputs, xt, time)["x0"]
-
-    # Denoiser closure: xt' -> xhat_0(xt') at the current (time, cond, rng).
-    # Passed to posterior_covariance_fn for state-dependent variants
-    # (e.g. TweediePosteriorCovarianceFn); state-independent variants
-    # simply ignore it.
-    def denoiser_x0(xt_arg: jax.Array) -> jax.Array:
-      outs = call_inference_fn(
-          inference_fn, xt=xt_arg, time=time,
-          conditioning=conditioning, rng=rng,
-      )
-      return corruption_process.convert_predictions(outs, xt_arg, time)["x0"]
-
+    denoiser_fn = make_denoiser_fn(
+        inference_fn, corruption_process,
+        time=time, conditioning=conditioning, rng=rng,
+    )
     adjoint = linear_adjoint(self.forward_fn, x0)
     sigma_y2 = max(float(self.observation_noise) ** 2, 1e-30)
 
-    def matvec(w: jax.Array) -> jax.Array:
-      # (A Sigma_hat A^T + sigma_y^2 I) w.
-      cov_at_w = self.posterior_covariance_fn(
+    def apply_cov(w):
+      return self.posterior_covariance_fn(
           adjoint(w), xt=xt, time=time, schedule=schedule,
-          denoiser_x0=denoiser_x0,
+          denoiser_fn=denoiser_fn,
       )
-      return self.forward_fn.forward(cov_at_w) + sigma_y2 * w
+
+    def matvec(w):  # (A Sigma_hat A^T + sigma_y^2 I) w
+      return self.forward_fn.forward(apply_cov(w)) + sigma_y2 * w
 
     residual = self.observation - self.forward_fn.forward(x0)
     w = batched_cg(
         matvec, residual, max_iter=self.cg_max_iter, tol=self.cg_tol,
     )
-    delta_x0 = self.posterior_covariance_fn(
-        adjoint(w), xt=xt, time=time, schedule=schedule,
-        denoiser_x0=denoiser_x0,
-    )
-    x0_guided = x0 + delta_x0
-    guided_outputs = corruption_process.convert_predictions(
-        {"x0": x0_guided}, xt, time,
-    )
-    pred_type = next(iter(outputs.keys()))
-    return {pred_type: guided_outputs[pred_type]}
+    return replace_x0(outputs, x0 + apply_cov(w), xt, time, corruption_process)

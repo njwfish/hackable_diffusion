@@ -638,7 +638,7 @@ class FixedPriorPosteriorCovarianceTest(unittest.TestCase):
 class TweediePosteriorCovarianceTest(unittest.TestCase):
 
   def test_linear_denoiser_recovers_scaled_gain(self):
-    # If denoiser_x0(xt) = G xt for a fixed matrix G, then JVP(denoiser, xt, v)
+    # If denoiser_fn(xt) = G xt for a fixed matrix G, then JVP(denoiser, xt, v)
     # = G v and the operator returns (sigma^2/alpha) * G v.
     schedule = schedules.CosineSchedule()
     rng = jax.random.PRNGKey(0)
@@ -650,7 +650,7 @@ class TweediePosteriorCovarianceTest(unittest.TestCase):
     op = TweediePosteriorCovarianceFn()
     v = jnp.asarray([[1.0, 2.0, 3.0, 4.0]], dtype=jnp.float64)
     t = jnp.asarray([0.4], dtype=jnp.float64)
-    out = op(v, xt=v, time=t, schedule=schedule, denoiser_x0=denoiser)
+    out = op(v, xt=v, time=t, schedule=schedule, denoiser_fn=denoiser)
     alpha, sigma = scalar_alpha_sigma(schedule, t)
     expected = (sigma ** 2 / alpha) * (v @ G.T)
     self.assertTrue(jnp.allclose(out, expected, atol=1e-10))

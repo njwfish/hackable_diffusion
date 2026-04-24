@@ -14,8 +14,11 @@
 
 """Core protocols for the composable guidance framework.
 
-Five protocols cover every published guidance method:
+Six protocols cover every published guidance method:
 
+- ``DenoiserFn``: pure ``xt -> xhat_0(xt)`` map at a fixed ``(time,
+  conditioning, rng)``.  The atomic denoiser abstraction that PiGDM,
+  Tweedie-covariance, and gradient corrections all consume.
 - ``ForwardFn``: linear / non-linear measurement map ``y = A(x_0)``
   (shared by twists and the Pi-GDM correction).
 - ``PosteriorCovarianceFn``: linear operator ``v -> Cov(x_0 | x_t) v``
@@ -40,6 +43,24 @@ from __future__ import annotations
 from typing import Any, Callable, Protocol
 
 import jax
+
+
+class DenoiserFn(Protocol):
+  """Pure ``xt -> xhat_0(xt)`` map at a fixed ``(time, conditioning, rng)``.
+
+  Obtained from a raw ``inference_fn`` + ``corruption_process`` via
+  :func:`make_denoiser_fn`.  Abstract enough that JVP / VJP / grad
+  compose directly: ``jax.jvp(denoiser, (xt,), (v,))`` is the atomic
+  Jacobian-action used by :class:`TweediePosteriorCovarianceFn`, and
+  ``jax.grad(lambda x: twist_fn(x, ...))`` composes with it cleanly for
+  DPS-style corrections.
+
+  The xt input and x0 output share the same shape (both ``(B, *space)``);
+  distributional / ensemble backbones should return the post-marginalised
+  mean.
+  """
+
+  def __call__(self, xt: jax.Array) -> jax.Array: ...
 
 
 class ForwardFn(Protocol):
@@ -72,8 +93,8 @@ class PosteriorCovarianceFn(Protocol):
     denoiser -- exact under any prior the denoiser represents).
 
   Implementations may ignore any unused kwarg; the fully generic variant
-  needs ``denoiser_x0`` (a pre-composed ``xt -> xhat_0`` closure),
-  state-independent variants only use ``(time, schedule)``.
+  needs ``denoiser_fn`` (a :class:`DenoiserFn` closure), state-independent
+  variants only use ``(time, schedule)``.
   """
 
   def __call__(
@@ -83,7 +104,7 @@ class PosteriorCovarianceFn(Protocol):
       xt: jax.Array,
       time: jax.Array,
       schedule: Any,
-      denoiser_x0: Callable[[jax.Array], jax.Array] | None = None,
+      denoiser_fn: DenoiserFn | None = None,
   ) -> jax.Array: ...
 
 

@@ -72,3 +72,56 @@ def scalar_alpha_sigma(
   """
   t = jnp.atleast_1d(time).reshape(-1)[0:1]
   return schedule.alpha(t).reshape(()), schedule.sigma(t).reshape(())
+
+
+def make_denoiser_fn(
+    inference_fn: Callable,
+    corruption_process: Any,
+    *,
+    time: jax.Array,
+    conditioning: Any = None,
+    rng: jax.Array | None = None,
+) -> Callable[[jax.Array], jax.Array]:
+  """Build a pure ``xt -> xhat_0(xt)`` closure at a fixed ``(time, cond, rng)``.
+
+  Used by every correction / posterior-covariance implementation that
+  needs to evaluate / differentiate the denoiser at a shifted xt: the
+  closure is amenable to :func:`jax.jvp` (Tweedie covariance),
+  :func:`jax.grad` (gradient corrections), and repeated invocation with
+  different xt (iterated corrections).
+
+  Fixing ``rng`` inside the closure is essential for differentiability
+  of stochastic denoisers: the JVP traces a deterministic path at the
+  captured noise realisation rather than re-sampling on every call.
+  """
+
+  def denoiser_fn(xt: jax.Array) -> jax.Array:
+    outputs = call_inference_fn(
+        inference_fn, xt=xt, time=time,
+        conditioning=conditioning, rng=rng,
+    )
+    return corruption_process.convert_predictions(outputs, xt, time)["x0"]
+
+  return denoiser_fn
+
+
+def replace_x0(
+    outputs: dict[str, jax.Array],
+    x0_new: jax.Array,
+    xt: jax.Array,
+    time: jax.Array,
+    corruption_process: Any,
+) -> dict[str, jax.Array]:
+  """Replace the x0 prediction in ``outputs`` and return the same key-set.
+
+  Every correction produces an updated x0 but must hand back a dict in
+  the denoiser's native prediction parameterisation (which may be
+  ``x0``, ``eps``, ``velocity``, or something else).  This helper does
+  the round-trip through ``convert_predictions`` once and returns the
+  dict in the same shape as the input -- no ``next(iter(outputs.keys()))``
+  guesswork at call sites.
+  """
+  converted = corruption_process.convert_predictions(
+      {"x0": x0_new}, xt, time,
+  )
+  return {k: converted[k] for k in outputs.keys()}
