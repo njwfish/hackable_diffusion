@@ -170,6 +170,34 @@ classes that delegate to internally-built ``InterpolantProcess``
 instances; type annotations throughout downstream code keep working
 unchanged.
 
+**Concrete couplings.** ``StandardNormalSource`` / ``UniformManifoldSource``
+/ ``DataloaderSource`` sit behind ``IndependentCoupling``.
+``DeterministicCoupling(map_fn)`` fixes ``x_1 = map_fn(x_0)`` for
+blur-deblur / data-to-data flow matching.  ``MiniBatchOTCoupling``
+computes an entropic-OT plan (ott-jax Sinkhorn) between a batch of
+``x_0`` and an unmatched ``x_1 ~ source`` batch; each ``x_0[i]`` is
+paired with ``x_1[j]`` by sampling ``j ~ plan[i,:]``, with
+``jax.lax.stop_gradient`` on the matched output.  OT is
+``is_batch_level = True``; ``assert_vmappable(process)`` raises at
+training-loop setup if a user tries to ``jax.vmap`` an OT process
+per-sample.
+
+**Concrete interpolants.** ``LinearInterpolant`` (``alpha(t) x_0 +
+sigma(t) x_1``) and ``GeodesicInterpolant`` (Riemannian) cover the
+legacy Gaussian / Riemannian paths byte-for-byte.
+``StochasticInterpolant(alpha, beta, gamma)`` implements ``x_t =
+alpha(t) x_0 + beta(t) x_1 + gamma(t) z`` with ``z ~ N(0, I)`` and
+``gamma(0) = gamma(1) = 0`` enforced at construction;
+``canonical_gamma(t) = sqrt(t(1-t))`` is the canonical noise factor.
+``needs_noise = True`` so ``InterpolantProcess`` splits the RNG and
+threads ``z`` into ``interpolant.eval``.  The SI *is* its own
+schedule: ``self.schedule`` returns ``self`` and exposes ``alpha``,
+``beta``, ``gamma`` callables plus ``evaluate(t)`` -- downstream
+samplers read ``gamma(t)`` for inference-time noise without new
+plumbing.  Paired with ``VelocityOnlyTargets`` it trains on ``x_0``
+or ``velocity`` like any other interpolant; no dedicated SDE stepper
+is bundled.
+
 **Why:** ``corrupt`` was fusing three distinct responsibilities --
 sampling ``x_1`` given ``x_0``, interpolating ``x_t = I(t, x_0, x_1)``,
 and computing the derived targets dict.  Splitting them enables:
