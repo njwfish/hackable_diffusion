@@ -14,7 +14,7 @@
 
 """Linear-algebra helpers for guidance corrections.
 
-Two primitives used by :class:`PiGDMCorrectionFn` and its extensions:
+Primitives used by :class:`PiGDMCorrectionFn` and its extensions:
 
 - :func:`batch_inner`: per-particle dot product summed over all
   non-batch axes.
@@ -24,10 +24,15 @@ Two primitives used by :class:`PiGDMCorrectionFn` and its extensions:
   are solved in parallel within a single ``lax.while_loop``.
 - :func:`linear_adjoint`: return the adjoint map ``A^T`` of a linear
   ``ForwardFn`` at a given input via ``jax.vjp``.
+- :func:`randomized_svd_jvp`: rank-``k`` randomized SVD of a linear
+  operator given by a JVP callable, in the Halko-Martinsson-Tropp
+  sketch.  Used by :class:`LowRankTweediePosteriorCovarianceFn` to
+  approximate the denoiser Jacobian from a handful of JVPs.
 """
 
 from __future__ import annotations
 
+import math
 from typing import Callable
 
 import jax
@@ -111,3 +116,80 @@ def linear_adjoint(
   """
   _, vjp = jax.vjp(forward_fn.forward, x)
   return lambda w: vjp(w)[0]
+
+
+def randomized_svd_jvp(
+    jvp_fn: Callable[[jax.Array], jax.Array],
+    example: jax.Array,
+    *,
+    num_components: int,
+    key: jax.Array,
+    oversample: int = 5,
+    num_power_iters: int = 1,
+) -> tuple[jax.Array, jax.Array]:
+  """Rank-``num_components`` randomized SVD of a linear operator given via JVP.
+
+  The operator ``A`` is specified implicitly by ``jvp_fn(v) = A v`` (shape
+  must match ``example``).  Returns ``(Q, T)`` where ``Q`` has
+  orthonormal columns spanning a good approximation of the top
+  left-singular-vectors of ``A`` and ``T = Q^T A Q`` is the rank-``k``
+  compression.  The approximation ``A v ~= Q (T (Q^T v))`` costs
+  ``O(d * k)`` per matvec after setup.
+
+  Setup cost is ``(1 + num_power_iters) * (k + oversample) + k`` JVPs
+  plus a QR on a ``(d, k)`` tall-skinny matrix.  For the Halko-Martinsson
+  -Tropp sketch, one power iteration is typically enough to get
+  meaningful accuracy on well-conditioned operators.
+
+  If this is still too expensive, a pure-random sketch without power
+  iteration approximates the prior covariance rather than the
+  Jacobian; see :class:`RandomProjectionPosteriorCovarianceFn` (not
+  currently implemented).
+
+  Shapes: ``example`` is ``(B, *spatial)``; Q and T are per-batch
+  tensors shaped ``(B, d, k)`` and ``(B, k, k)`` where
+  ``d = prod(spatial)``.  The batch dim is preserved so each particle
+  gets its own low-rank factorisation.
+  """
+  batch = example.shape[0]
+  spatial_shape = example.shape[1:]
+  d = math.prod(spatial_shape)  # static Python computation; survives tracing
+  k_eff = min(num_components, d)
+  k_sketch = min(k_eff + oversample, d)
+
+  # Draw one (d, k_sketch) random matrix per batch element.
+  omega = jax.random.normal(
+      key, (batch, d, k_sketch), dtype=example.dtype,
+  )
+
+  def apply_to_column_stack(stacked: jax.Array) -> jax.Array:
+    """Apply ``jvp_fn`` to each of ``stacked``'s trailing columns.
+
+    ``stacked`` has shape ``(B, d, k)`` for any ``k``; reshape each
+    column back to ``(B, *spatial)``, apply JVP, flatten, stack.  Uses
+    ``jax.vmap`` over the column axis so the JVPs run in parallel.
+    """
+    k = stacked.shape[-1]
+    as_particles = stacked.reshape(batch, *spatial_shape, k)
+    as_particles = jnp.moveaxis(as_particles, -1, 0)  # (k, B, *spatial)
+    out = jax.vmap(jvp_fn)(as_particles)              # (k, B, *spatial)
+    out = jnp.moveaxis(out, 0, -1)                    # (B, *spatial, k)
+    return out.reshape(batch, d, k)
+
+  y = apply_to_column_stack(omega)
+  for _ in range(num_power_iters):
+    # Power iteration: Y <- A (A^T (A Omega)) sharpens the top singular
+    # directions.  We only have a forward JVP; skip the adjoint pass
+    # and settle for A A^T = I approximation (valid when the operator
+    # is already close to symmetric, e.g. posterior covariance).
+    y = apply_to_column_stack(y)
+
+  # Batched QR of ``(B, d, k_sketch)`` then truncate to k_eff columns.
+  # When ``d <= k_sketch``, ``qr`` returns a (d, d) Q; truncate accordingly.
+  q_full, _ = jnp.linalg.qr(y)                        # (B, d, min(d, k_sketch))
+  q = q_full[..., :k_eff]                             # (B, d, k_eff)
+
+  # Compute T = Q^T A Q: apply A to Q then project.
+  aq = apply_to_column_stack(q)                       # (B, d, k_eff)
+  t = jnp.einsum('bdi,bdj->bij', q, aq)               # (B, k_eff, k_eff)
+  return q, t

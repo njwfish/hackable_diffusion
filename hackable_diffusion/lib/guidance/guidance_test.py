@@ -72,6 +72,8 @@ from hackable_diffusion.lib.guidance.linalg import (
 from hackable_diffusion.lib.guidance.posterior_covariance import (
     FixedPriorPosteriorCovarianceFn,
     IsotropicPosteriorCovarianceFn,
+    LowRankTweediePosteriorCovarianceFn,
+    PCAPosteriorCovarianceFn,
     TweediePosteriorCovarianceFn,
     miyasawa_scale,
 )
@@ -676,6 +678,172 @@ class TweediePosteriorCovarianceTest(unittest.TestCase):
       op(v, xt=v, time=jnp.asarray([0.5]), schedule=schedule)
 
 
+class PCAPosteriorCovarianceTest(unittest.TestCase):
+
+  def test_full_rank_recovers_fixed_prior(self):
+    # At rank k = d with unit singular values, U U^T = I (if U is any
+    # orthonormal basis).  Op matches IsotropicPosteriorCovarianceFn.
+    schedule = schedules.CosineSchedule()
+    rng = jax.random.PRNGKey(0)
+    d = 4
+    u, _ = jnp.linalg.qr(jax.random.normal(rng, (d, d), dtype=jnp.float64))
+    pca = PCAPosteriorCovarianceFn(u_factor=u)
+    iso = IsotropicPosteriorCovarianceFn()
+    v = jax.random.normal(jax.random.PRNGKey(1), (2, d), dtype=jnp.float64)
+    t = jnp.asarray([0.3], dtype=jnp.float64)
+    a = pca(v, xt=v, time=t, schedule=schedule)
+    b = iso(v, xt=v, time=t, schedule=schedule)
+    self.assertTrue(jnp.allclose(a, b, atol=1e-10))
+
+  def test_from_covariance_matches_fixed_prior_at_full_rank(self):
+    # Top-d eigendecomposition of C reconstructs C exactly; PCA op
+    # should match FixedPriorPosteriorCovarianceFn.
+    schedule = schedules.CosineSchedule()
+    rng = jax.random.PRNGKey(0)
+    d = 5
+    a_mat = jax.random.normal(rng, (d, d), dtype=jnp.float64)
+    c = a_mat @ a_mat.T + 0.1 * jnp.eye(d, dtype=jnp.float64)
+    pca = PCAPosteriorCovarianceFn.from_covariance(c, num_components=d)
+    fixed = FixedPriorPosteriorCovarianceFn(prior_covariance=c)
+    v = jax.random.normal(jax.random.PRNGKey(2), (3, d), dtype=jnp.float64)
+    t = jnp.asarray([0.4], dtype=jnp.float64)
+    a = pca(v, xt=v, time=t, schedule=schedule)
+    b = fixed(v, xt=v, time=t, schedule=schedule)
+    self.assertTrue(jnp.allclose(a, b, atol=1e-9))
+
+  def test_truncated_rank_captures_dominant_directions(self):
+    # Construct a rank-2 covariance; truncation at k=2 should recover it
+    # exactly, while k=1 should miss the smaller mode.
+    schedule = schedules.CosineSchedule()
+    d = 6
+    u_true = jnp.linalg.qr(
+        jax.random.normal(jax.random.PRNGKey(0), (d, 2), dtype=jnp.float64),
+    )[0]
+    lambdas = jnp.asarray([5.0, 1.0], dtype=jnp.float64)
+    c = u_true @ jnp.diag(lambdas) @ u_true.T
+    pca2 = PCAPosteriorCovarianceFn.from_covariance(c, num_components=2)
+    pca1 = PCAPosteriorCovarianceFn.from_covariance(c, num_components=1)
+    fixed = FixedPriorPosteriorCovarianceFn(prior_covariance=c)
+    v = jax.random.normal(jax.random.PRNGKey(3), (1, d), dtype=jnp.float64)
+    t = jnp.asarray([0.5], dtype=jnp.float64)
+    full = fixed(v, xt=v, time=t, schedule=schedule)
+    at_2 = pca2(v, xt=v, time=t, schedule=schedule)
+    at_1 = pca1(v, xt=v, time=t, schedule=schedule)
+    self.assertTrue(jnp.allclose(at_2, full, atol=1e-9))
+    # k=1 drops the smaller-eigenvalue mode and therefore differs.
+    self.assertFalse(jnp.allclose(at_1, full, atol=1e-2))
+
+  def test_image_shape_preserved(self):
+    # Shape-agnostic: the factor is flattened against non-batch axes, so
+    # the op works on (B, H, W, C) images unchanged.
+    schedule = schedules.CosineSchedule()
+    rng = jax.random.PRNGKey(0)
+    h, w, c = 4, 4, 3
+    d = h * w * c
+    u, _ = jnp.linalg.qr(
+        jax.random.normal(rng, (d, 5), dtype=jnp.float64),
+    )
+    pca = PCAPosteriorCovarianceFn(
+        u_factor=u,
+        singular_values=jnp.ones((5,), dtype=jnp.float64),
+    )
+    v = jax.random.normal(
+        jax.random.PRNGKey(1), (2, h, w, c), dtype=jnp.float64,
+    )
+    out = pca(v, xt=v, time=jnp.asarray([0.3]), schedule=schedule)
+    self.assertEqual(out.shape, v.shape)
+
+  def test_regulariser_adds_isotropic_component(self):
+    schedule = schedules.CosineSchedule()
+    rng = jax.random.PRNGKey(0)
+    d = 4
+    u, _ = jnp.linalg.qr(
+        jax.random.normal(rng, (d, 2), dtype=jnp.float64),
+    )
+    pca = PCAPosteriorCovarianceFn(u_factor=u, regulariser=0.5)
+    pca_no_reg = PCAPosteriorCovarianceFn(u_factor=u, regulariser=0.0)
+    v = jnp.ones((1, d), dtype=jnp.float64)
+    t = jnp.asarray([0.4], dtype=jnp.float64)
+    out_reg = pca(v, xt=v, time=t, schedule=schedule)
+    out_no = pca_no_reg(v, xt=v, time=t, schedule=schedule)
+    alpha, sigma = scalar_alpha_sigma(schedule, t)
+    expected_diff = (sigma ** 2 / alpha) * 0.5 * v
+    self.assertTrue(jnp.allclose(out_reg - out_no, expected_diff, atol=1e-12))
+
+
+class LowRankTweediePosteriorCovarianceTest(unittest.TestCase):
+
+  def test_linear_denoiser_recovers_scaled_jacobian_in_rank_subspace(self):
+    # For a linear denoiser G, the Jacobian is G everywhere.  The
+    # randomized-SVD sketch should match the full Tweedie operator on
+    # vectors whose image under G lives in the top-k subspace of G.
+    # With k = full rank, it should match on arbitrary v to high
+    # accuracy.
+    schedule = schedules.CosineSchedule()
+    rng = jax.random.PRNGKey(0)
+    d = 6
+    g = jax.random.normal(rng, (d, d), dtype=jnp.float64)
+    def denoiser(x):
+      return x @ g.T
+
+    v = jax.random.normal(
+        jax.random.PRNGKey(1), (1, d), dtype=jnp.float64,
+    )
+    t = jnp.asarray([0.4], dtype=jnp.float64)
+
+    full = TweediePosteriorCovarianceFn()(
+        v, xt=v, time=t, schedule=schedule, denoiser_fn=denoiser,
+    )
+    lowrank = LowRankTweediePosteriorCovarianceFn(
+        num_components=d, oversample=2, num_power_iters=0,
+    )(v, xt=v, time=t, schedule=schedule, denoiser_fn=denoiser)
+    self.assertTrue(jnp.allclose(full, lowrank, atol=1e-6))
+
+  def test_truncated_rank_approximates_not_equals(self):
+    # For a full-rank Jacobian truncated to k < d, the sketch differs
+    # from the full Tweedie.  Just check shape + finiteness.
+    schedule = schedules.CosineSchedule()
+    rng = jax.random.PRNGKey(0)
+    d = 8
+    g = jax.random.normal(rng, (d, d), dtype=jnp.float64)
+    def denoiser(x):
+      return x @ g.T
+
+    v = jnp.ones((1, d), dtype=jnp.float64)
+    t = jnp.asarray([0.5], dtype=jnp.float64)
+    op = LowRankTweediePosteriorCovarianceFn(
+        num_components=3, oversample=2, num_power_iters=1,
+    )
+    out = op(v, xt=v, time=t, schedule=schedule, denoiser_fn=denoiser)
+    self.assertEqual(out.shape, v.shape)
+    self.assertTrue(jnp.all(jnp.isfinite(out)))
+
+  def test_missing_denoiser_raises(self):
+    schedule = schedules.CosineSchedule()
+    op = LowRankTweediePosteriorCovarianceFn(num_components=2)
+    v = jnp.ones((1, 4))
+    with self.assertRaises(ValueError):
+      op(v, xt=v, time=jnp.asarray([0.5]), schedule=schedule)
+
+  def test_image_shape_preserved(self):
+    schedule = schedules.CosineSchedule()
+    h, w, c = 4, 4, 3
+    rng = jax.random.PRNGKey(0)
+    g = jax.random.normal(rng, (h * w * c, h * w * c), dtype=jnp.float64)
+    def denoiser(x):
+      flat = x.reshape(x.shape[0], -1) @ g.T
+      return flat.reshape(x.shape)
+
+    v = jax.random.normal(
+        jax.random.PRNGKey(1), (2, h, w, c), dtype=jnp.float64,
+    )
+    op = LowRankTweediePosteriorCovarianceFn(num_components=4)
+    out = op(v, xt=v, time=jnp.asarray([0.3]),
+             schedule=schedule, denoiser_fn=denoiser)
+    self.assertEqual(out.shape, v.shape)
+    self.assertTrue(jnp.all(jnp.isfinite(out)))
+
+
 ################################################################################
 # Kalman correction (Pi-GDM family)
 ################################################################################
@@ -760,6 +928,69 @@ class KalmanCorrectionTest(unittest.TestCase):
         x0, xt, time, denoiser_fn=denoiser_fn, schedule=schedule,
     )
     self.assertTrue(jnp.allclose(x0_new, x0, atol=1e-10))
+
+  def test_pca_cov_reduces_residual(self):
+    # PCA-based posterior covariance drops into KalmanCorrectionFn
+    # and still reduces the measurement residual.
+    schedule, corruption, fwd, x0, y = self._setup()
+    n = x0.shape[1]
+    # Use a random orthonormal U with some prescribed singular values
+    # -- simulates a PCA factor extracted from training data.
+    u, _ = jnp.linalg.qr(
+        jax.random.normal(jax.random.PRNGKey(7), (n, n), dtype=jnp.float64),
+    )
+    svals = jnp.asarray([1.5, 1.0, 0.5, 0.2], dtype=jnp.float64)
+
+    def inference_fn(xt, time, conditioning=None):
+      del xt, time, conditioning
+      return {"x0": x0}
+
+    correction = KalmanCorrectionFn(
+        observation=y, forward_fn=fwd,
+        posterior_covariance_fn=PCAPosteriorCovarianceFn(
+            u_factor=u, singular_values=svals, regulariser=1e-3,
+        ),
+        observation_noise=0.1,
+    )
+    xt = jnp.zeros_like(x0)
+    time = jnp.asarray([0.5], dtype=jnp.float64)
+    denoiser_fn = make_denoiser_fn(inference_fn, corruption, time=time)
+    x0_new = correction(
+        x0, xt, time, denoiser_fn=denoiser_fn, schedule=schedule,
+    )
+    res_old = jnp.abs(fwd.forward(x0) - y)
+    res_new = jnp.abs(fwd.forward(x0_new) - y)
+    self.assertTrue(bool(jnp.all(res_new < res_old)))
+
+  def test_low_rank_tweedie_reduces_residual(self):
+    # Same correction as test_tweedie_runs_and_reduces_residual, but
+    # using the randomized-SVD sketch.  Rank set to n for full-rank
+    # agreement on this tiny test.
+    schedule, corruption, fwd, x0, y = self._setup()
+    n = x0.shape[1]
+    del x0
+
+    def inference_fn(xt, time, conditioning=None):
+      del time, conditioning
+      return {"x0": jnp.tanh(xt)}
+
+    correction = KalmanCorrectionFn(
+        observation=y, forward_fn=fwd,
+        posterior_covariance_fn=LowRankTweediePosteriorCovarianceFn(
+            num_components=n, oversample=2, num_power_iters=1,
+        ),
+        observation_noise=0.1, cg_max_iter=25, cg_tol=1e-8,
+    )
+    xt = jnp.full((y.shape[0], n), 0.3, dtype=jnp.float64)
+    time = jnp.asarray([0.5], dtype=jnp.float64)
+    denoiser_fn = make_denoiser_fn(inference_fn, corruption, time=time)
+    x0_at_xt = denoiser_fn(xt)
+    x0_new = correction(
+        x0_at_xt, xt, time, denoiser_fn=denoiser_fn, schedule=schedule,
+    )
+    res_old = jnp.abs(fwd.forward(x0_at_xt) - y)
+    res_new = jnp.abs(fwd.forward(x0_new) - y)
+    self.assertTrue(bool(jnp.all(res_new < res_old)))
 
 
 ################################################################################
