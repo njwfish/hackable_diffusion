@@ -12,11 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Posterior-covariance operators ``v -> Cov(x_0 | x_t) v`` for Pi-GDM.
+"""Posterior-covariance matvec factories for Pi-GDM / Kalman guidance.
 
-Five choices of ``Cov(x_0 | x_t)`` that cover every published Pi-GDM /
-Kalman-guidance variant and scale cleanly to high-dimensional data
-(images):
+Each :class:`PosteriorCovarianceFn` is called once per step with
+``(xt, time, schedule, denoiser_fn)`` and returns a closure ``v -> Cov v``.
+The factory pattern hoists any one-time setup (e.g. randomized-SVD
+sketch of the denoiser Jacobian) out of CG's inner loop -- the closure
+is reused across all CG iterations for a single step.
+
+Five variants cover every published Pi-GDM / Kalman-guidance variant
+and scale cleanly to high-dimensional data (images):
 
 - :class:`IsotropicPosteriorCovarianceFn`: ``Cov = scale(alpha, sigma) I``.
   The simplest projection-style correction; ``scale = sigma^2/alpha``
@@ -32,13 +37,13 @@ Kalman-guidance variant and scale cleanly to high-dimensional data
 - :class:`TweediePosteriorCovarianceFn`: ``Cov v = (sigma^2/alpha) *
   JVP(denoiser_x0, xt, v)`` via the Miyasawa/Stein identity.  Exact
   under *any* prior the denoiser implicitly represents, at the cost of
-  an extra denoiser evaluation per matvec.
+  one denoiser-derivative per matvec.
 - :class:`LowRankTweediePosteriorCovarianceFn`: randomized-SVD
-  approximation of the denoiser Jacobian.  Pays ``~(2k + 1) * denoiser``
-  setup cost once; then each matvec is ``O(d k + k^2)``.  The right
-  choice when the implicit denoiser posterior matters but full-rank
-  JVP per CG iteration is too expensive (e.g. many-particle SMC on
-  large images).
+  approximation of the denoiser Jacobian.  Pays ``~(2 + p)(k + os)``
+  JVPs setup cost once per step (factory-time); each subsequent matvec
+  inside CG is ``O(d k + k^2)`` with no further denoiser calls.  The
+  right choice when the implicit denoiser posterior matters but
+  full-rank JVP per CG iteration is too expensive.
 
 All five satisfy :class:`PosteriorCovarianceFn` and so plug into
 :class:`KalmanCorrectionFn` interchangeably.
@@ -52,7 +57,7 @@ if needed.
 
 Modality compatibility
 ----------------------
-All three assume ``x_0`` lives in a Euclidean space where ``Cov`` is a
+All five assume ``x_0`` lives in a Euclidean space where ``Cov`` is a
 well-defined linear operator against the canonical inner product.  That
 covers Gaussian (ODE + SDE) and distributional diffusion.  For
 simplicial diffusion the "covariance" would need to be defined in the
@@ -95,10 +100,11 @@ class IsotropicPosteriorCovarianceFn(PosteriorCovarianceFn):
 
   scale_fn: ScaleFn = miyasawa_scale
 
-  def __call__(self, v, *, xt, time, schedule, denoiser_fn=None):
+  def __call__(self, *, xt, time, schedule, denoiser_fn=None):
     del xt, denoiser_fn  # state-independent
     alpha, sigma = scalar_alpha_sigma(schedule, time)
-    return self.scale_fn(alpha, sigma) * v
+    scale = self.scale_fn(alpha, sigma)
+    return lambda v: scale * v
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
@@ -124,18 +130,20 @@ class FixedPriorPosteriorCovarianceFn(PosteriorCovarianceFn):
           "Exactly one of ``prior_covariance`` or ``apply_fn`` must be set."
       )
 
-  def _apply_cov(self, v_flat: jax.Array) -> jax.Array:
-    if self.apply_fn is not None:
-      return self.apply_fn(v_flat)
-    return v_flat @ self.prior_covariance.T  # (B, n) @ (n, n)
-
-  def __call__(self, v, *, xt, time, schedule, denoiser_fn=None):
+  def __call__(self, *, xt, time, schedule, denoiser_fn=None):
     del xt, denoiser_fn  # state-independent
     alpha, sigma = scalar_alpha_sigma(schedule, time)
     scale = (sigma ** 2) / jnp.maximum(alpha, 1e-8)
-    v_flat = v.reshape(v.shape[0], -1)
-    out_flat = self._apply_cov(v_flat)
-    return scale * out_flat.reshape(v.shape)
+    apply_cov = (
+        self.apply_fn if self.apply_fn is not None
+        else (lambda v_flat: v_flat @ self.prior_covariance.T)
+    )
+
+    def matvec(v: jax.Array) -> jax.Array:
+      v_flat = v.reshape(v.shape[0], -1)
+      out_flat = apply_cov(v_flat)
+      return scale * out_flat.reshape(v.shape)
+    return matvec
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
@@ -194,7 +202,6 @@ class PCAPosteriorCovarianceFn(PosteriorCovarianceFn):
     Assumes ``covariance`` is symmetric positive semi-definite.
     """
     eigenvalues, eigenvectors = jnp.linalg.eigh(covariance)
-    # eigh returns ascending eigenvalues; reverse and truncate.
     eigenvalues = eigenvalues[::-1][:num_components]
     eigenvectors = eigenvectors[:, ::-1][:, :num_components]
     singular_values = jnp.sqrt(jnp.clip(eigenvalues, 0.0, None))
@@ -205,17 +212,23 @@ class PCAPosteriorCovarianceFn(PosteriorCovarianceFn):
         scale_fn=scale_fn,
     )
 
-  def __call__(self, v, *, xt, time, schedule, denoiser_fn=None):
+  def __call__(self, *, xt, time, schedule, denoiser_fn=None):
     del xt, denoiser_fn  # state-independent
     alpha, sigma = scalar_alpha_sigma(schedule, time)
     scale = self.scale_fn(alpha, sigma)
-    v_flat = v.reshape(v.shape[0], -1)  # (B, d)
-    coeffs = v_flat @ self.u_factor                  # (B, k)
-    if self.singular_values is not None:
-      coeffs = coeffs * (self.singular_values ** 2)  # (B, k)
-    low_rank = coeffs @ self.u_factor.T              # (B, d)
-    out_flat = low_rank + self.regulariser * v_flat
-    return scale * out_flat.reshape(v.shape)
+    u = self.u_factor
+    sv = self.singular_values
+    reg = self.regulariser
+
+    def matvec(v: jax.Array) -> jax.Array:
+      v_flat = v.reshape(v.shape[0], -1)
+      coeffs = v_flat @ u                          # (B, k)
+      if sv is not None:
+        coeffs = coeffs * (sv ** 2)
+      low_rank = coeffs @ u.T                      # (B, d)
+      out_flat = low_rank + reg * v_flat
+      return scale * out_flat.reshape(v.shape)
+    return matvec
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
@@ -227,11 +240,12 @@ class TweediePosteriorCovarianceFn(PosteriorCovarianceFn):
   mode without materialising the Jacobian.  Exact for any prior the
   denoiser implicitly represents -- Gaussian, mixture, or learned.
 
-  Requires ``denoiser_fn`` to be passed by the caller
-  (:class:`KalmanCorrectionFn` threads it through from the sampler).
+  One denoiser-derivative per matvec; with a 20-iter CG that's 20 JVPs
+  per step.  For tighter budgets, see
+  :class:`LowRankTweediePosteriorCovarianceFn`.
   """
 
-  def __call__(self, v, *, xt, time, schedule, denoiser_fn=None):
+  def __call__(self, *, xt, time, schedule, denoiser_fn=None):
     if denoiser_fn is None:
       raise ValueError(
           "TweediePosteriorCovarianceFn requires ``denoiser_fn`` (a "
@@ -239,8 +253,12 @@ class TweediePosteriorCovarianceFn(PosteriorCovarianceFn):
           "through KalmanCorrectionFn wire this in automatically."
       )
     alpha, sigma = scalar_alpha_sigma(schedule, time)
-    _, jvp = jax.jvp(denoiser_fn, (xt,), (v,))
-    return (sigma ** 2 / jnp.maximum(alpha, 1e-8)) * jvp
+    scale = (sigma ** 2) / jnp.maximum(alpha, 1e-8)
+
+    def matvec(v: jax.Array) -> jax.Array:
+      _, out = jax.jvp(denoiser_fn, (xt,), (v,))
+      return scale * out
+    return matvec
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
@@ -248,29 +266,25 @@ class LowRankTweediePosteriorCovarianceFn(PosteriorCovarianceFn):
   """``Cov v ~= (sigma^2 / alpha) * (Q T Q^T) v`` from randomized-SVD Tweedie.
 
   Builds a rank-``num_components`` Halko-Martinsson-Tropp sketch of the
-  denoiser Jacobian ``J = d(xhat_0)/d(xt)`` at the current ``xt`` and
-  applies the resulting ``Q T Q^T`` to ``v``.  Setup cost is
-  ``(1 + num_power_iters) * (num_components + oversample) + k`` JVPs;
-  each matvec thereafter is ``O(d k + k^2)``.
+  denoiser Jacobian ``J = d(xhat_0)/d(xt)`` at the current ``xt``,
+  caching ``(Q, T)`` in the returned closure.  Each subsequent matvec
+  inside CG is then ``O(d k + k^2)`` with no further denoiser calls --
+  the whole point of the factory pattern.
 
-  Compared to :class:`TweediePosteriorCovarianceFn` (full-rank JVP
-  every matvec, ~20x denoiser cost inside a 20-iter CG solve), this
-  amortises the denoiser over a one-time setup and leaves CG cheap.
-  The accuracy tradeoff is captured by ``num_components``: set it
-  large enough to cover the dominant directions of the Jacobian.
+  Setup cost (one-time, factory-time): ``(1 + num_power_iters) *
+  (num_components + oversample) + num_components`` JVPs.
+
+  Compared to :class:`TweediePosteriorCovarianceFn` (full-rank JVP every
+  matvec), this amortises the denoiser over a one-time setup; the
+  break-even point is ``cg_max_iter ~ k + 2 oversample`` for
+  ``num_power_iters=1``.
 
   If even this is too expensive -- e.g. many-particle SMC on very
   large images -- a data-agnostic fallback is to replace the
   randomized-SVD sketch with a plain fixed random projection
   ``Omega: (d, k)``: ``Cov v = (sigma^2/alpha) * Omega (Omega^T v) / k``.
-  That has no Jacobian information but costs one matvec instead of
-  ``O(k)`` denoiser evals.  Add a sibling class if you need it.
-
-  Setup is re-run per call; this means each matvec inside a CG solve
-  regenerates the sketch.  If you know the denoiser is locally linear
-  over the CG trajectory, precompute ``(Q, T)`` in the calling
-  correction instead -- but most denoisers are not, so the default is
-  the safer per-call sketch.
+  That has no Jacobian information but skips the JVP setup entirely.
+  Add a sibling class if you need it.
   """
 
   num_components: int
@@ -280,7 +294,7 @@ class LowRankTweediePosteriorCovarianceFn(PosteriorCovarianceFn):
       default_factory=lambda: jax.random.PRNGKey(0),
   )
 
-  def __call__(self, v, *, xt, time, schedule, denoiser_fn=None):
+  def __call__(self, *, xt, time, schedule, denoiser_fn=None):
     if denoiser_fn is None:
       raise ValueError(
           'LowRankTweediePosteriorCovarianceFn requires ``denoiser_fn``; '
@@ -293,10 +307,7 @@ class LowRankTweediePosteriorCovarianceFn(PosteriorCovarianceFn):
       _, out = jax.jvp(denoiser_fn, (xt,), (w,))
       return out
 
-    # ``rng_key`` is a concrete array stored in the dataclass; the sketch
-    # is deterministic and reproducible across calls (same key every
-    # matvec inside a CG solve, which is fine -- the sketch averages
-    # noise across components so a single fixed key is sufficient).
+    # Sketch built ONCE, captured in the closure below.
     q, t = randomized_svd_jvp(
         jvp_fn, xt,
         num_components=self.num_components,
@@ -304,9 +315,11 @@ class LowRankTweediePosteriorCovarianceFn(PosteriorCovarianceFn):
         oversample=self.oversample,
         num_power_iters=self.num_power_iters,
     )
-    # q: (B, d, k); t: (B, k, k); v: (B, *spatial).
-    v_flat = v.reshape(v.shape[0], -1)                 # (B, d)
-    coeffs = jnp.einsum('bdk,bd->bk', q, v_flat)       # (B, k)
-    coeffs = jnp.einsum('bij,bj->bi', t, coeffs)       # (B, k)
-    out_flat = jnp.einsum('bdk,bk->bd', q, coeffs)     # (B, d)
-    return scale * out_flat.reshape(v.shape)
+
+    def matvec(v: jax.Array) -> jax.Array:
+      v_flat = v.reshape(v.shape[0], -1)              # (B, d)
+      coeffs = jnp.einsum('bdk,bd->bk', q, v_flat)    # (B, k)
+      coeffs = jnp.einsum('bij,bj->bi', t, coeffs)    # (B, k)
+      out_flat = jnp.einsum('bdk,bk->bd', q, coeffs)  # (B, d)
+      return scale * out_flat.reshape(v.shape)
+    return matvec

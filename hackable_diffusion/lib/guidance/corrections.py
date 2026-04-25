@@ -147,11 +147,15 @@ class KalmanCorrectionFn(CorrectionFn):
     adjoint = linear_adjoint(self.forward_fn, x0)
     sigma_y2 = max(float(self.observation_noise) ** 2, 1e-30)
 
+    # Build the Cov matvec ONCE per Kalman call; reuse across CG iterations
+    # and the final ``x0 + apply_cov(w)`` step.  For LowRankTweedie this
+    # hoists the randomized-SVD sketch out of the inner loop.
+    cov_matvec = self.posterior_covariance_fn(
+        xt=xt, time=time, schedule=schedule, denoiser_fn=denoiser_fn,
+    )
+
     def apply_cov(w):
-      return self.posterior_covariance_fn(
-          adjoint(w), xt=xt, time=time, schedule=schedule,
-          denoiser_fn=denoiser_fn,
-      )
+      return cov_matvec(adjoint(w))
 
     def matvec(w):  # (A Sigma A^T + sigma_y^2 I) w
       return self.forward_fn.forward(apply_cov(w)) + sigma_y2 * w

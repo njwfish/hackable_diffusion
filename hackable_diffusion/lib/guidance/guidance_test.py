@@ -599,7 +599,7 @@ class IsotropicPosteriorCovarianceTest(unittest.TestCase):
     op = IsotropicPosteriorCovarianceFn()
     v = jnp.ones((2, 4), dtype=jnp.float64)
     t = jnp.asarray([0.3], dtype=jnp.float64)
-    out = op(v, xt=v, time=t, schedule=schedule)
+    out = op(xt=v, time=t, schedule=schedule)(v)
     alpha, sigma = scalar_alpha_sigma(schedule, t)
     self.assertTrue(jnp.allclose(
         out, (sigma ** 2 / alpha) * v, atol=1e-12,
@@ -611,7 +611,7 @@ class IsotropicPosteriorCovarianceTest(unittest.TestCase):
         scale_fn=lambda alpha, sigma: jnp.asarray(3.0, dtype=alpha.dtype),
     )
     v = jnp.ones((2, 4), dtype=jnp.float64)
-    out = op(v, xt=v, time=jnp.asarray([0.5]), schedule=schedule)
+    out = op(xt=v, time=jnp.asarray([0.5]), schedule=schedule)(v)
     self.assertTrue(jnp.allclose(out, 3.0 * v, atol=1e-12))
 
 
@@ -623,7 +623,7 @@ class FixedPriorPosteriorCovarianceTest(unittest.TestCase):
     op = FixedPriorPosteriorCovarianceFn(prior_covariance=C)
     v = jnp.asarray([[1.0, 0.0], [0.0, 1.0]], dtype=jnp.float64)
     t = jnp.asarray([0.5], dtype=jnp.float64)
-    out = op(v, xt=v, time=t, schedule=schedule)
+    out = op(xt=v, time=t, schedule=schedule)(v)
     alpha, sigma = scalar_alpha_sigma(schedule, t)
     expected = (sigma ** 2 / alpha) * (v @ C.T)
     self.assertTrue(jnp.allclose(out, expected, atol=1e-12))
@@ -637,8 +637,8 @@ class FixedPriorPosteriorCovarianceTest(unittest.TestCase):
     )
     v = jnp.asarray([[1.0, -1.0]], dtype=jnp.float64)
     t = jnp.asarray([0.5], dtype=jnp.float64)
-    a = op_dense(v, xt=v, time=t, schedule=schedule)
-    b = op_apply(v, xt=v, time=t, schedule=schedule)
+    a = op_dense(xt=v, time=t, schedule=schedule)(v)
+    b = op_apply(xt=v, time=t, schedule=schedule)(v)
     self.assertTrue(jnp.allclose(a, b, atol=1e-12))
 
   def test_requires_exactly_one_operator(self):
@@ -665,7 +665,7 @@ class TweediePosteriorCovarianceTest(unittest.TestCase):
     op = TweediePosteriorCovarianceFn()
     v = jnp.asarray([[1.0, 2.0, 3.0, 4.0]], dtype=jnp.float64)
     t = jnp.asarray([0.4], dtype=jnp.float64)
-    out = op(v, xt=v, time=t, schedule=schedule, denoiser_fn=denoiser)
+    out = op(xt=v, time=t, schedule=schedule, denoiser_fn=denoiser)(v)
     alpha, sigma = scalar_alpha_sigma(schedule, t)
     expected = (sigma ** 2 / alpha) * (v @ G.T)
     self.assertTrue(jnp.allclose(out, expected, atol=1e-10))
@@ -675,7 +675,7 @@ class TweediePosteriorCovarianceTest(unittest.TestCase):
     op = TweediePosteriorCovarianceFn()
     v = jnp.ones((1, 2))
     with self.assertRaises(ValueError):
-      op(v, xt=v, time=jnp.asarray([0.5]), schedule=schedule)
+      op(xt=v, time=jnp.asarray([0.5]), schedule=schedule)
 
 
 class PCAPosteriorCovarianceTest(unittest.TestCase):
@@ -691,8 +691,8 @@ class PCAPosteriorCovarianceTest(unittest.TestCase):
     iso = IsotropicPosteriorCovarianceFn()
     v = jax.random.normal(jax.random.PRNGKey(1), (2, d), dtype=jnp.float64)
     t = jnp.asarray([0.3], dtype=jnp.float64)
-    a = pca(v, xt=v, time=t, schedule=schedule)
-    b = iso(v, xt=v, time=t, schedule=schedule)
+    a = pca(xt=v, time=t, schedule=schedule)(v)
+    b = iso(xt=v, time=t, schedule=schedule)(v)
     self.assertTrue(jnp.allclose(a, b, atol=1e-10))
 
   def test_from_covariance_matches_fixed_prior_at_full_rank(self):
@@ -707,8 +707,8 @@ class PCAPosteriorCovarianceTest(unittest.TestCase):
     fixed = FixedPriorPosteriorCovarianceFn(prior_covariance=c)
     v = jax.random.normal(jax.random.PRNGKey(2), (3, d), dtype=jnp.float64)
     t = jnp.asarray([0.4], dtype=jnp.float64)
-    a = pca(v, xt=v, time=t, schedule=schedule)
-    b = fixed(v, xt=v, time=t, schedule=schedule)
+    a = pca(xt=v, time=t, schedule=schedule)(v)
+    b = fixed(xt=v, time=t, schedule=schedule)(v)
     self.assertTrue(jnp.allclose(a, b, atol=1e-9))
 
   def test_truncated_rank_captures_dominant_directions(self):
@@ -726,9 +726,9 @@ class PCAPosteriorCovarianceTest(unittest.TestCase):
     fixed = FixedPriorPosteriorCovarianceFn(prior_covariance=c)
     v = jax.random.normal(jax.random.PRNGKey(3), (1, d), dtype=jnp.float64)
     t = jnp.asarray([0.5], dtype=jnp.float64)
-    full = fixed(v, xt=v, time=t, schedule=schedule)
-    at_2 = pca2(v, xt=v, time=t, schedule=schedule)
-    at_1 = pca1(v, xt=v, time=t, schedule=schedule)
+    full = fixed(xt=v, time=t, schedule=schedule)(v)
+    at_2 = pca2(xt=v, time=t, schedule=schedule)(v)
+    at_1 = pca1(xt=v, time=t, schedule=schedule)(v)
     self.assertTrue(jnp.allclose(at_2, full, atol=1e-9))
     # k=1 drops the smaller-eigenvalue mode and therefore differs.
     self.assertFalse(jnp.allclose(at_1, full, atol=1e-2))
@@ -750,7 +750,7 @@ class PCAPosteriorCovarianceTest(unittest.TestCase):
     v = jax.random.normal(
         jax.random.PRNGKey(1), (2, h, w, c), dtype=jnp.float64,
     )
-    out = pca(v, xt=v, time=jnp.asarray([0.3]), schedule=schedule)
+    out = pca(xt=v, time=jnp.asarray([0.3]), schedule=schedule)(v)
     self.assertEqual(out.shape, v.shape)
 
   def test_regulariser_adds_isotropic_component(self):
@@ -764,8 +764,8 @@ class PCAPosteriorCovarianceTest(unittest.TestCase):
     pca_no_reg = PCAPosteriorCovarianceFn(u_factor=u, regulariser=0.0)
     v = jnp.ones((1, d), dtype=jnp.float64)
     t = jnp.asarray([0.4], dtype=jnp.float64)
-    out_reg = pca(v, xt=v, time=t, schedule=schedule)
-    out_no = pca_no_reg(v, xt=v, time=t, schedule=schedule)
+    out_reg = pca(xt=v, time=t, schedule=schedule)(v)
+    out_no = pca_no_reg(xt=v, time=t, schedule=schedule)(v)
     alpha, sigma = scalar_alpha_sigma(schedule, t)
     expected_diff = (sigma ** 2 / alpha) * 0.5 * v
     self.assertTrue(jnp.allclose(out_reg - out_no, expected_diff, atol=1e-12))
@@ -792,11 +792,11 @@ class LowRankTweediePosteriorCovarianceTest(unittest.TestCase):
     t = jnp.asarray([0.4], dtype=jnp.float64)
 
     full = TweediePosteriorCovarianceFn()(
-        v, xt=v, time=t, schedule=schedule, denoiser_fn=denoiser,
-    )
+        xt=v, time=t, schedule=schedule, denoiser_fn=denoiser,
+    )(v)
     lowrank = LowRankTweediePosteriorCovarianceFn(
         num_components=d, oversample=2, num_power_iters=0,
-    )(v, xt=v, time=t, schedule=schedule, denoiser_fn=denoiser)
+    )(xt=v, time=t, schedule=schedule, denoiser_fn=denoiser)(v)
     self.assertTrue(jnp.allclose(full, lowrank, atol=1e-6))
 
   def test_truncated_rank_approximates_not_equals(self):
@@ -814,7 +814,7 @@ class LowRankTweediePosteriorCovarianceTest(unittest.TestCase):
     op = LowRankTweediePosteriorCovarianceFn(
         num_components=3, oversample=2, num_power_iters=1,
     )
-    out = op(v, xt=v, time=t, schedule=schedule, denoiser_fn=denoiser)
+    out = op(xt=v, time=t, schedule=schedule, denoiser_fn=denoiser)(v)
     self.assertEqual(out.shape, v.shape)
     self.assertTrue(jnp.all(jnp.isfinite(out)))
 
@@ -823,7 +823,7 @@ class LowRankTweediePosteriorCovarianceTest(unittest.TestCase):
     op = LowRankTweediePosteriorCovarianceFn(num_components=2)
     v = jnp.ones((1, 4))
     with self.assertRaises(ValueError):
-      op(v, xt=v, time=jnp.asarray([0.5]), schedule=schedule)
+      op(xt=v, time=jnp.asarray([0.5]), schedule=schedule)
 
   def test_image_shape_preserved(self):
     schedule = schedules.CosineSchedule()
@@ -838,8 +838,8 @@ class LowRankTweediePosteriorCovarianceTest(unittest.TestCase):
         jax.random.PRNGKey(1), (2, h, w, c), dtype=jnp.float64,
     )
     op = LowRankTweediePosteriorCovarianceFn(num_components=4)
-    out = op(v, xt=v, time=jnp.asarray([0.3]),
-             schedule=schedule, denoiser_fn=denoiser)
+    out = op(xt=v, time=jnp.asarray([0.3]),
+             schedule=schedule, denoiser_fn=denoiser)(v)
     self.assertEqual(out.shape, v.shape)
     self.assertTrue(jnp.all(jnp.isfinite(out)))
 

@@ -43,7 +43,7 @@ Gaussian-modality.
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, Callable, Protocol
 
 import jax
 
@@ -81,18 +81,29 @@ class ForwardFn(Protocol):
 
 
 class PosteriorCovarianceFn(Protocol):
-  """Linear operator ``v -> Cov(x_0 | x_t) v`` at a given ``(xt, time)``.
+  """Matvec factory: ``(xt, time, ...) -> (v -> Cov(x_0 | x_t) v)``.
+
+  Calling a :class:`PosteriorCovarianceFn` at a given step builds and
+  returns a JAX-traceable closure that maps ``v`` to ``Cov v``.  This
+  factory pattern lets implementations that need expensive one-time
+  setup (the randomized-SVD sketch in
+  :class:`LowRankTweediePosteriorCovarianceFn`) hoist the setup out of
+  CG's inner loop -- :class:`KalmanCorrectionFn` calls the factory
+  once per step, then invokes the returned closure per CG iteration.
 
   Built-in variants:
 
   - :class:`IsotropicPosteriorCovarianceFn`: ``Cov = scale(alpha, sigma) I``.
   - :class:`FixedPriorPosteriorCovarianceFn`: ``Cov = (sigma^2/alpha) C``
     for a known prior covariance ``C``.
+  - :class:`PCAPosteriorCovarianceFn`: rank-``k`` PCA factor.
   - :class:`TweediePosteriorCovarianceFn`: exact Miyasawa JVP through
     the denoiser.  Requires a non-None ``denoiser_fn``.
+  - :class:`LowRankTweediePosteriorCovarianceFn`: randomized-SVD sketch
+    of the denoiser Jacobian, computed once per call.
 
-  State-independent variants ignore ``denoiser_fn``; Tweedie requires
-  it and raises when absent.
+  State-independent variants ignore ``denoiser_fn``; Tweedie variants
+  require it and raise when absent.
 
   Modality: assumes a Euclidean inner product on ``x_0``; use a
   dedicated simplex-aware operator for simplicial diffusion.
@@ -100,13 +111,12 @@ class PosteriorCovarianceFn(Protocol):
 
   def __call__(
       self,
-      v: jax.Array,
       *,
       xt: jax.Array,
       time: jax.Array,
       schedule: Any,
       denoiser_fn: DenoiserFn | None = None,
-  ) -> jax.Array: ...
+  ) -> Callable[[jax.Array], jax.Array]: ...
 
 
 class CorrectionFn(Protocol):
