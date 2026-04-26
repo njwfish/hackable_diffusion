@@ -48,7 +48,11 @@ from typing import Any, Callable
 import jax
 import jax.numpy as jnp
 
-from hackable_diffusion.lib.guidance.linalg import batched_cg, linear_adjoint
+from hackable_diffusion.lib.guidance.linalg import (
+    batched_cg,
+    batched_minres,
+    linear_adjoint,
+)
 from hackable_diffusion.lib.guidance.protocols import (
     CorrectionFn,
     DenoiserFn,
@@ -108,6 +112,12 @@ PrefactorFn = Callable[..., jax.Array]
 ################################################################################
 
 
+SOLVERS: dict[str, Callable] = {
+    'cg': batched_cg,
+    'minres': batched_minres,
+}
+
+
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class KalmanCorrectionFn(CorrectionFn):
   """Closed-form Kalman update on ``x_0``.
@@ -123,9 +133,21 @@ class KalmanCorrectionFn(CorrectionFn):
   - :class:`TweediePosteriorCovarianceFn`: exact under any prior via
     Miyasawa JVP through the denoiser.
 
-  The ``(A Sigma A^T + sigma_y^2 I) z = r`` solve is batched CG --
-  posterior covariance only needs a matvec; the Jacobian is never
-  materialised.  The adjoint of ``forward_fn`` comes from ``jax.vjp``.
+  The ``(A Sigma A^T + sigma_y^2 I) z = r`` solve is iterative;
+  posterior covariance only needs a matvec.  Two solvers ship in
+  ``SOLVERS``:
+
+  - ``'cg'`` (default): conjugate gradient.  Cheaper per iteration but
+    requires the Kalman matrix to be symmetric *positive-definite*.
+    Right choice when ``Sigma`` is PSD --
+    :class:`IsotropicPosteriorCovarianceFn`,
+    :class:`FixedPriorPosteriorCovarianceFn`,
+    :class:`PCAPosteriorCovarianceFn`,
+    :class:`LowRankTweediePosteriorCovarianceFn` with ``project_psd=True``.
+  - ``'minres'``: minimum-residual.  Handles symmetric *indefinite*
+    operators correctly; pick this when ``Sigma`` is symmetric but may
+    have negative eigenvalues -- :class:`TweediePosteriorCovarianceFn`
+    on a non-Bayes-optimal denoiser.
   """
 
   observation: jax.Array
@@ -134,6 +156,7 @@ class KalmanCorrectionFn(CorrectionFn):
   observation_noise: float = 0.1
   cg_max_iter: int = 20
   cg_tol: float = 1e-6
+  solver: str = 'cg'
 
   def __call__(
       self,
@@ -161,7 +184,11 @@ class KalmanCorrectionFn(CorrectionFn):
       return self.forward_fn.forward(apply_cov(w)) + sigma_y2 * w
 
     residual = self.observation - self.forward_fn.forward(x0)
-    w = batched_cg(
+    if self.solver not in SOLVERS:
+      raise ValueError(
+          f'Unknown solver {self.solver!r}; choose from {sorted(SOLVERS)}.'
+      )
+    w = SOLVERS[self.solver](
         matvec, residual, max_iter=self.cg_max_iter, tol=self.cg_tol,
     )
     return x0 + apply_cov(w)

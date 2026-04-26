@@ -123,6 +123,7 @@ class FixedPriorPosteriorCovarianceFn(PosteriorCovarianceFn):
 
   prior_covariance: jax.Array | None = None
   apply_fn: Callable[[jax.Array], jax.Array] | None = None
+  scale_fn: ScaleFn = miyasawa_scale
 
   def __post_init__(self):
     if (self.prior_covariance is None) == (self.apply_fn is None):
@@ -133,7 +134,7 @@ class FixedPriorPosteriorCovarianceFn(PosteriorCovarianceFn):
   def __call__(self, *, xt, time, schedule, denoiser_fn=None):
     del xt, denoiser_fn  # state-independent
     alpha, sigma = scalar_alpha_sigma(schedule, time)
-    scale = (sigma ** 2) / jnp.maximum(alpha, 1e-8)
+    scale = self.scale_fn(alpha, sigma)
     apply_cov = (
         self.apply_fn if self.apply_fn is not None
         else (lambda v_flat: v_flat @ self.prior_covariance.T)
@@ -251,6 +252,7 @@ class TweediePosteriorCovarianceFn(PosteriorCovarianceFn):
   """
 
   symmetrize: bool = True
+  scale_fn: ScaleFn = miyasawa_scale
 
   def __call__(self, *, xt, time, schedule, denoiser_fn=None):
     if denoiser_fn is None:
@@ -260,7 +262,7 @@ class TweediePosteriorCovarianceFn(PosteriorCovarianceFn):
           "through KalmanCorrectionFn wire this in automatically."
       )
     alpha, sigma = scalar_alpha_sigma(schedule, time)
-    scale = (sigma ** 2) / jnp.maximum(alpha, 1e-8)
+    scale = self.scale_fn(alpha, sigma)
 
     if self.symmetrize:
       _, vjp_fn = jax.vjp(denoiser_fn, xt)
@@ -317,6 +319,7 @@ class LowRankTweediePosteriorCovarianceFn(PosteriorCovarianceFn):
   symmetrize: bool = True
   project_psd: bool = True
   psd_floor: float = 0.0
+  scale_fn: ScaleFn = miyasawa_scale
   rng_key: jax.Array = dataclasses.field(
       default_factory=lambda: jax.random.PRNGKey(0),
   )
@@ -328,7 +331,7 @@ class LowRankTweediePosteriorCovarianceFn(PosteriorCovarianceFn):
           'KalmanCorrectionFn threads it in automatically.'
       )
     alpha, sigma = scalar_alpha_sigma(schedule, time)
-    scale = (sigma ** 2) / jnp.maximum(alpha, 1e-8)
+    scale = self.scale_fn(alpha, sigma)
 
     def jvp_fn(w):
       _, out = jax.jvp(denoiser_fn, (xt,), (w,))

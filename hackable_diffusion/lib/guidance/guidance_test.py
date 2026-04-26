@@ -67,6 +67,7 @@ from hackable_diffusion.lib.guidance.forward_ops import (
 from hackable_diffusion.lib.guidance.linalg import (
     batch_inner,
     batched_cg,
+    batched_minres,
     linear_adjoint,
 )
 from hackable_diffusion.lib.guidance.posterior_covariance import (
@@ -568,6 +569,43 @@ class LinAlgTest(unittest.TestCase):
     x = batched_cg(matvec, residual, max_iter=50, tol=1e-10)
     self.assertTrue(jnp.allclose(x, x_true, atol=1e-6))
 
+  def test_batched_minres_solves_indefinite_system(self):
+    # M has both positive and negative eigenvalues; CG would struggle.
+    M = jnp.asarray([
+        [[2.0, 0.5, 0.0, 0.1],
+         [0.5, -1.0, 0.3, 0.0],
+         [0.0, 0.3, 1.5, 0.2],
+         [0.1, 0.0, 0.2, 0.8]],
+        [[1.0, 0.0, 0.2, 0.0],
+         [0.0, 3.0, 0.1, 0.0],
+         [0.2, 0.1, -0.5, 0.0],
+         [0.0, 0.0, 0.0, 2.0]],
+    ], dtype=jnp.float64)
+    rhs = jnp.asarray(
+        [[1.0, 2.0, -1.0, 0.5], [0.0, 1.0, 0.0, 0.5]],
+        dtype=jnp.float64,
+    )
+    def matvec(v):
+      return jnp.einsum('bij,bj->bi', M, v)
+    z = batched_minres(matvec, rhs, max_iter=200, tol=1e-12)
+    recon = jnp.einsum('bij,bj->bi', M, z)
+    self.assertTrue(jnp.allclose(recon, rhs, atol=1e-9))
+
+  def test_batched_minres_matches_cg_on_psd(self):
+    # On a PSD matrix MINRES and CG should both converge to the same solution.
+    rng = jax.random.PRNGKey(0)
+    B, n = 2, 5
+    A = jax.random.normal(rng, (B, n, n), dtype=jnp.float64)
+    M = jnp.einsum('bij,bkj->bik', A, A) + 0.5 * jnp.eye(n)[None]
+    x_true = jax.random.normal(jax.random.PRNGKey(1), (B, n), dtype=jnp.float64)
+    rhs = jnp.einsum('bij,bj->bi', M, x_true)
+    def matvec(v):
+      return jnp.einsum('bij,bj->bi', M, v)
+    x_cg = batched_cg(matvec, rhs, max_iter=200, tol=1e-12)
+    x_minres = batched_minres(matvec, rhs, max_iter=200, tol=1e-12)
+    self.assertTrue(jnp.allclose(x_cg, x_true, atol=1e-8))
+    self.assertTrue(jnp.allclose(x_minres, x_true, atol=1e-8))
+
   def test_linear_adjoint_matches_matrix_transpose(self):
     # forward = linear map x -> x @ W.T, adjoint should be w -> w @ W.
     rng = jax.random.PRNGKey(0)
@@ -1007,6 +1045,43 @@ class KalmanCorrectionTest(unittest.TestCase):
         x0, xt, time, denoiser_fn=denoiser_fn, schedule=schedule,
     )
     res_old = jnp.abs(fwd.forward(x0) - y)
+    res_new = jnp.abs(fwd.forward(x0_new) - y)
+    self.assertTrue(bool(jnp.all(res_new < res_old)))
+
+  def test_full_tweedie_with_minres_reduces_residual(self):
+    # Indefinite Tweedie covariance + MINRES solver: full Tweedie should
+    # work even when symmetrize alone leaves negative eigenvalues.  Use
+    # a non-PSD denoiser whose Jacobian's symmetrisation is indefinite.
+    schedule, corruption, fwd, x0, y = self._setup()
+    n = x0.shape[1]
+    del x0
+
+    # Linear "denoiser" with a non-symmetric, non-PSD Jacobian.
+    rng = jax.random.PRNGKey(7)
+    G = jax.random.normal(rng, (n, n), dtype=jnp.float64) * 0.5
+    G_sym = 0.5 * (G + G.T)
+    # Confirm symmetrised G has at least one negative eigenvalue.
+    eigs = jnp.linalg.eigvalsh(G_sym)
+    self.assertTrue(bool(jnp.any(eigs < 0.0)))
+
+    def inference_fn(xt, time, conditioning=None):
+      del time, conditioning
+      return {"x0": xt @ G.T}
+
+    correction = KalmanCorrectionFn(
+        observation=y, forward_fn=fwd,
+        posterior_covariance_fn=TweediePosteriorCovarianceFn(symmetrize=True),
+        observation_noise=0.5, cg_max_iter=80, cg_tol=1e-10,
+        solver='minres',
+    )
+    xt = jnp.full((y.shape[0], n), 0.3, dtype=jnp.float64)
+    time = jnp.asarray([0.5], dtype=jnp.float64)
+    denoiser_fn = make_denoiser_fn(inference_fn, corruption, time=time)
+    x0_at_xt = denoiser_fn(xt)
+    x0_new = correction(
+        x0_at_xt, xt, time, denoiser_fn=denoiser_fn, schedule=schedule,
+    )
+    res_old = jnp.abs(fwd.forward(x0_at_xt) - y)
     res_new = jnp.abs(fwd.forward(x0_new) - y)
     self.assertTrue(bool(jnp.all(res_new < res_old)))
 

@@ -21,7 +21,13 @@ Primitives used by :class:`PiGDMCorrectionFn` and its extensions:
 - :func:`batched_cg`: conjugate-gradient solver running one independent
   system per batch element.  Every per-particle inner-product and scalar
   update is taken elementwise along the batch axis, so B sub-problems
-  are solved in parallel within a single ``lax.while_loop``.
+  are solved in parallel within a single ``lax.while_loop``.  Requires
+  the operator to be symmetric *positive-definite*.
+- :func:`batched_minres`: minimum-residual solver for symmetric
+  *indefinite* systems (Paige-Saunders 1975).  Same batched-while-loop
+  pattern as ``batched_cg``; use it when the Kalman matrix is symmetric
+  but its eigenvalues may be negative -- e.g. full Tweedie posterior
+  covariance on a non-Bayes-optimal denoiser.
 - :func:`linear_adjoint`: return the adjoint map ``A^T`` of a linear
   ``ForwardFn`` at a given input via ``jax.vjp``.
 - :func:`randomized_svd_jvp`: rank-``k`` randomized SVD of a linear
@@ -101,6 +107,124 @@ def batched_cg(
   init = (z, r, p, rs_old, rs_init, jnp.int32(0))
   z, *_ = jax.lax.while_loop(cond, body, init)
   return z
+
+
+def batched_minres(
+    matvec: Callable[[jax.Array], jax.Array],
+    residual: jax.Array,
+    *,
+    max_iter: int = 50,
+    tol: float = 1e-6,
+) -> jax.Array:
+  """MINRES for symmetric (possibly indefinite) operators, batched per particle.
+
+  Solves ``M_i z_i = residual_i`` for every ``i`` in the leading batch
+  axis.  ``M`` is assumed *symmetric* -- if it is also positive-definite
+  use :func:`batched_cg` (cheaper per iteration); MINRES is the right
+  choice when ``M`` has negative eigenvalues.
+
+  Algorithm follows the Paige-Saunders / scipy formulation: Lanczos
+  tridiagonalisation interleaved with a Givens-rotation QR
+  factorisation of the resulting tridiagonal.  All per-particle scalars
+  and vectors are batched across the leading axis inside a single
+  ``lax.while_loop``.  Each iteration costs one matvec plus a constant
+  number of inner products and elementwise updates.
+
+  Convergence stops per-particle when ``||r_k|| <= tol * ||r_0||`` or
+  after ``max_iter`` iterations; inactive particles freeze.
+  """
+  ref_ndim = residual.ndim
+
+  def _b(s):
+    return _broadcast_scalars(s, ref_ndim)
+
+  zero_v = jnp.zeros_like(residual)
+  zero_s = jnp.zeros(residual.shape[0], dtype=residual.dtype)
+
+  beta_init = jnp.sqrt(jnp.maximum(batch_inner(residual, residual), 0.0))
+  beta_safe = jnp.maximum(beta_init, 1e-30)
+
+  # Lanczos: r1 = old residual vector (used to build v_{k-1}); r2 = current
+  # residual vector (built into v_k via division by beta).
+  r1 = residual
+  r2 = residual
+  init_state = dict(
+      x=zero_v,
+      r1=r1, r2=r2,
+      beta_old=zero_s, beta=beta_init,
+      cs=-jnp.ones_like(beta_init), sn=zero_s,
+      dbar=zero_s, eps=zero_s,
+      phibar=beta_init,
+      w=zero_v, w_old=zero_v,
+      i=jnp.int32(0),
+  )
+
+  rs_init = jnp.maximum(beta_init ** 2, 1e-30)
+  tol_sq = tol ** 2
+
+  def cond(state):
+    return (state['i'] < max_iter) & jnp.any(
+        state['phibar'] ** 2 > tol_sq * rs_init,
+    )
+
+  def body(state):
+    beta_safe = jnp.maximum(state['beta'], 1e-30)
+    v = state['r2'] / _b(beta_safe)
+    Av = matvec(v)
+    # y = A v - (beta / beta_old) r1, valid only when k > 0; on the first
+    # iteration beta_old = 0 so the second term must drop -- handled by
+    # the safe-divide below.
+    beta_old_safe = jnp.maximum(state['beta_old'], 1e-30)
+    coef = jnp.where(state['i'] >= 1, state['beta'] / beta_old_safe, 0.0)
+    y = Av - _b(coef) * state['r1']
+
+    alfa = batch_inner(v, y)
+    y = y - _b(alfa / beta_safe) * state['r2']
+
+    r1 = state['r2']
+    r2 = y
+    beta_old = state['beta']
+    beta_new = jnp.sqrt(jnp.maximum(batch_inner(r2, r2), 0.0))
+
+    # Apply previous Givens rotation Q_{k-1} to the new tridiagonal column.
+    eps_old = state['eps']  # epsilon_{k} from previous iter ("oldeps")
+    delta = state['cs'] * state['dbar'] + state['sn'] * alfa
+    gbar = state['sn'] * state['dbar'] - state['cs'] * alfa
+    eps = state['sn'] * beta_new
+    dbar = -state['cs'] * beta_new
+
+    # Compute the new rotation Q_k.
+    gamma = jnp.sqrt(jnp.maximum(gbar ** 2 + beta_new ** 2, 0.0))
+    gamma_safe = jnp.maximum(gamma, 1e-30)
+    cs = gbar / gamma_safe
+    sn = beta_new / gamma_safe
+    phi = cs * state['phibar']
+    phibar_new = sn * state['phibar']
+
+    # Update solution.
+    w_new = (v - _b(eps_old) * state['w_old'] - _b(delta) * state['w']) / _b(gamma_safe)
+    x_new = state['x'] + _b(phi) * w_new
+
+    # Freeze inactive particles.
+    active = state['phibar'] ** 2 > tol_sq * rs_init
+    where_v = _b(active.astype(residual.dtype))
+
+    return dict(
+        x=jnp.where(where_v > 0, x_new, state['x']),
+        r1=r1, r2=r2,
+        beta_old=beta_old, beta=beta_new,
+        cs=jnp.where(active, cs, state['cs']),
+        sn=jnp.where(active, sn, state['sn']),
+        dbar=jnp.where(active, dbar, state['dbar']),
+        eps=jnp.where(active, eps, state['eps']),
+        phibar=jnp.where(active, phibar_new, state['phibar']),
+        w=jnp.where(where_v > 0, w_new, state['w']),
+        w_old=state['w'],
+        i=state['i'] + 1,
+    )
+
+  out = jax.lax.while_loop(cond, body, init_state)
+  return out['x']
 
 
 def linear_adjoint(
