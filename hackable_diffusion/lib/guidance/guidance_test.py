@@ -652,7 +652,7 @@ class FixedPriorPosteriorCovarianceTest(unittest.TestCase):
 
 class TweediePosteriorCovarianceTest(unittest.TestCase):
 
-  def test_linear_denoiser_recovers_scaled_gain(self):
+  def test_linear_denoiser_no_symmetrize_recovers_scaled_gain(self):
     # If denoiser_fn(xt) = G xt for a fixed matrix G, then JVP(denoiser, xt, v)
     # = G v and the operator returns (sigma^2/alpha) * G v.
     schedule = schedules.CosineSchedule()
@@ -662,12 +662,32 @@ class TweediePosteriorCovarianceTest(unittest.TestCase):
     def denoiser(x):
       return x @ G.T
 
-    op = TweediePosteriorCovarianceFn()
+    op = TweediePosteriorCovarianceFn(symmetrize=False)
     v = jnp.asarray([[1.0, 2.0, 3.0, 4.0]], dtype=jnp.float64)
     t = jnp.asarray([0.4], dtype=jnp.float64)
     out = op(xt=v, time=t, schedule=schedule, denoiser_fn=denoiser)(v)
     alpha, sigma = scalar_alpha_sigma(schedule, t)
     expected = (sigma ** 2 / alpha) * (v @ G.T)
+    self.assertTrue(jnp.allclose(out, expected, atol=1e-10))
+
+  def test_linear_denoiser_symmetrize_uses_half_J_plus_JT(self):
+    # With symmetrize=True (default), Cov v = (sigma^2/alpha) * (J + J^T)/2 v
+    # = (sigma^2/alpha) * (G + G^T)/2 v.  Independent of orientation of v
+    # under (G + G^T) symmetric.
+    schedule = schedules.CosineSchedule()
+    rng = jax.random.PRNGKey(0)
+    n = 4
+    G = jax.random.normal(rng, (n, n), dtype=jnp.float64)
+    G_sym = 0.5 * (G + G.T)
+    def denoiser(x):
+      return x @ G.T
+
+    op = TweediePosteriorCovarianceFn()  # symmetrize default True
+    v = jnp.asarray([[1.0, 2.0, 3.0, 4.0]], dtype=jnp.float64)
+    t = jnp.asarray([0.4], dtype=jnp.float64)
+    out = op(xt=v, time=t, schedule=schedule, denoiser_fn=denoiser)(v)
+    alpha, sigma = scalar_alpha_sigma(schedule, t)
+    expected = (sigma ** 2 / alpha) * (v @ G_sym.T)
     self.assertTrue(jnp.allclose(out, expected, atol=1e-10))
 
   def test_missing_denoiser_raises(self):
@@ -773,18 +793,17 @@ class PCAPosteriorCovarianceTest(unittest.TestCase):
 
 class LowRankTweediePosteriorCovarianceTest(unittest.TestCase):
 
-  def test_linear_denoiser_recovers_scaled_jacobian_in_rank_subspace(self):
-    # For a linear denoiser G, the Jacobian is G everywhere.  The
-    # randomized-SVD sketch should match the full Tweedie operator on
-    # vectors whose image under G lives in the top-k subspace of G.
-    # With k = full rank, it should match on arbitrary v to high
-    # accuracy.
+  def test_linear_psd_denoiser_recovers_scaled_jacobian(self):
+    # With a symmetric PSD denoiser Jacobian, full-rank low-rank Tweedie
+    # (symmetrize + project_psd defaults) reproduces full Tweedie's
+    # output to high accuracy.
     schedule = schedules.CosineSchedule()
     rng = jax.random.PRNGKey(0)
     d = 6
-    g = jax.random.normal(rng, (d, d), dtype=jnp.float64)
+    g0 = jax.random.normal(rng, (d, d), dtype=jnp.float64)
+    g_psd = g0 @ g0.T  # symmetric PSD
     def denoiser(x):
-      return x @ g.T
+      return x @ g_psd.T
 
     v = jax.random.normal(
         jax.random.PRNGKey(1), (1, d), dtype=jnp.float64,
@@ -798,6 +817,35 @@ class LowRankTweediePosteriorCovarianceTest(unittest.TestCase):
         num_components=d, oversample=2, num_power_iters=0,
     )(xt=v, time=t, schedule=schedule, denoiser_fn=denoiser)(v)
     self.assertTrue(jnp.allclose(full, lowrank, atol=1e-6))
+
+  def test_psd_projection_clips_negative_eigenvalues(self):
+    # Construct a denoiser whose symmetrized Jacobian has a known negative
+    # eigenvalue.  With project_psd=True (default) the operator should
+    # zero out that direction; with project_psd=False it shouldn't.
+    schedule = schedules.CosineSchedule()
+    d = 4
+    # G_sym = diag([2, -1, 1, 0.5]) -- one negative eigenvalue.
+    g_sym = jnp.diag(jnp.asarray([2.0, -1.0, 1.0, 0.5], dtype=jnp.float64))
+    def denoiser(x):
+      return x @ g_sym  # symmetric -> J = J^T = g_sym
+
+    # Probe along the negative-eigenvalue direction (e_2).
+    v = jnp.asarray([[0.0, 1.0, 0.0, 0.0]], dtype=jnp.float64)
+    t = jnp.asarray([0.5], dtype=jnp.float64)
+    alpha, sigma = scalar_alpha_sigma(schedule, t)
+    scale = float(sigma ** 2 / alpha)
+
+    no_proj = LowRankTweediePosteriorCovarianceFn(
+        num_components=d, oversample=2, num_power_iters=0,
+        project_psd=False,
+    )(xt=v, time=t, schedule=schedule, denoiser_fn=denoiser)(v)
+    with_proj = LowRankTweediePosteriorCovarianceFn(
+        num_components=d, oversample=2, num_power_iters=0,
+        project_psd=True,
+    )(xt=v, time=t, schedule=schedule, denoiser_fn=denoiser)(v)
+    # Without projection: -scale * v.  With projection: 0 * v.
+    self.assertTrue(jnp.allclose(no_proj, -scale * v, atol=1e-6))
+    self.assertTrue(jnp.allclose(with_proj, jnp.zeros_like(v), atol=1e-6))
 
   def test_truncated_rank_approximates_not_equals(self):
     # For a full-rank Jacobian truncated to k < d, the sketch differs

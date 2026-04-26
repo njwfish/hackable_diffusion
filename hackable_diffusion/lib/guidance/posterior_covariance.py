@@ -233,17 +233,24 @@ class PCAPosteriorCovarianceFn(PosteriorCovarianceFn):
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class TweediePosteriorCovarianceFn(PosteriorCovarianceFn):
-  """``Cov(x_0 | x_t) v = (sigma^2 / alpha) * JVP(denoiser_fn, xt, v)``.
+  """``Cov(x_0 | x_t) v = (sigma^2 / alpha) * (sym J) v`` via JVP+VJP.
 
   The Miyasawa/Stein identity gives ``Cov(x_0 | x_t) = (sigma^2 / alpha)
-  d(xhat_0)/d(xt)``; the JVP computes the product with ``v`` in forward
-  mode without materialising the Jacobian.  Exact for any prior the
-  denoiser implicitly represents -- Gaussian, mixture, or learned.
+  d(xhat_0)/d(xt)``.  For a Bayes-optimal denoiser ``J`` is symmetric
+  PSD; for a learned one it generally is *not*, which makes the
+  Kalman CG matrix indefinite and the inpainting reconstruction
+  divergent.
 
-  One denoiser-derivative per matvec; with a 20-iter CG that's 20 JVPs
-  per step.  For tighter budgets, see
-  :class:`LowRankTweediePosteriorCovarianceFn`.
+  ``symmetrize = True`` (the default) computes ``(J v + J^T v) / 2``
+  via one JVP and one VJP -- twice the cost but valid as a
+  symmetric operator on any denoiser.  PSD-ness is not enforced
+  (would require an eigendecomposition every matvec); when the
+  symmetrised Jacobian still has negative eigenvalues, prefer
+  :class:`LowRankTweediePosteriorCovarianceFn` with
+  ``project_psd=True``.
   """
+
+  symmetrize: bool = True
 
   def __call__(self, *, xt, time, schedule, denoiser_fn=None):
     if denoiser_fn is None:
@@ -255,9 +262,17 @@ class TweediePosteriorCovarianceFn(PosteriorCovarianceFn):
     alpha, sigma = scalar_alpha_sigma(schedule, time)
     scale = (sigma ** 2) / jnp.maximum(alpha, 1e-8)
 
-    def matvec(v: jax.Array) -> jax.Array:
-      _, out = jax.jvp(denoiser_fn, (xt,), (v,))
-      return scale * out
+    if self.symmetrize:
+      _, vjp_fn = jax.vjp(denoiser_fn, xt)
+
+      def matvec(v: jax.Array) -> jax.Array:
+        _, jv = jax.jvp(denoiser_fn, (xt,), (v,))
+        (jtv,) = vjp_fn(v)
+        return scale * 0.5 * (jv + jtv)
+    else:
+      def matvec(v: jax.Array) -> jax.Array:
+        _, jv = jax.jvp(denoiser_fn, (xt,), (v,))
+        return scale * jv
     return matvec
 
 
@@ -271,12 +286,21 @@ class LowRankTweediePosteriorCovarianceFn(PosteriorCovarianceFn):
   inside CG is then ``O(d k + k^2)`` with no further denoiser calls --
   the whole point of the factory pattern.
 
-  Setup cost (one-time, factory-time): ``(1 + num_power_iters) *
-  (num_components + oversample) + num_components`` JVPs.
+  ``symmetrize = True`` (default) replaces the small ``T = Q^T J Q``
+  matrix with ``(T + T^T)/2`` -- cheap, k x k -- so the operator is
+  symmetric on any denoiser.  ``project_psd = True`` (default) goes
+  one step further and clips negative eigenvalues of ``T_sym`` to
+  zero (or a small floor), projecting onto the PSD cone.  Both cost
+  ``O(k^3)`` once at setup and are *essential* on real trained
+  denoisers whose Jacobians are neither symmetric nor PSD.
 
-  Compared to :class:`TweediePosteriorCovarianceFn` (full-rank JVP every
-  matvec), this amortises the denoiser over a one-time setup; the
-  break-even point is ``cg_max_iter ~ k + 2 oversample`` for
+  Setup cost (one-time, factory-time): ``(1 + num_power_iters) *
+  (num_components + oversample) + num_components`` JVPs plus an
+  ``O(k^3)`` symmetric eigendecomposition when ``project_psd``.
+
+  Compared to :class:`TweediePosteriorCovarianceFn` (full-rank JVP+VJP
+  every matvec), this amortises the denoiser over a one-time setup;
+  the break-even point is ``cg_max_iter ~ k + 2 oversample`` for
   ``num_power_iters=1``.
 
   If even this is too expensive -- e.g. many-particle SMC on very
@@ -290,6 +314,9 @@ class LowRankTweediePosteriorCovarianceFn(PosteriorCovarianceFn):
   num_components: int
   oversample: int = 5
   num_power_iters: int = 1
+  symmetrize: bool = True
+  project_psd: bool = True
+  psd_floor: float = 0.0
   rng_key: jax.Array = dataclasses.field(
       default_factory=lambda: jax.random.PRNGKey(0),
   )
@@ -315,6 +342,17 @@ class LowRankTweediePosteriorCovarianceFn(PosteriorCovarianceFn):
         oversample=self.oversample,
         num_power_iters=self.num_power_iters,
     )
+
+    if self.symmetrize:
+      t = 0.5 * (t + jnp.swapaxes(t, -1, -2))
+    if self.project_psd:
+      # Symmetric eigendecompose, clip negatives to ``psd_floor``,
+      # rebuild.  k is small (typically <= 256) so eigh is cheap.
+      eigvals, eigvecs = jnp.linalg.eigh(t)
+      eigvals = jnp.maximum(eigvals, self.psd_floor)
+      t = jnp.einsum(
+          'bij,bj,bkj->bik', eigvecs, eigvals, eigvecs,
+      )
 
     def matvec(v: jax.Array) -> jax.Array:
       v_flat = v.reshape(v.shape[0], -1)              # (B, d)
