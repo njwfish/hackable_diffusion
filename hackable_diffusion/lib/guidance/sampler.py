@@ -244,13 +244,18 @@ class ConditionalDiffusionSampler:
     )
     resample_cutoff = max(0, min(resample_cutoff, num_middle_steps))
 
-    # Initial twist evaluation at (xt_0, t_0).
+    # Initial twist evaluation at (xt_0, t_0).  We need an rng for
+    # stochastic inference fns (e.g. DistributionalInferenceFn) -- splitting
+    # off ``initial_twist_rng`` here keeps it independent of the per-step
+    # rng stream so the initial draw doesn't bias the first step's noise.
     xt0, t0 = _xt_time(first_step)
+    rng, initial_twist_rng = jax.random.split(rng)
+    initial_twist_rng_or_none = initial_twist_rng if uses_rng else None
     log_psi_prev = self._evaluate_twist(
         xt0, t0,
         denoiser_fn=make_denoiser_fn(
             inference_fn, corruption,
-            time=t0, conditioning=conditioning, rng=None,
+            time=t0, conditioning=conditioning, rng=initial_twist_rng_or_none,
         ),
     )
     log_weights = jnp.zeros(initial_noise.shape[0], dtype=initial_noise.dtype)
