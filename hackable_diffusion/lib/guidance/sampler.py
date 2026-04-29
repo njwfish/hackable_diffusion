@@ -144,6 +144,14 @@ class ConditionalDiffusionSampler:
     resampler_fn: particle resampler (defaults to :class:`NoResamplerFn`).
     num_particles: SMC population size; ``1`` with no correction / twist
       / resampler short-circuits to the base sampler.
+    resample_until_step_frac: fraction of the trajectory after which
+      ``resampler_fn`` is replaced by the identity (``NoResamplerFn``).
+      ``1.0`` (default) resamples for the entire trajectory; ``0.8``
+      stops resampling for the last 20% of steps.  Late-stage steps have
+      tiny step-noise, so resampled duplicates can no longer diverge --
+      stopping the resampler there preserves population diversity at
+      the price of slightly looser posterior weighting.  This is the
+      TDS (Wu et al. 2023) recipe for diffusion SMC.
   """
 
   base_sampler: DiffusionSampler
@@ -152,6 +160,7 @@ class ConditionalDiffusionSampler:
   twist_fn: TwistFn | None = None
   resampler_fn: ResamplerFn = dataclasses.field(default_factory=NoResamplerFn)
   num_particles: int = 1
+  resample_until_step_frac: float = 1.0
 
   def __call__(
       self,
@@ -225,6 +234,16 @@ class ConditionalDiffusionSampler:
     first_info, next_infos, last_info = _split_first_middle_last(all_infos)
     first_step = stepper.initialize(initial_noise, first_info)
 
+    # Resampling cutoff: stop after this many scan-body steps (i.e. middle
+    # steps; the final stepper.finalize step never resamples).  Clamp to
+    # [0, num_middle_steps] so a frac of 0 disables resampling entirely
+    # and a frac of 1 keeps it on through the last middle step.
+    num_middle_steps = max(num_steps - 2, 0)
+    resample_cutoff = int(
+        round(float(self.resample_until_step_frac) * num_middle_steps)
+    )
+    resample_cutoff = max(0, min(resample_cutoff, num_middle_steps))
+
     # Initial twist evaluation at (xt_0, t_0).
     xt0, t0 = _xt_time(first_step)
     log_psi_prev = self._evaluate_twist(
@@ -237,8 +256,9 @@ class ConditionalDiffusionSampler:
     log_weights = jnp.zeros(initial_noise.shape[0], dtype=initial_noise.dtype)
     log_weights = log_weights + log_psi_prev
 
-    def scan_body(carry, next_info):
-      step_carry, log_w, log_psi_old, rng_state = carry
+    def scan_body(carry, scan_input):
+      step_carry, log_w, log_psi_old, rng_state, step_idx = carry
+      next_info = scan_input
       xt, time = _xt_time(step_carry)
 
       rng_state, step_rng = jax.random.split(rng_state)
@@ -288,14 +308,28 @@ class ConditionalDiffusionSampler:
       indices, log_w_res = _resample_indices(
           self.resampler_fn, log_w, rng=resample_rng,
       )
-      log_psi_new = log_psi_new[indices]
-      next_step = _gather_particle_leaves(next_step, indices)
 
-      return (next_step, log_w_res, log_psi_new, rng_state), None
+      # Gate resampling on the step counter: past the cutoff we keep the
+      # current particles and weights so the population can spread out
+      # again under independent step noise.
+      should_resample_step = step_idx < resample_cutoff
+      log_psi_after = jnp.where(
+          should_resample_step, log_psi_new[indices], log_psi_new,
+      )
+      log_w_after = jnp.where(should_resample_step, log_w_res, log_w)
+      next_step_after = jax.lax.cond(
+          should_resample_step,
+          lambda: _gather_particle_leaves(next_step, indices),
+          lambda: next_step,
+      )
+
+      return (
+          next_step_after, log_w_after, log_psi_after, rng_state, step_idx + 1,
+      ), None
 
     init_rng, scan_rng = jax.random.split(rng)
-    carry_init = (first_step, log_weights, log_psi_prev, scan_rng)
-    (last_before_carry, log_w_final, log_psi_final, _), _ = jax.lax.scan(
+    carry_init = (first_step, log_weights, log_psi_prev, scan_rng, 0)
+    (last_before_carry, log_w_final, log_psi_final, _, _), _ = jax.lax.scan(
         scan_body, carry_init, next_infos,
     )
 
