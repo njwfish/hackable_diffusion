@@ -4,7 +4,7 @@ This document details the loss functions used for training diffusion models in
 the Hackable Diffusion library. The loss modules are designed with flexibility
 to support various training objectives and weighting schemes.
 
-The modules related to loss functions are located in `lib/loss/`.
+The modules related to loss functions are located in `lib/training/`.
 
 [TOC]
 
@@ -25,7 +25,7 @@ The main components are:
 
 ## `DiffusionLoss` Protocol
 
-(`lib/loss/base.py`)
+(`lib/training/base.py`)
 
 This protocol defines the basic interface for a diffusion loss. It's a callable
 that takes the model's predictions, the ground truth targets, and the time, and
@@ -51,7 +51,7 @@ def __call__(
 
 ## Gaussian Losses
 
-(`lib/loss/gaussian.py`)
+(`lib/training/gaussian_loss.py`)
 
 For continuous data corrupted by a `GaussianProcess`, the losses are based on a
 weighted Mean Squared Error. The core logic is encapsulated in a powerful
@@ -96,7 +96,7 @@ been shown to improve training stability and performance.
 
 ```python
 import jax.numpy as jnp
-from hackable_diffusion.lib.loss.gaussian import SiD2Loss
+from hackable_diffusion.lib.training.gaussian_loss import SiD2Loss
 from hackable_diffusion.lib.corruption.schedules import CosineSchedule
 
 # 1. Instantiate the loss. It requires the noise schedule.
@@ -122,7 +122,7 @@ print(f"Scalar loss: {loss_scalar}")
 
 ## Discrete Losses
 
-(`lib/loss/discrete.py`)
+(`lib/training/discrete_loss.py`)
 
 For discrete data, the training objective is typically to predict the
 probability distribution of the original token. This is based on

@@ -18,7 +18,7 @@ import dataclasses
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.corruption import schedules
-from hackable_diffusion.lib.loss import base
+from hackable_diffusion.lib.training import base
 import jax.numpy as jnp
 import kauldron.ktyping as kt
 import optax

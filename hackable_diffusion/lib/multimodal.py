@@ -54,15 +54,15 @@ from typing import cast
 
 import flax.linen as nn
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import time_sampling
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.architecture import conditioning_encoder
 from hackable_diffusion.lib.corruption import base as corruption_base
 from hackable_diffusion.lib.inference import guidance as guidance_lib
 from hackable_diffusion.lib.inference import projection as projection_lib
-from hackable_diffusion.lib.loss import base as loss_base
 from hackable_diffusion.lib.sampling import base as sampling_base
 from hackable_diffusion.lib.sampling import time_scheduling
+from hackable_diffusion.lib.training import base as loss_base
+from hackable_diffusion.lib.training import time_sampling
 import jax
 import jax.numpy as jnp
 import kauldron.ktyping as kt

@@ -99,7 +99,7 @@ def get_config():
       x0="batch.image",
       cond={"label": "batch.label[:,0]"},
       corruption_process=corruption_process,
-      time_sampler=hd.time_sampling.UniformTimeSampler(
+      time_sampler=hd.training.time_sampling.UniformTimeSampler(
           span=hd.utils.SafeSpan(safety_epsilon=1e-4)
       ),
       network=hd.diffusion_network.DiffusionNetwork(
@@ -117,7 +117,7 @@ def get_config():
   # MARK: Losses
   cfg.train_losses = {
       "diffusion_loss": core.KauldronLossWrapper(
-          loss=hd.loss.SiD2Loss(
+          loss=hd.training.SiD2Loss(
               schedule=cfg.ref.model.corruption_process.schedule,
               prediction_type=cfg.ref.model.network.prediction_type,
               bias=2.0,

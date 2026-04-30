@@ -39,7 +39,7 @@ class DiffusionTest(absltest.TestCase):
         corruption_process=hd.corruption.GaussianProcess(
             schedule=hd.corruption.RFSchedule(),
         ),
-        time_sampler=hd.time_sampling.UniformTimeSampler(),
+        time_sampler=hd.training.time_sampling.UniformTimeSampler(),
     )
     x0 = jnp.ones((2, 8, 8, 3))
     variables = model.init(

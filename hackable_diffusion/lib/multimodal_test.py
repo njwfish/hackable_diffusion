@@ -20,7 +20,6 @@ import chex
 from flax import linen as nn
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import multimodal
-from hackable_diffusion.lib import time_sampling
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.corruption import discrete
@@ -28,12 +27,13 @@ from hackable_diffusion.lib.corruption import gaussian
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.inference import guidance
 from hackable_diffusion.lib.inference import projection
-from hackable_diffusion.lib.loss import discrete as discrete_loss
-from hackable_diffusion.lib.loss import gaussian as gaussian_loss
 from hackable_diffusion.lib.sampling import base
 from hackable_diffusion.lib.sampling import discrete_step_sampler
 from hackable_diffusion.lib.sampling import gaussian_step_sampler
 from hackable_diffusion.lib.sampling import time_scheduling
+from hackable_diffusion.lib.training import discrete_loss
+from hackable_diffusion.lib.training import gaussian_loss
+from hackable_diffusion.lib.training import time_sampling
 import jax
 import jax.numpy as jnp
 

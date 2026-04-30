@@ -14,8 +14,8 @@
 
 """Test for time sampling."""
 
-from hackable_diffusion.lib import time_sampling
 from hackable_diffusion.lib import utils
+from hackable_diffusion.lib.training import time_sampling
 import jax
 import jax.numpy as jnp
 from absl.testing import absltest

@@ -17,7 +17,7 @@
 import chex
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.corruption import schedules
-from hackable_diffusion.lib.loss import discrete
+from hackable_diffusion.lib.training import discrete_loss
 import jax
 import jax.numpy as jnp
 from absl.testing import absltest
@@ -57,15 +57,13 @@ class DiscreteLossTest(parameterized.TestCase):
   def test_diffusion_cross_entropy_loss_computation(self, weight_fn):
     """Tests loss can be computed with and without a weight function."""
 
-    loss_fn = (
-        lambda preds, targets, time: discrete.compute_discrete_diffusion_loss(
-            preds=preds,
-            targets=targets,
-            time=time,
-            schedule=self.schedule,
-            use_mask=False,
-            weight_fn=weight_fn,
-        )
+    loss_fn = lambda preds, targets, time: discrete_loss.compute_discrete_diffusion_loss(
+        preds=preds,
+        targets=targets,
+        time=time,
+        schedule=self.schedule,
+        use_mask=False,
+        weight_fn=weight_fn,
     )
     loss = loss_fn(self.preds, self.targets, self.time)
 
@@ -126,7 +124,7 @@ class DiscreteLossTest(parameterized.TestCase):
       expected_individual_losses = [l / 3.0 for l in expected_individual_losses]
 
     preds = {'logits': logits}
-    loss = discrete.NoWeightDiscreteLoss(
+    loss = discrete_loss.NoWeightDiscreteLoss(
         use_mask=True, mask_key='test_mask', normalize_by_mask=normalize_by_mask
     )
 
@@ -164,7 +162,7 @@ class DiscreteLossTest(parameterized.TestCase):
     expected_loss = (log_softmax_a + log_softmax_b + log_softmax_a) / 3.0
 
     preds = {'logits': logits}
-    loss = discrete.NoWeightDiscreteLoss(
+    loss = discrete_loss.NoWeightDiscreteLoss(
         use_mask=False,
         mask_key='test_mask',
         normalize_by_mask=normalize_by_mask,
@@ -226,7 +224,7 @@ class DiscreteLossTest(parameterized.TestCase):
       ]
 
     preds = {'logits': logits}
-    loss = discrete.NoWeightDiscreteLoss(
+    loss = discrete_loss.NoWeightDiscreteLoss(
         use_mask=True, mask_key='test_mask', normalize_by_mask=normalize_by_mask
     )
 

@@ -19,13 +19,12 @@ import itertools
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.corruption import gaussian as gaussian_corrupt
 from hackable_diffusion.lib.corruption import schedules
-from hackable_diffusion.lib.loss import gaussian
+from hackable_diffusion.lib.training import gaussian_loss
 import jax
 import jax.numpy as jnp
 
 from absl.testing import absltest
 from absl.testing import parameterized
-
 
 ################################################################################
 # MARK: Constants
@@ -61,14 +60,14 @@ class GaussianLossTest(parameterized.TestCase):
     self.schedule = schedules.CosineSchedule()
 
   @parameterized.named_parameters(
-      ('no_weight', gaussian.NoWeightGaussianLoss, {}, 1e-6),
-      ('sid2_loss_no_bias', gaussian.SiD2Loss, {'bias': 0.0}, 1e-6),
-      ('sid2_loss_with_bias', gaussian.SiD2Loss, {'bias': 1.0}, 1e-6),
+      ('no_weight', gaussian_loss.NoWeightGaussianLoss, {}, 1e-6),
+      ('sid2_loss_no_bias', gaussian_loss.SiD2Loss, {'bias': 0.0}, 1e-6),
+      ('sid2_loss_with_bias', gaussian_loss.SiD2Loss, {'bias': 1.0}, 1e-6),
   )
   def test_loss_computation(self, loss_class, loss_kwargs, atol):
     """Tests various Gaussian loss computations."""
     final_kwargs = loss_kwargs.copy()
-    if loss_class is gaussian.SiD2Loss:
+    if loss_class is gaussian_loss.SiD2Loss:
       final_kwargs['schedule'] = self.schedule
 
     loss_fn = loss_class(**final_kwargs)
@@ -84,9 +83,9 @@ class GaussianLossTest(parameterized.TestCase):
     l2 = jnp.square(pred - target)
 
     weight = jnp.ones(self.bsz)
-    if loss_class is gaussian.NoWeightGaussianLoss:
+    if loss_class is gaussian_loss.NoWeightGaussianLoss:
       pass  # Weight is 1
-    elif loss_class is gaussian.SiD2Loss:
+    elif loss_class is gaussian_loss.SiD2Loss:
       bias = loss_kwargs.get('bias', 0.0)
       logsnr = self.schedule.logsnr(self.time)
       logsnr_der = utils.egrad(self.schedule.logsnr)(self.time)
@@ -164,7 +163,7 @@ class PredictionConverterTest(parameterized.TestCase):
 
     converted_pred = converter(pred, **kwargs)  # pytype: disable=wrong-keyword-args
     converted_target = converter(target, **kwargs)  # pytype: disable=wrong-keyword-args
-    scaled_loss = gaussian.compute_continuous_diffusion_loss(
+    scaled_loss = gaussian_loss.compute_continuous_diffusion_loss(
         preds={start_type: pred},
         targets={start_type: target},
         time=time,
@@ -173,7 +172,7 @@ class PredictionConverterTest(parameterized.TestCase):
         prediction_type=start_type,
         # start_type != target_type trigger scaling
     )
-    converted_loss = gaussian.compute_continuous_diffusion_loss(
+    converted_loss = gaussian_loss.compute_continuous_diffusion_loss(
         preds={target_type: converted_pred},
         targets={target_type: converted_target},
         time=time,
@@ -202,7 +201,7 @@ class PredictionConverterTest(parameterized.TestCase):
         'Schedule must be provided if convert_to_logsnr_schedule or weight_fn'
         ' is not None.',
     ):
-      gaussian.compute_continuous_diffusion_loss(
+      gaussian_loss.compute_continuous_diffusion_loss(
           preds=self.preds,
           targets=self.targets,
           time=self.time,

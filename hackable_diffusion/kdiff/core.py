@@ -99,7 +99,7 @@ class Diffusion(nn.Module, kw_only=True):
 
   network: nn.Module
   corruption_process: hd.corruption.CorruptionProcess
-  time_sampler: hd.time_sampling.TimeSampler
+  time_sampler: hd.training.time_sampling.TimeSampler
 
   x0: kd.kontext.Key = kd.kontext.REQUIRED  # E.g. 'batch.image'.
   cond: Optional[kd.kontext.KeyTree] = None  # e.g. 'batch.label'
@@ -175,7 +175,7 @@ class KauldronLossWrapper(kd.losses.Loss):
 
   # Implicitly supports `weight` and `mask` as well (see `kd.losses.Loss`).
 
-  loss: hd.loss.DiffusionLoss
+  loss: hd.training.DiffusionLoss
 
   @typechecked
   def get_values(
