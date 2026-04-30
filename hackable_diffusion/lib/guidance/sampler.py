@@ -244,13 +244,18 @@ class ConditionalDiffusionSampler:
     )
     resample_cutoff = max(0, min(resample_cutoff, num_middle_steps))
 
-    # Initial twist evaluation at (xt_0, t_0).  We need an rng for
-    # stochastic inference fns (e.g. DistributionalInferenceFn) -- splitting
-    # off ``initial_twist_rng`` here keeps it independent of the per-step
-    # rng stream so the initial draw doesn't bias the first step's noise.
+    # Initial twist evaluation at (xt_0, t_0).  Stochastic inference fns
+    # (e.g. DistributionalInferenceFn) need an rng to draw their per-call
+    # noise; deterministic inference fns ignore it entirely.  Split only
+    # in the stochastic branch so the rng stream feeding the scan body is
+    # bit-identical to the pre-fix behaviour for every existing
+    # deterministic-inference-fn caller.
     xt0, t0 = _xt_time(first_step)
-    rng, initial_twist_rng = jax.random.split(rng)
-    initial_twist_rng_or_none = initial_twist_rng if uses_rng else None
+    if uses_rng:
+      rng, initial_twist_rng = jax.random.split(rng)
+      initial_twist_rng_or_none = initial_twist_rng
+    else:
+      initial_twist_rng_or_none = None
     log_psi_prev = self._evaluate_twist(
         xt0, t0,
         denoiser_fn=make_denoiser_fn(
