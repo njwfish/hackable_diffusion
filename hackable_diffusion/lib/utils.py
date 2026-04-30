@@ -14,9 +14,11 @@
 
 """Utility functions."""
 
+import dataclasses
 import functools
+import logging
 from types import FunctionType  # pylint: disable=g-importing-member
-from typing import Any, Callable, cast
+from typing import Any, Callable, Iterator, cast
 import zlib
 from hackable_diffusion.lib import hd_typing
 import jax
@@ -39,6 +41,69 @@ DataTree = hd_typing.DataTree
 ShapeTree = hd_typing.ShapeTree
 DType = hd_typing.DType
 DTypeTree = hd_typing.DTypeTree
+
+################################################################################
+# MARK: SafeSpan
+################################################################################
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class SafeSpan:
+  """A frozen interval with safety epsilon adjustment.
+
+  After construction, the `minval` and `maxval` properties yield the
+  epsilon-adjusted bounds:
+    minval = _minval + safety_epsilon
+    maxval = _maxval - safety_epsilon
+
+  Supports tuple unpacking via `__iter__`:
+    lo, hi = SafeSpan(safety_epsilon=0.01)
+
+  Note: operating at the exact boundaries (t=0 or t=1) of a diffusion schedule
+  can produce NaN values due to division by zero or log(0). The `safety_epsilon`
+  parameter prevents sampling at these degenerate points.
+
+  Attributes:
+    _minval: The raw lower bound of the interval.
+    _maxval: The raw upper bound of the interval.
+    safety_epsilon: The safety margin added/subtracted from the bounds.
+  """
+
+  _minval: float = 0.0
+  _maxval: float = 1.0
+  safety_epsilon: float = 0.0
+
+  def __post_init__(self):
+    if self.safety_epsilon == 0.0:
+      logging.warning(
+          "safety_epsilon is 0.0 which can lead to numerical issues."
+      )
+
+    if self.safety_epsilon < 0.0:
+      raise ValueError(
+          f"safety_epsilon must be non-negative, got {self.safety_epsilon}"
+      )
+
+    if self.minval >= self.maxval:
+      raise ValueError(
+          "minval must be smaller than maxval in the computed interval, but got"
+          f" [{self.minval:.2f}, {self.maxval:.2f}]"
+      )
+
+  @property
+  def minval(self) -> float:
+    """Returns the lower bound of the interval with safety epsilon adjustment."""
+    return self._minval + self.safety_epsilon
+
+  @property
+  def maxval(self) -> float:
+    """Returns the upper bound of the interval with safety epsilon adjustment."""
+    return self._maxval - self.safety_epsilon
+
+  def __iter__(self) -> Iterator[float]:
+    yield self.minval
+    yield self.maxval
+
 
 ################################################################################
 # MARK: Utils

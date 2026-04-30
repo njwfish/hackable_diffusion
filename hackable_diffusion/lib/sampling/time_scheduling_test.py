@@ -15,6 +15,7 @@
 """Tests for time scheduling."""
 
 import chex
+from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.sampling import time_scheduling
 import jax
 import jax.numpy as jnp
@@ -31,7 +32,9 @@ class TimeScheduleTest(absltest.TestCase):
   # MARK: UniformTimeSchedule tests
 
   def test_uniform_all_step_infos(self):
-    time_schedule = time_scheduling.UniformTimeSchedule(safety_epsilon=0.1)
+    time_schedule = time_scheduling.UniformTimeSchedule(
+        span=utils.SafeSpan(safety_epsilon=0.1)
+    )
     data_spec = jnp.zeros((2, 3))
     expected = jnp.array([
         [[0.9], [0.9]],
@@ -51,7 +54,7 @@ class TimeScheduleTest(absltest.TestCase):
 
   def test_uniform_all_step_infos_with_starting_noise(self):
     time_schedule = time_scheduling.UniformTimeSchedule(
-        safety_epsilon=0.1, min_time=0, max_time=0.6
+        span=utils.SafeSpan(_minval=0.0, _maxval=0.6, safety_epsilon=0.1)
     )
     data_spec = jnp.zeros((2, 3))
     expected = jnp.array([
@@ -71,7 +74,7 @@ class TimeScheduleTest(absltest.TestCase):
     )
 
   def test_uniform_all_step_infos_without_safety_epsilon(self):
-    time_schedule = time_scheduling.UniformTimeSchedule(safety_epsilon=0.0)
+    time_schedule = time_scheduling.UniformTimeSchedule(span=utils.SafeSpan())
     data_spec = jnp.zeros((2, 3))
     expected = jnp.array([
         [[1.0], [1.0]],
@@ -89,31 +92,12 @@ class TimeScheduleTest(absltest.TestCase):
         expected,
     )
 
-  def test_fail_epsilon_out_of_range(self):
-    with self.assertRaisesRegex(ValueError, r"must be between 0.0 and 1.0"):
-      time_scheduling.UniformTimeSchedule(safety_epsilon=-0.1)
-
-    with self.assertRaisesRegex(ValueError, r"must be between 0.0 and 1.0"):
-      time_scheduling.UniformTimeSchedule(safety_epsilon=1.1)
-
-  def test_fail_min_max_time_out_of_range(self):
-    with self.assertRaisesRegex(
-        ValueError, r"interval must be within \[0, 1\]"
-    ):
-      time_scheduling.UniformTimeSchedule(
-          safety_epsilon=0.1, min_time=-0.2, max_time=1.0
-      )
-    with self.assertRaisesRegex(
-        ValueError, r"interval must be within \[0, 1\]"
-    ):
-      time_scheduling.UniformTimeSchedule(
-          safety_epsilon=0.1, min_time=0.1, max_time=1.2
-      )
-
   # MARK: EDMTimeSchedule tests
 
   def test_all_step_infos(self):
-    time_schedule = time_scheduling.EDMTimeSchedule(safety_epsilon=0.0, rho=2.0)
+    time_schedule = time_scheduling.EDMTimeSchedule(
+        span=utils.SafeSpan(), rho=2.0
+    )
     data_spec = jnp.zeros((2, 3))
     expected = jnp.array([
         [[1.0], [1.0]],
@@ -133,10 +117,10 @@ class TimeScheduleTest(absltest.TestCase):
 
   def test_edm_all_step_infos_with_rho_one_is_uniform(self):
     uniform_time_schedule = time_scheduling.UniformTimeSchedule(
-        safety_epsilon=0.1
+        span=utils.SafeSpan(safety_epsilon=0.1)
     )
     edm_time_schedule = time_scheduling.EDMTimeSchedule(
-        safety_epsilon=0.1, rho=1.0
+        span=utils.SafeSpan(safety_epsilon=0.1), rho=1.0
     )
     data_spec = jnp.zeros((2, 3))
     num_steps = 5

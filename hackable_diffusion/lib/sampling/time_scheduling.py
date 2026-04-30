@@ -27,7 +27,6 @@ import dataclasses
 from typing import Protocol
 
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import time_sampling
 from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.sampling import base as sampling_base
 import jax
@@ -85,18 +84,9 @@ class TimeSchedule(Protocol):
 class TimeScheduleBaseClass(TimeSchedule):
   """Base class for time schedules."""
 
-  # Creates a time schedule in
-  # [min_time + safety_epsilon, max_time-safety_epsilon].
-  min_time: float = 0.0
-  max_time: float = 1.0
-  safety_epsilon: float = 1e-6
-  span: tuple[float, float] = dataclasses.field(init=False)
-
-  def __post_init__(self):
-    span = time_sampling.get_sampling_time_interval(
-        (self.min_time, self.max_time), self.safety_epsilon
-    )
-    object.__setattr__(self, "span", span)
+  span: utils.SafeSpan = utils.SafeSpan(
+      _minval=0.0, _maxval=1.0, safety_epsilon=1e-6
+  )
 
 
 ################################################################################

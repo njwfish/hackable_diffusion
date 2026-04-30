@@ -34,13 +34,11 @@ for parts of the data are also possible.
 from __future__ import annotations
 
 import dataclasses
-import logging
 import math
 from typing import Protocol
 
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import utils
-
 import jax
 import jax.numpy as jnp
 import kauldron.ktyping as kt
@@ -56,50 +54,6 @@ DataArray = hd_typing.DataArray
 DataTree = hd_typing.DataTree
 TimeArray = hd_typing.TimeArray
 TimeTree = hd_typing.TimeTree
-
-################################################################################
-# MARK: Utils
-################################################################################
-
-
-def get_sampling_time_interval(
-    time_range: tuple[float, float], safety_epsilon: float
-) -> tuple[float, float]:
-  """Returns the interval to sample from.
-
-  Args:
-    time_range: The range of times to sample from.
-    safety_epsilon: The safety epsilon to add to the minval and subtract from
-      the maxval.
-
-  Returns:
-    The interval to sample from.
-  """
-
-  if safety_epsilon < 0.0 or safety_epsilon > 1.0:
-    raise ValueError(
-        f"safety_epsilon must be between 0.0 and 1.0, got {safety_epsilon}"
-    )
-
-  if safety_epsilon == 0.0:
-    logging.warning("safety_epsilon is 0.0 which can lead to numerical issues.")
-
-  minval, maxval = time_range
-  if safety_epsilon > 0.0:
-    minval += safety_epsilon
-    maxval -= safety_epsilon
-
-  if not (0.0 <= minval <= 1.0 and 0.0 <= maxval <= 1.0):
-    raise ValueError(
-        f"interval must be within [0, 1], but got [{minval:.2f}, {maxval:.2f}]"
-    )
-  if minval >= maxval:
-    raise ValueError(
-        "minval must be smaller than maxval in the computed interval, but got"
-        f" [{minval:.2f}, {maxval:.2f}]"
-    )
-
-  return minval, maxval
 
 
 ################################################################################
@@ -142,7 +96,7 @@ class TimeSampler(Protocol):
 class UniformTimeSampler(TimeSampler):
   """Uniform time sampler for a single data array.
 
-  Sample time uniformly from the time_range (default [0.0, 1.0]).
+  Sample time uniformly from the span (default [0.0, 1.0]).
 
   Attributes:
     axes: Which data axes to keep the shape of. Default is (0,) which means that
@@ -150,25 +104,19 @@ class UniformTimeSampler(TimeSampler):
       e.g. for image diffusion where `data_spec` has shape `(B, h, w, c)`, and
       each image has a single time value, so the time array will have shape `(B,
       1, 1, 1)`.
-    time_range: The range of times to sample from. Default is [0.0, 1.0].
-    safety_epsilon: The safety epsilon to add to the minval and subtract from
-      the maxval. Default is 0.0.
-    span: The span of the time sampler. Default is [0.0, 1.0]. This is computed
-      from the time_range and safety_epsilon.
+    span: The span of the time sampler.
   """
 
   axes: tuple[int, ...] = (0,)
-  time_range: tuple[float, float] = (0.0, 1.0)
-  safety_epsilon: float = 0.0
-  span: tuple[float, float] = dataclasses.field(init=False)
+  span: utils.SafeSpan = utils.SafeSpan(
+      _minval=0.0, _maxval=1.0, safety_epsilon=0.0
+  )
 
   def __post_init__(self):
     if 0 not in self.axes:
       raise ValueError(
           "axes must include 0. Broadcasting over the batch is not supported."
       )
-    span = get_sampling_time_interval(self.time_range, self.safety_epsilon)
-    object.__setattr__(self, "span", span)
 
   @kt.typechecked
   def __call__(self, key: PRNGKey, data_spec: DataArray) -> TimeArray:
@@ -186,7 +134,7 @@ class UniformTimeSampler(TimeSampler):
 class LogitNormalTimeSampler(TimeSampler):
   """Logit normal time sampler for a single data array.
 
-  Sample time following a logit normal distribution from the time_range (default
+  Sample time following a logit normal distribution from the span (default
   [0.0, 1.0]). We refer to https://arxiv.org/abs/2403.03206 (Equation 19) for
   more details.
 
@@ -196,29 +144,23 @@ class LogitNormalTimeSampler(TimeSampler):
       e.g. for image diffusion where `data_spec` has shape `(B, h, w, c)`, and
       each image has a single time value, so the time array will have shape `(B,
       1, 1, 1)`.
-    time_range: The range of times to sample from. Default is [0.0, 1.0].
-    safety_epsilon: The safety epsilon to add to the minval and subtract from
-      the maxval. Default is 0.0.
     mean: The mean of the logit normal distribution. Default is 0.0.
     scale: The scale of the logit normal distribution. Default is 1.0.
-    span: The span of the time sampler. Default is [0.0, 1.0]. This is computed
-      from the time_range and safety_epsilon.
+    span: The span of the time sampler.
   """
 
   axes: tuple[int, ...] = (0,)
-  time_range: tuple[float, float] = (0.0, 1.0)
-  safety_epsilon: float = 0.0
   mean: float = 0.0
   scale: float = 1.0
-  span: tuple[float, float] = dataclasses.field(init=False)
+  span: utils.SafeSpan = utils.SafeSpan(
+      _minval=0.0, _maxval=1.0, safety_epsilon=0.0
+  )
 
   def __post_init__(self):
     if 0 not in self.axes:
       raise ValueError(
           "axes must include 0. Broadcasting over the batch is not supported."
       )
-    span = get_sampling_time_interval(self.time_range, self.safety_epsilon)
-    object.__setattr__(self, "span", span)
 
   @kt.typechecked
   def __call__(self, key: PRNGKey, data_spec: DataArray) -> TimeArray:
@@ -242,21 +184,13 @@ class UniformStratifiedTimeSampler(TimeSampler):
   Attributes:
     axes: Which data axes to keep the shape of. Default is (0,) which means each
       example in the batch will have a single time.
-    time_range: The range of times to sample from. Default is [0.0, 1.0].
-    safety_epsilon: The safety epsilon to add to the minval and subtract from
-      the maxval. Default is 0.0.
-    span: The span of the time sampler. Default is [0.0, 1.0]. This is computed
-      from the time_range and safety_epsilon.
+    span: The span of the time sampler.
   """
 
   axes: tuple[int, ...] = (0,)
-  time_range: tuple[float, float] = (0.0, 1.0)
-  safety_epsilon: float = 0.0
-  span: tuple[float, float] = dataclasses.field(init=False)
-
-  def __post_init__(self):
-    span = get_sampling_time_interval(self.time_range, self.safety_epsilon)
-    object.__setattr__(self, "span", span)
+  span: utils.SafeSpan = utils.SafeSpan(
+      _minval=0.0, _maxval=1.0, safety_epsilon=0.0
+  )
 
   @kt.typechecked
   def __call__(self, key: PRNGKey, data_spec: DataArray) -> TimeArray:

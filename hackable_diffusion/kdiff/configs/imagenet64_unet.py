@@ -99,7 +99,9 @@ def get_config():
       x0="batch.image",
       cond={"label": "batch.label[:,0]"},
       corruption_process=corruption_process,
-      time_sampler=hd.time_sampling.UniformTimeSampler(safety_epsilon=1e-4),
+      time_sampler=hd.time_sampling.UniformTimeSampler(
+          span=hd.utils.SafeSpan(safety_epsilon=1e-4)
+      ),
       network=hd.diffusion_network.DiffusionNetwork(
           prediction_type="velocity",
           backbone_network=backbone_network,

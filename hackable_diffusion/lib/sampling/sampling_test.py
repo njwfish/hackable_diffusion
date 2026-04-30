@@ -80,7 +80,7 @@ class DiffusionSamplingTest(parameterized.TestCase):
 
   def setUp(self):
     super().setUp()
-    self.time_schedule = time_scheduling.UniformTimeSchedule(safety_epsilon=0.0)
+    self.time_schedule = time_scheduling.UniformTimeSchedule()
     self.stepper = DummyStep()
     self.initial_noise = jnp.repeat(
         jnp.expand_dims(jnp.eye(4), axis=0), 2, axis=0

@@ -441,5 +441,51 @@ class UtilsTest(parameterized.TestCase):
       utils.lenient_map(lambda x, y: x + y, tree, other)
 
 
+class SafeSpanTest(parameterized.TestCase):
+
+  def test_default_span(self):
+    span = utils.SafeSpan()
+    self.assertEqual(span.minval, 0.0)
+    self.assertEqual(span.maxval, 1.0)
+
+  def test_with_epsilon_raw_values_unchanged(self):
+    span = utils.SafeSpan(safety_epsilon=0.1)
+    self.assertEqual(span._minval, 0.0)
+    self.assertEqual(span._maxval, 1.0)
+
+  def test_iter_unpacking_yields_adjusted(self):
+    span = utils.SafeSpan(safety_epsilon=0.1)
+    lo, hi = span
+    self.assertAlmostEqual(lo, 0.1)
+    self.assertAlmostEqual(hi, 0.9)
+
+  def test_frozen(self):
+    span = utils.SafeSpan(safety_epsilon=0.1)
+    with self.assertRaises(dataclasses.FrozenInstanceError):
+      span.minval = 0.5
+
+  def test_invalid_epsilon_negative(self):
+    with self.assertRaisesRegex(
+        ValueError, 'safety_epsilon must be non-negative'
+    ):
+      utils.SafeSpan(safety_epsilon=-0.1)
+
+  def test_invalid_epsilon_too_large(self):
+    with self.assertRaisesRegex(
+        ValueError, 'minval must be smaller than maxval'
+    ):
+      utils.SafeSpan(safety_epsilon=0.6)
+
+  def test_custom_range_with_epsilon(self):
+    lo, hi = utils.SafeSpan(_minval=0.2, _maxval=0.8, safety_epsilon=0.1)
+    self.assertAlmostEqual(lo, 0.3)
+    self.assertAlmostEqual(hi, 0.7)
+
+  def test_no_epsilon_adjustment_when_zero(self):
+    lo, hi = utils.SafeSpan(_minval=0.2, _maxval=0.8)
+    self.assertEqual(lo, 0.2)
+    self.assertEqual(hi, 0.8)
+
+
 if __name__ == '__main__':
   absltest.main()
