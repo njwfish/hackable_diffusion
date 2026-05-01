@@ -258,18 +258,6 @@ class UnMaskingStep(SamplerStep):
     if not self.corruption_process.is_masking:
       raise ValueError('UnMaskingStep only supports masking processes.')
 
-  @property
-  def mask_value(self) -> int:
-    return self.corruption_process.num_categories - 1
-
-  @property
-  def unused_token(self) -> int:
-    return self.corruption_process.unused_token
-
-  @property
-  def post_corruption_fn(self) -> discrete.PostCorruptionFn:
-    return self.corruption_process.post_corruption_fn
-
   @kt.typechecked
   def initialize(
       self,
@@ -303,7 +291,7 @@ class UnMaskingStep(SamplerStep):
     current_step_info = current_step.step_info
     xt = current_step.xt
 
-    unused_mask = xt == self.unused_token
+    unused_mask = xt == self.corruption_process.unused_token
     # The mask is True if the token is unused.
 
     time = current_step_info.time
@@ -358,10 +346,12 @@ class UnMaskingStep(SamplerStep):
     to_remask = currently_unmasked * jax.random.bernoulli(key_remask, p_st)
 
     new_xt = jnp.where(to_remask, noise_sample, new_xt)
-    new_xt = self.post_corruption_fn(new_xt)
+    new_xt = self.corruption_process.post_corruption_fn(new_xt)
 
     # Replace the unused tokens with the unused_token.
-    new_xt = jnp.where(unused_mask, self.unused_token, new_xt)
+    new_xt = jnp.where(
+        unused_mask, self.corruption_process.unused_token, new_xt
+    )
 
     return DiffusionStep(
         xt=new_xt,
@@ -428,26 +418,6 @@ class DiscreteDDIMStep(SamplerStep):
           ' with 0.0 probability mass for any element.'
       )
 
-  @property
-  def mask_value(self) -> int:
-    return self.corruption_process.num_categories - 1
-
-  @property
-  def unused_token(self) -> int:
-    return self.corruption_process.unused_token
-
-  @property
-  def post_corruption_fn(self) -> discrete.PostCorruptionFn:
-    return self.corruption_process.post_corruption_fn
-
-  @property
-  def invariant_probs_vec(self) -> Float['M']:
-    return self.corruption_process.invariant_probs_vec
-
-  @property
-  def process_num_categories(self) -> int:
-    return self.corruption_process.process_num_categories
-
   @kt.typechecked
   def initialize(
       self,
@@ -479,7 +449,7 @@ class DiscreteDDIMStep(SamplerStep):
     current_step_info = current_step.step_info
     xt = current_step.xt
 
-    unused_mask = xt == self.unused_token
+    unused_mask = xt == self.corruption_process.unused_token
     # The mask is True if the token is unused.
 
     time = current_step_info.time
@@ -502,8 +472,12 @@ class DiscreteDDIMStep(SamplerStep):
 
     # Compute the probability vector
 
-    xt_oh = jax.nn.one_hot(xt[..., 0], num_classes=self.process_num_categories)
-    x0_oh = jax.nn.one_hot(x0[..., 0], num_classes=self.process_num_categories)
+    xt_oh = jax.nn.one_hot(
+        xt[..., 0], num_classes=self.corruption_process.process_num_categories
+    )
+    x0_oh = jax.nn.one_hot(
+        x0[..., 0], num_classes=self.corruption_process.process_num_categories
+    )
     # (bsz, *seq_len, M)
 
     alpha_s = self.corruption_process.schedule.alpha(next_time)
@@ -514,10 +488,12 @@ class DiscreteDDIMStep(SamplerStep):
     # (bsz, *seq_len, M)
 
     first_logit = jnp.log(
-        ratio * xt_oh + (1.0 - ratio) * self.invariant_probs_vec[xt]
+        ratio * xt_oh
+        + (1.0 - ratio) * self.corruption_process.invariant_probs_vec[xt]
     )
     second_logit = jnp.log(
-        alpha_s * x0_oh + (1.0 - alpha_s) * self.invariant_probs_vec
+        alpha_s * x0_oh
+        + (1.0 - alpha_s) * self.corruption_process.invariant_probs_vec
     )
     total_logit = first_logit + second_logit
     # Do not use this sampler for masking.
@@ -533,10 +509,12 @@ class DiscreteDDIMStep(SamplerStep):
 
     # Sample from the distribution defined by logits
     new_xt = jax.random.categorical(key=key, logits=total_logit)[..., None]
-    new_xt = self.post_corruption_fn(new_xt)
+    new_xt = self.corruption_process.post_corruption_fn(new_xt)
 
     # Replace the unused tokens with the unused_token.
-    new_xt = jnp.where(unused_mask, self.unused_token, new_xt)
+    new_xt = jnp.where(
+        unused_mask, self.corruption_process.unused_token, new_xt
+    )
 
     return DiffusionStep(
         xt=new_xt,
@@ -619,26 +597,6 @@ class IntegratedDiscreteDDIMStep(SamplerStep):
           ' with 0.0 probability mass for any element.'
       )
 
-  @property
-  def mask_value(self) -> int:
-    return self.corruption_process.num_categories - 1
-
-  @property
-  def unused_token(self) -> int:
-    return self.corruption_process.unused_token
-
-  @property
-  def post_corruption_fn(self) -> discrete.PostCorruptionFn:
-    return self.corruption_process.post_corruption_fn
-
-  @property
-  def invariant_probs_vec(self) -> Float['M']:
-    return self.corruption_process.invariant_probs_vec
-
-  @property
-  def process_num_categories(self) -> int:
-    return self.corruption_process.process_num_categories
-
   @kt.typechecked
   def initialize(
       self,
@@ -668,7 +626,7 @@ class IntegratedDiscreteDDIMStep(SamplerStep):
   ) -> DiffusionStep:
 
     xt = current_step.xt
-    unused_mask = xt == self.unused_token
+    unused_mask = xt == self.corruption_process.unused_token
 
     time = utils.bcast_right(current_step.step_info.time, xt.ndim)
     next_time = utils.bcast_right(next_step_info.time, xt.ndim)
@@ -683,7 +641,9 @@ class IntegratedDiscreteDDIMStep(SamplerStep):
     # (bsz, *seq_len, M)
 
     # One-hot encoding for the current state
-    xt_oh = jax.nn.one_hot(xt[..., 0], num_classes=self.process_num_categories)
+    xt_oh = jax.nn.one_hot(
+        xt[..., 0], num_classes=self.corruption_process.process_num_categories
+    )
     # (bsz, *seq_len, M)
 
     # Calculate schedule alphas.
@@ -695,7 +655,7 @@ class IntegratedDiscreteDDIMStep(SamplerStep):
     # (bsz, *seq_len, M)
 
     # Extract invariant probabilities.
-    pi = self.invariant_probs_vec
+    pi = self.corruption_process.invariant_probs_vec
     pi_xt = pi[xt[..., 0]][..., None]  # The prior prob of the current token
     # (bsz, *seq_len, 1)
 
@@ -726,10 +686,12 @@ class IntegratedDiscreteDDIMStep(SamplerStep):
 
     # Sample and format the new state
     new_xt = jax.random.categorical(key=key, logits=total_logit)[..., None]
-    new_xt = self.post_corruption_fn(new_xt)
+    new_xt = self.corruption_process.post_corruption_fn(new_xt)
 
     # Replace the unused tokens with the unused_token.
-    new_xt = jnp.where(unused_mask, self.unused_token, new_xt)
+    new_xt = jnp.where(
+        unused_mask, self.corruption_process.unused_token, new_xt
+    )
 
     return DiffusionStep(
         xt=new_xt,
@@ -785,14 +747,6 @@ class DiscreteFlowMatchingStep(SamplerStep):
   temperature: float = 1.0
   gamma: float = 0.0
 
-  @property
-  def unused_token(self) -> int:
-    return self.corruption_process.unused_token
-
-  @property
-  def post_corruption_fn(self) -> discrete.PostCorruptionFn:
-    return self.corruption_process.post_corruption_fn
-
   @kt.typechecked
   def initialize(
       self,
@@ -822,7 +776,7 @@ class DiscreteFlowMatchingStep(SamplerStep):
     current_step_info = current_step.step_info
     xt = current_step.xt
 
-    unused_mask = xt == self.unused_token
+    unused_mask = xt == self.corruption_process.unused_token
 
     time = current_step_info.time
     next_time = next_step_info.time
@@ -891,10 +845,12 @@ class DiscreteFlowMatchingStep(SamplerStep):
     # 0: stay, 1: jump to data, 2: jump to noise
     new_xt = jnp.where(jump_type == 1, sample, xt)
     new_xt = jnp.where(jump_type == 2, noise_sample, new_xt)
-    new_xt = self.post_corruption_fn(new_xt)
+    new_xt = self.corruption_process.post_corruption_fn(new_xt)
 
     # Replace the unused tokens with the unused_token.
-    new_xt = jnp.where(unused_mask, self.unused_token, new_xt)
+    new_xt = jnp.where(
+        unused_mask, self.corruption_process.unused_token, new_xt
+    )
 
     return DiffusionStep(
         xt=new_xt,
