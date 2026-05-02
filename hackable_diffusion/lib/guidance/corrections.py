@@ -53,6 +53,10 @@ from hackable_diffusion.lib.guidance.linalg import (
     batched_minres,
     linear_adjoint,
 )
+from hackable_diffusion.lib.guidance.posterior_covariance import (
+    LowRankTweediePosteriorCovarianceFn,
+    TweediePosteriorCovarianceFn,
+)
 from hackable_diffusion.lib.guidance.protocols import (
     CorrectionFn,
     DenoiserFn,
@@ -118,6 +122,24 @@ SOLVERS: dict[str, Callable] = {
 }
 
 
+def _default_solver_for(cov_fn: PosteriorCovarianceFn) -> str:
+  """Pick CG vs MINRES based on whether ``cov_fn`` may be indefinite.
+
+  Full ``TweediePosteriorCovarianceFn`` only symmetrises -- the
+  Jacobian of a non-Bayes-optimal denoiser still has negative
+  eigenvalues, so the Kalman matrix is symmetric indefinite and CG
+  cannot be relied on.  ``LowRankTweediePosteriorCovarianceFn`` with
+  ``project_psd=False`` has the same issue.  All other built-in cov fns
+  produce PSD ``Sigma`` and CG is cheaper.
+  """
+  if isinstance(cov_fn, TweediePosteriorCovarianceFn):
+    return 'minres'
+  if (isinstance(cov_fn, LowRankTweediePosteriorCovarianceFn)
+      and not cov_fn.project_psd):
+    return 'minres'
+  return 'cg'
+
+
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class KalmanCorrectionFn(CorrectionFn):
   """Closed-form Kalman update on ``x_0``.
@@ -137,10 +159,9 @@ class KalmanCorrectionFn(CorrectionFn):
   posterior covariance only needs a matvec.  Two solvers ship in
   ``SOLVERS``:
 
-  - ``'cg'`` (default): conjugate gradient.  Cheaper per iteration but
-    requires the Kalman matrix to be symmetric *positive-definite*.
-    Right choice when ``Sigma`` is PSD --
-    :class:`IsotropicPosteriorCovarianceFn`,
+  - ``'cg'``: conjugate gradient.  Cheaper per iteration but requires
+    the Kalman matrix to be symmetric *positive-definite*.  Right
+    choice when ``Sigma`` is PSD -- :class:`IsotropicPosteriorCovarianceFn`,
     :class:`FixedPriorPosteriorCovarianceFn`,
     :class:`PCAPosteriorCovarianceFn`,
     :class:`LowRankTweediePosteriorCovarianceFn` with ``project_psd=True``.
@@ -148,6 +169,10 @@ class KalmanCorrectionFn(CorrectionFn):
     operators correctly; pick this when ``Sigma`` is symmetric but may
     have negative eigenvalues -- :class:`TweediePosteriorCovarianceFn`
     on a non-Bayes-optimal denoiser.
+
+  ``solver=None`` (default) auto-selects via :func:`_default_solver_for`:
+  MINRES for full-Tweedie / non-PSD-projected low-rank Tweedie, CG
+  otherwise.  Pass an explicit string to override.
   """
 
   observation: jax.Array
@@ -156,7 +181,7 @@ class KalmanCorrectionFn(CorrectionFn):
   observation_noise: float = 0.1
   cg_max_iter: int = 20
   cg_tol: float = 1e-6
-  solver: str = 'cg'
+  solver: str | None = None
 
   def __call__(
       self,
@@ -184,11 +209,15 @@ class KalmanCorrectionFn(CorrectionFn):
       return self.forward_fn.forward(apply_cov(w)) + sigma_y2 * w
 
     residual = self.observation - self.forward_fn.forward(x0)
-    if self.solver not in SOLVERS:
+    solver = (
+        self.solver if self.solver is not None
+        else _default_solver_for(self.posterior_covariance_fn)
+    )
+    if solver not in SOLVERS:
       raise ValueError(
-          f'Unknown solver {self.solver!r}; choose from {sorted(SOLVERS)}.'
+          f'Unknown solver {solver!r}; choose from {sorted(SOLVERS)}.'
       )
-    w = SOLVERS[self.solver](
+    w = SOLVERS[solver](
         matvec, residual, max_iter=self.cg_max_iter, tol=self.cg_tol,
     )
     return x0 + apply_cov(w)

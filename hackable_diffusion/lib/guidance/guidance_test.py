@@ -1085,6 +1085,43 @@ class KalmanCorrectionTest(unittest.TestCase):
     res_new = jnp.abs(fwd.forward(x0_new) - y)
     self.assertTrue(bool(jnp.all(res_new < res_old)))
 
+  def test_full_tweedie_default_solver_auto_selects_minres(self):
+    # Same indefinite-Jacobian setup as the explicit-MINRES test, but
+    # leaving ``solver`` unset.  KalmanCorrectionFn should auto-pick
+    # MINRES because TweediePosteriorCovarianceFn doesn't enforce PSD,
+    # and the residual should still drop.  Regression guard against
+    # silently falling back to CG on indefinite operators.
+    schedule, corruption, fwd, x0, y = self._setup()
+    n = x0.shape[1]
+    del x0
+
+    rng = jax.random.PRNGKey(7)
+    G = jax.random.normal(rng, (n, n), dtype=jnp.float64) * 0.5
+    G_sym = 0.5 * (G + G.T)
+    self.assertTrue(bool(jnp.any(jnp.linalg.eigvalsh(G_sym) < 0.0)))
+
+    def inference_fn(xt, time, conditioning=None):
+      del time, conditioning
+      return {"x0": xt @ G.T}
+
+    correction = KalmanCorrectionFn(
+        observation=y, forward_fn=fwd,
+        posterior_covariance_fn=TweediePosteriorCovarianceFn(symmetrize=True),
+        observation_noise=0.5, cg_max_iter=80, cg_tol=1e-10,
+        # solver intentionally omitted -- exercise the auto-select path.
+    )
+    self.assertIsNone(correction.solver)
+    xt = jnp.full((y.shape[0], n), 0.3, dtype=jnp.float64)
+    time = jnp.asarray([0.5], dtype=jnp.float64)
+    denoiser_fn = make_denoiser_fn(inference_fn, corruption, time=time)
+    x0_at_xt = denoiser_fn(xt)
+    x0_new = correction(
+        x0_at_xt, xt, time, denoiser_fn=denoiser_fn, schedule=schedule,
+    )
+    res_old = jnp.abs(fwd.forward(x0_at_xt) - y)
+    res_new = jnp.abs(fwd.forward(x0_new) - y)
+    self.assertTrue(bool(jnp.all(res_new < res_old)))
+
   def test_low_rank_tweedie_reduces_residual(self):
     # Same correction as test_tweedie_runs_and_reduces_residual, but
     # using the randomized-SVD sketch.  Rank set to n for full-rank
