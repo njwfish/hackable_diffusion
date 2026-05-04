@@ -343,7 +343,6 @@ class SdeStepTest(parameterized.TestCase):
         atol=1e-6,
     )
 
-
 class AdjustedDDIMStepTest(absltest.TestCase):
 
   def setUp(self):
@@ -668,33 +667,80 @@ class DDIMStepTest(parameterized.TestCase):
         time=initial_step.step_info.time,
     )
 
+    next_step_info = StepInfo(
+        step=1, time=jnp.array([0.1]), rng=jax.random.PRNGKey(1)
+    )
     next_step = ddim_step.update(
         prediction=prediction,
         current_step=initial_step,
-        next_step_info=StepInfo(
-            step=1, time=jnp.array([0.1]), rng=jax.random.PRNGKey(1)
-        ),
+        next_step_info=next_step_info,
     )
+    mean, volatility = _ddim_update(
+        xt=initial_step.xt,
+        prediction=prediction,
+        time=initial_step.step_info.time,
+        next_time=next_step_info.time,
+        stochasticity_level=0.25,
+        process=self.process,
+    )
+    z = jax.random.normal(key=next_step_info.rng, shape=initial_step.xt.shape)
 
     chex.assert_trees_all_close(
         next_step,
         DiffusionStep(
-            xt=jnp.array(
-                [[
-                    [0.978259, 0.004307, -0.006913, -0.007882],
-                    [0.064399, 0.993651, 0.108881, 0.050978],
-                    [-0.014761, 0.018219, 0.950119, -0.012484],
-                    [0.045024, 0.039968, 0.045195, 1.01404],
-                ]],
-                dtype=jnp.float32,
-            ),
-            step_info=StepInfo(
-                step=1,
-                time=jnp.array([0.1]),
-                rng=jax.random.PRNGKey(1),
-            ),
+            xt=mean + volatility * z,
+            step_info=next_step_info,
             aux={},
         ),
+        atol=1e-6,
+    )
+
+  @parameterized.parameters((level,) for level in _STOCHASTICITY_LEVELS)
+  def test_kernel_matches_update_mean_and_volatility(self, stochasticity_level):
+    ddim_step = gaussian_step_sampler.DDIMStep(
+        corruption_process=self.process,
+        stoch_coeff=stochasticity_level,
+    )
+    initial_step = ddim_step.initialize(
+        initial_noise=self.initial_noise,
+        initial_step_info=StepInfo(
+            step=0, time=jnp.array([0.2]), rng=jax.random.PRNGKey(0)
+        ),
+    )
+    next_info = StepInfo(
+        step=1, time=jnp.array([0.1]), rng=jax.random.PRNGKey(1)
+    )
+    prediction = dummy_inference_fn(
+        xt=initial_step.xt,
+        conditioning={},
+        time=initial_step.step_info.time,
+    )
+
+    kernel = ddim_step.kernel(
+        prediction_uncorrected=prediction,
+        prediction_corrected=prediction,
+        xt=initial_step.xt,
+        time_prev=initial_step.step_info.time,
+        time_next=next_info.time,
+    )
+    expected_mean, expected_volatility = _ddim_update(
+        xt=initial_step.xt,
+        prediction=prediction,
+        time=initial_step.step_info.time,
+        next_time=next_info.time,
+        stochasticity_level=stochasticity_level,
+        process=self.process,
+    )
+    x0 = self.process.convert_predictions(
+        prediction=prediction,
+        xt=initial_step.xt,
+        time=initial_step.step_info.time,
+    )["x0"]
+    kernel_mean = kernel.coeff_xt * initial_step.xt + kernel.coeff_x0 * x0
+    chex.assert_trees_all_close(kernel_mean, expected_mean, atol=1e-6)
+    chex.assert_trees_all_close(
+        kernel.sigma_step,
+        jnp.asarray(expected_volatility).reshape(()),
         atol=1e-6,
     )
 
