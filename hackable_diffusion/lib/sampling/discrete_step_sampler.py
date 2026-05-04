@@ -249,6 +249,7 @@ class UnMaskingStep(SamplerStep):
   remasking_fn: RemaskingFn = NoRemaskingFn()
   corruption_mask_fn: CorruptedMaskFn = AllCorruptedMaskFn()
   temperature: float = 1.0
+  logits_dtype: jnp.dtype = jnp.float32
 
   def __post_init__(self):
     """UnMaskingStep only supports masking processes.
@@ -268,7 +269,7 @@ class UnMaskingStep(SamplerStep):
     init_logits = jnp.repeat(
         initial_noise, self.corruption_process.num_categories, axis=-1
     )
-    init_logits = jnp.zeros_like(init_logits, dtype=jnp.float32) - jnp.inf
+    init_logits = jnp.zeros_like(init_logits, dtype=self.logits_dtype)
 
     return DiffusionStep(
         xt=initial_noise,
@@ -404,6 +405,7 @@ class DiscreteDDIMStep(SamplerStep):
 
   corruption_process: CategoricalProcess
   temperature: float = 1.0
+  logits_dtype: jnp.dtype = jnp.float32
 
   def __post_init__(self):
     """DiscreteDDIMStep does not support masking processes.
@@ -428,7 +430,7 @@ class DiscreteDDIMStep(SamplerStep):
     init_logits = jnp.repeat(
         initial_noise, self.corruption_process.num_categories, axis=-1
     )
-    init_logits = jnp.zeros_like(init_logits, dtype=jnp.float32) - jnp.inf
+    init_logits = jnp.zeros_like(init_logits, dtype=self.logits_dtype)
 
     return DiffusionStep(
         xt=initial_noise,
@@ -581,6 +583,7 @@ class IntegratedDiscreteDDIMStep(SamplerStep):
 
   corruption_process: CategoricalProcess
   temperature: float = 1.0
+  logits_dtype: jnp.dtype = jnp.float32
 
   def __post_init__(self):
     """IntegratedDiscreteDDIMStep does not support masking processes.
@@ -607,7 +610,7 @@ class IntegratedDiscreteDDIMStep(SamplerStep):
     init_logits = jnp.repeat(
         initial_noise, self.corruption_process.num_categories, axis=-1
     )
-    init_logits = jnp.zeros_like(init_logits, dtype=jnp.float32) - jnp.inf
+    init_logits = jnp.zeros_like(init_logits, dtype=self.logits_dtype)
 
     return DiffusionStep(
         xt=initial_noise,
@@ -746,6 +749,7 @@ class DiscreteFlowMatchingStep(SamplerStep):
   corruption_process: CategoricalProcess
   temperature: float = 1.0
   gamma: float = 0.0
+  logits_dtype: jnp.dtype = jnp.float32
 
   @kt.typechecked
   def initialize(
@@ -757,7 +761,7 @@ class DiscreteFlowMatchingStep(SamplerStep):
     init_logits = jnp.repeat(
         initial_noise, self.corruption_process.num_categories, axis=-1
     )
-    init_logits = jnp.zeros_like(init_logits, dtype=jnp.float32) - jnp.inf
+    init_logits = jnp.zeros_like(init_logits, dtype=self.logits_dtype)
 
     return DiffusionStep(
         xt=initial_noise,

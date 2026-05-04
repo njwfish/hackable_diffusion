@@ -165,7 +165,7 @@ class UnMaskingStepTest(absltest.TestCase):
     init_logits = jnp.repeat(
         self.initial_noise, self.process.num_categories, axis=-1
     )
-    init_logits = jnp.zeros_like(init_logits, dtype=jnp.float32) - jnp.inf
+    init_logits = jnp.zeros_like(init_logits, dtype=jnp.float32)
 
     chex.assert_trees_all_equal(
         initial_step,
@@ -298,7 +298,7 @@ class DiscreteDDIMStepTest(absltest.TestCase):
     init_logits = jnp.repeat(
         self.initial_noise, self.process.num_categories, axis=-1
     )
-    init_logits = jnp.zeros_like(init_logits, dtype=jnp.float32) - jnp.inf
+    init_logits = jnp.zeros_like(init_logits, dtype=jnp.float32)
 
     chex.assert_trees_all_equal(
         initial_step,
@@ -434,7 +434,7 @@ class IntegratedDiscreteDDIMStepTest(absltest.TestCase):
     init_logits = jnp.repeat(
         self.initial_noise, self.process.num_categories, axis=-1
     )
-    init_logits = jnp.zeros_like(init_logits, dtype=jnp.float32) - jnp.inf
+    init_logits = jnp.zeros_like(init_logits, dtype=jnp.float32)
 
     chex.assert_trees_all_equal(
         initial_step,
@@ -572,7 +572,7 @@ class DiscreteFlowMatchingStepTest(absltest.TestCase):
     init_logits = jnp.repeat(
         self.initial_noise, self.process.num_categories, axis=-1
     )
-    init_logits = jnp.zeros_like(init_logits, dtype=jnp.float32) - jnp.inf
+    init_logits = jnp.zeros_like(init_logits, dtype=jnp.float32)
 
     chex.assert_trees_all_equal(
         initial_step,
