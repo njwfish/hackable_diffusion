@@ -157,8 +157,7 @@ loss requires a `DiscreteSchedule`.
 ### `NoWeightDiscreteLoss`
 
 This is a concrete implementation that computes discrete diffusion loss without
-
-## any weighting (i.e. weight=1).
+any weighting (i.e. `weight=1`).
 
 ## Riemannian Flow Matching Loss
 

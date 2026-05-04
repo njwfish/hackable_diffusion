@@ -27,7 +27,6 @@ import numpy as np
 from absl.testing import absltest
 from absl.testing import parameterized
 
-
 ################################################################################
 # MARK: Type Aliases
 ################################################################################

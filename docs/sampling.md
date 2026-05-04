@@ -330,11 +330,15 @@ Riemannian-specific components.
 ```python
 from hackable_diffusion.lib import manifolds
 from hackable_diffusion.lib.corruption.riemannian import RiemannianProcess
+from hackable_diffusion.lib.corruption.schedules import LinearRiemannianSchedule
 from hackable_diffusion.lib.sampling.riemannian_sampling import RiemannianFlowSamplerStep
 
 # 1. Define manifold and process
 manifold = manifolds.Sphere()
-process = RiemannianProcess(manifold=manifold)
+process = RiemannianProcess(
+    manifold=manifold,
+    schedule=LinearRiemannianSchedule(),
+)
 
 # 2. Configure Sampler Step
 stepper = RiemannianFlowSamplerStep(corruption_process=process)

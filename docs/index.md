@@ -82,7 +82,7 @@ loop to be agnostic to the details of how a prediction is made.
 
 ### [Diffusion Loss Functions](./loss.md)
 
-(`lib/loss/`)
+(`lib/training/`)
 
 This module provides flexible loss functions for training diffusion models. It
 includes highly configurable weighted MSE losses for Gaussian processes (like

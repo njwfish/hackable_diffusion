@@ -63,7 +63,7 @@ class Unet(nn.Module, ConditionalBackbone):
     self_attention_bool: Sequence indicating if self-attention is used at each
       scale.
     cross_attention_bool: Sequence indicating if cross-attention is used at each
-      scale. In the middle blck, cross attention is used by default if
+      scale. In the middle block, cross attention is used by default if
       embeddings for cross attention is given.
     attention_num_heads: Number of attention heads. If set to INVALID_INT, it is
       inferred from head_dim and input channels.

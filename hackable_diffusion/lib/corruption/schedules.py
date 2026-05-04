@@ -147,7 +147,7 @@ class LinearRiemannianSchedule(RiemannianSchedule):
   Note that contrary to the original Riemannian Flow Matching, we assume that at
   time t=0, the process is close to the data distribution, and at time t=1,
   the process is close to the target distribution.
-  Hence, we use alpha(t) = 1.0 - t, and alpha_dot(t) = -1.0m instead of
+  Hence, we use alpha(t) = 1.0 - t, and alpha_dot(t) = -1.0, instead of
   alpha(t) = t, and alpha_dot(t) = 1.0.
   """
 

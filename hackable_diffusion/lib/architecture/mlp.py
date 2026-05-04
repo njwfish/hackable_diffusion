@@ -47,7 +47,7 @@ ConditioningMechanism = arch_typing.ConditioningMechanism
 class ConditionalMLP(nn.Module, ConditionalBackbone):
   """Conditional MLP backbone for diffusion models.
 
-  Receives `x`, rocess them first separately using `hidden_sizes_preprocess`
+  Receives `x`, processes them first separately using `hidden_sizes_preprocess`
   layers, producing `x_emb`. Then, it takes conditioning_embeddings and combines
   them with `x_emb`. After that, it feeds them into `hidden_sizes_postprocess`
   MLP blocks, and finally outputs the result.

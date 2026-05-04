@@ -62,10 +62,9 @@ class TokenEmbedder(nn.Module, BaseTokenEmbedder):
       then the last two dimensions are collapsed leading to <B, H, W, C*F>. This
       is then passed to the base backbone. After base backbone, the outputs are
       uncollapsed from <B, H, W, C*F>, back to <B, H, W, C, F>, and then
-      projected to <B, H, W, C, V> and the backbone outputs will be projected
-      to the vocabulary size. If `False`, it simply uses token_embedder,
-      followed by the base backbone, and then projects to the vocabulary size.
-
+      projected to <B, H, W, C, V> and the backbone outputs will be projected to
+      the vocabulary size. If `False`, it simply uses token_embedder, followed
+      by the base backbone, and then projects to the vocabulary size.
     dtype: The dtype to use for the discrete model.
   """
 
@@ -137,9 +136,9 @@ class DenseProjector(nn.Module, BaseProjector):
   Attributes:
     num_categories: The vocabulary size of the model.
     embedding_dim: The embedding dimension of the discrete model.
-    adapt_to_image_like_data: Whether to adapt the model to image-like
-      data. If True, the input data is expected to have the shape <B, H, W, C>
-      (this means that the channel dimension has been collapsed), which is then
+    adapt_to_image_like_data: Whether to adapt the model to image-like data. If
+      True, the input data is expected to have the shape <B, H, W, C> (this
+      means that the channel dimension has been collapsed), which is then
       projected and reshape into projected to <B, H, W, C, V>. If `False`, it
       simply uses token_projector, followed by the base backbone, and then
       projects to the vocabulary size. We refer to TokenEmbedder for more
@@ -170,7 +169,7 @@ class DenseProjector(nn.Module, BaseProjector):
           f=emb_dimension,  # pytype: disable=name-error
       )
 
-    # Project the backbone outputs to to the output vocabulary size.
+    # Project the backbone outputs to the output vocabulary size.
     output = nn.Dense(
         features=self.num_categories,
         dtype=self.dtype,
@@ -190,7 +189,7 @@ class ConditionalDiscreteBackbone(nn.Module, ConditionalBackbone):
 
   Attributes:
     base_backbone: The base backbone to use for the discrete model. Can be any
-      conditionl backbone such as MLP or UNet.
+      conditional backbone such as MLP or UNet.
     token_embedder: The token embedder to use for the discrete model.
     token_projector: The token projector to use for the discrete model.
   """

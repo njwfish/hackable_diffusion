@@ -190,7 +190,7 @@ class StaticThresholdProjectionFn(ProjectionFn):
 class DynamicThresholdProjectionFn(ProjectionFn):
   """Dynamic threshold projection function.
 
-  Thee implementation is based on https://arxiv.org/abs/2205.11487.
+  The implementation is based on https://arxiv.org/abs/2205.11487.
 
   Attributes:
     percentile: The percentile to use for the dynamic threshold. Must be between

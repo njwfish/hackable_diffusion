@@ -111,8 +111,8 @@ def _stable_softmax(
     output = jax.nn.softmax(logits.astype(jnp.float32)).astype(jnp.bfloat16)
   else:
     warnings.warn(
-        "Softmax expects logits in float32 or bfloat16, but got %s",
-        logits.dtype,
+        "Softmax expects logits in float32 or bfloat16, but got"
+        f" {logits.dtype}",
     )
     logits = logits.astype(jnp.float32)
     output = jax.nn.softmax(logits)

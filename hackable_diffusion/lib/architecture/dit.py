@@ -66,11 +66,11 @@ class DiT(nn.Module, ConditionalBackbone):
     dtype: The data type of the module.
     pad_token: The pad token value. This value is used in the attention function
       down the line to mask out padding tokens. Note that using this tokens
-      assumes that the inptus to DiT are already tokenized, which is not the
+      assumes that the inputs to DiT are already tokenized, which is not the
       case for images.
     use_padding_mask: Whether to use a padding mask. Note that in this case we
       assume that inputs are already tokenized. By default, we are not using it
-      becuase DiT is mainly used for image generation.
+      because DiT is mainly used for image generation.
   """
 
   num_blocks: int

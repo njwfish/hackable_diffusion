@@ -180,7 +180,7 @@ class GaussianProcess(CorruptionProcess):
   xt = alpha(t) * x0 + sigma(t) * epsilon
 
   The schedule parameters are alpha and sigma.
-  The the corresponding target / prediction parameterizations are: x0, epsilon,
+  The corresponding target / prediction parameterizations are: x0, epsilon,
   score, velocity and v.
   """
 

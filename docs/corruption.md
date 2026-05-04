@@ -24,7 +24,7 @@ The main components are:
     continuous data (e.g., images), `CategoricalProcess` for discrete data
     (e.g., labels, tokens), `SimplicialProcess` for simplex-valued categorical
     data (e.g., graph edges with Dirichlet noise), and `RiemannianProcess` for
-    data on Riemannian manifolds..
+    data on Riemannian manifolds.
 
 ## `CorruptionProcess` Protocol
 
