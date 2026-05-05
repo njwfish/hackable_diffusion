@@ -354,12 +354,19 @@ class DDIMStep(SamplerStep):
 class VelocityStep(SamplerStep):
   """DDIM sampler from https://arxiv.org/abs/2010.02502.
 
-  epsilon controls the interpolation between DDIM and DDPM:
-  epsilon = 0.0 gives (deterministic) DDIM and epsilon = 1.0 gives DDPM.
+  stoch_coeff controls the interpolation between DDIM and DDPM:
+  stoch_coeff = 0.0 gives the discretisation of an ODE (as in Flow Matching) and
+  stoch_coeff = 1.0 gives the discretisation of an SDE.
+
+  Attributes:
+    corruption_process: The corruption process to use.
+    stoch_coeff: The interpolation parameter between DDIM and DDPM.
+    stochastic_last_step: Whether the last step is stochastic.
   """
 
   corruption_process: GaussianProcess
-  epsilon: float
+  stoch_coeff: float
+  stochastic_last_step: bool = False
 
   @kt.typechecked
   def initialize(
@@ -402,9 +409,9 @@ class VelocityStep(SamplerStep):
     score = prediction_dict["score"]
     z = jax.random.normal(key=next_step_info.rng, shape=xt.shape)
 
-    delta = -velocity + 0.5 * self.epsilon**2 * g**2 * score
+    delta = -velocity + 0.5 * self.stoch_coeff**2 * g**2 * score
     new_mean = xt + delta * dt
-    volatility = jnp.sqrt(dt) * g * self.epsilon
+    volatility = jnp.sqrt(dt) * g * self.stoch_coeff
 
     if stochastic:
       new_xt = new_mean + volatility * z
@@ -428,7 +435,7 @@ class VelocityStep(SamplerStep):
         prediction,
         current_step,
         last_step_info,
-        stochastic=False,
+        stochastic=self.stochastic_last_step,
     )
 
 
