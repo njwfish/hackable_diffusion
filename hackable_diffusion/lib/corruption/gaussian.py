@@ -30,8 +30,8 @@ logSNR is defined as
 
   logSNR(t) = 2 log(α(t) / σ(t)).
 
-Importantly, the logSNR is a non-decreasing quantity in all considered
-schedules.
+Importantly, the logSNR is a non-increasing quantity in all considered
+schedules (it goes from +∞ at t=0 to -∞ at t=1).
 
 The associated forward process is given by
 
@@ -42,7 +42,7 @@ defined as follows
 
   f(t) = log(α(t))',
   g(t)**2 = 2 α(t) σ(t) (σ(t)/α(t))',
-  g(t) = σ(t)sqrt(logSNR_der(t)).
+  g(t) = σ(t)sqrt(-logSNR_der(t)).
 
 Note that in that case, we not only have (1) but also the more general formula
 
