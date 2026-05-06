@@ -106,9 +106,9 @@ def compute_continuous_diffusion_loss(
 
   Returns:
     The batched loss, i.e., a tensor of shape [B,] where B is the batch size. To
-    get the scalar loss use `jnp.mean(loss)`. The loss is returned before the
-    averaging to allow for other operations such as masking of loss values
-    afterwards.
+    get the scalar loss use `jnp.mean(loss)`. Note that all non-batch dimensions
+    are averaged (mean-reduced) internally, so the returned loss is a per-sample
+    scalar and cannot be used for post-hoc spatial masking.
   """
 
   if convert_to_logsnr_schedule or weight_fn:

@@ -61,13 +61,9 @@ The `InferenceFn` (pure update function) is visible from the `SamplerStep`
  is called to produce the final clean output sample.
 """
 
-import dataclasses
 from typing import Protocol
 import flax.struct
 from hackable_diffusion.lib import hd_typing
-import jax
-import kauldron.ktyping as kt
-
 
 #################################################################################
 # MARK: Type Aliases
@@ -117,7 +113,6 @@ class DiffusionStep:
 
   Attributes:
     xt: The noisy data at the current step.
-    conditioning: The conditioning data from the prediction model.
     step_info: The `StepInfo` used to compute the current step.
     aux: Additional data computed by the sampler.
   """
