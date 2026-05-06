@@ -21,13 +21,14 @@ import jax
 import jax.numpy as jnp
 
 from absl.testing import absltest
+from absl.testing import parameterized
 
 ################################################################################
 # MARK: Tests
 ################################################################################
 
 
-class TimeScheduleTest(absltest.TestCase):
+class TimeScheduleTest(parameterized.TestCase, absltest.TestCase):
 
   # MARK: UniformTimeSchedule tests
 
@@ -135,6 +136,11 @@ class TimeScheduleTest(absltest.TestCase):
         data_spec=data_spec,
     ).time
     chex.assert_trees_all_close(uniform_steps, edm_steps)
+
+  @parameterized.parameters(0.0, -1.0)
+  def test_edm_invalid_rho(self, rho):
+    with self.assertRaisesRegex(ValueError, "rho must be positive"):
+      time_scheduling.EDMTimeSchedule(span=utils.SafeSpan(), rho=rho)
 
 
 if __name__ == "__main__":

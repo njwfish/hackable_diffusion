@@ -147,6 +147,13 @@ class EDMTimeSchedule(TimeScheduleBaseClass):
 
   rho: float = 1.0
 
+  def __post_init__(self):
+    if self.rho <= 0:
+      raise ValueError(
+          f"rho must be positive, got {self.rho}. rho=0 causes division by"
+          " zero in the schedule computation."
+      )
+
   @kt.typechecked
   def all_step_infos(
       self, rng: PRNGKey, num_steps: int, data_spec: DataArray
