@@ -28,11 +28,9 @@ from absl.testing import parameterized
 ################################################################################
 
 
-class TimeScheduleTest(parameterized.TestCase, absltest.TestCase):
+class UniformTimeScheduleTest(absltest.TestCase):
 
-  # MARK: UniformTimeSchedule tests
-
-  def test_uniform_all_step_infos(self):
+  def test_all_step_infos(self):
     time_schedule = time_scheduling.UniformTimeSchedule(
         span=utils.SafeSpan(safety_epsilon=0.1)
     )
@@ -53,7 +51,7 @@ class TimeScheduleTest(parameterized.TestCase, absltest.TestCase):
         expected,
     )
 
-  def test_uniform_all_step_infos_with_starting_noise(self):
+  def test_all_step_infos_with_starting_noise(self):
     time_schedule = time_scheduling.UniformTimeSchedule(
         span=utils.SafeSpan(_minval=0.0, _maxval=0.6, safety_epsilon=0.1)
     )
@@ -74,7 +72,7 @@ class TimeScheduleTest(parameterized.TestCase, absltest.TestCase):
         expected,
     )
 
-  def test_uniform_all_step_infos_without_safety_epsilon(self):
+  def test_all_step_infos_without_safety_epsilon(self):
     time_schedule = time_scheduling.UniformTimeSchedule(span=utils.SafeSpan())
     data_spec = jnp.zeros((2, 3))
     expected = jnp.array([
@@ -93,7 +91,8 @@ class TimeScheduleTest(parameterized.TestCase, absltest.TestCase):
         expected,
     )
 
-  # MARK: EDMTimeSchedule tests
+
+class EDMTimeScheduleTest(parameterized.TestCase):
 
   def test_all_step_infos(self):
     time_schedule = time_scheduling.EDMTimeSchedule(
@@ -116,7 +115,7 @@ class TimeScheduleTest(parameterized.TestCase, absltest.TestCase):
         expected,
     )
 
-  def test_edm_all_step_infos_with_rho_one_is_uniform(self):
+  def test_rho_one_is_uniform(self):
     uniform_time_schedule = time_scheduling.UniformTimeSchedule(
         span=utils.SafeSpan(safety_epsilon=0.1)
     )

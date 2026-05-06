@@ -80,23 +80,18 @@ class TimeSchedule(Protocol):
     ...
 
 
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class TimeScheduleBaseClass(TimeSchedule):
-  """Base class for time schedules."""
-
-  span: utils.SafeSpan = utils.SafeSpan(
-      _minval=0.0, _maxval=1.0, safety_epsilon=1e-6
-  )
-
-
 ################################################################################
 # MARK: Uniform Time Schedule
 ################################################################################
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class UniformTimeSchedule(TimeScheduleBaseClass):
+class UniformTimeSchedule(TimeSchedule):
   """Creates a schedule with uniformly spaced time steps in [ε, 1-ε]."""
+
+  span: utils.SafeSpan = utils.SafeSpan(
+      _minval=0.0, _maxval=1.0, safety_epsilon=1e-6
+  )
 
   @kt.typechecked
   def all_step_infos(
@@ -132,7 +127,7 @@ class UniformTimeSchedule(TimeScheduleBaseClass):
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class EDMTimeSchedule(TimeScheduleBaseClass):
+class EDMTimeSchedule(TimeSchedule):
   """Creates a schedule with non-uniformly spaced time steps in [ε, 1-ε].
 
   The implementation is based on https://arxiv.org/abs/2206.00364.
@@ -145,6 +140,9 @@ class EDMTimeSchedule(TimeScheduleBaseClass):
   uniform.
   """
 
+  span: utils.SafeSpan = utils.SafeSpan(
+      _minval=0.0, _maxval=1.0, safety_epsilon=1e-6
+  )
   rho: float = 1.0
 
   def __post_init__(self):
