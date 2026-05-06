@@ -342,14 +342,14 @@ class NestedDiffusionLoss(loss_base.DiffusionLoss):
       time: TimeTree,
   ) -> LossOutputTree:
     return jax.tree.map(
-        lambda loss, target, pred, t: loss(
+        lambda loss, pred, target, t: loss(
             preds=pred,
             targets=target,
             time=t,
         ),
         self.losses,
-        targets,
         preds,
+        targets,
         time,
     )
 

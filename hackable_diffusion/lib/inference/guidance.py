@@ -104,13 +104,13 @@ class LimitedIntervalGuidanceFn(GuidanceFn):
   @kt.typechecked
   def __call__(
       self,
-      xt: DataArray,
+      xt: DataTree,
       conditioning: Conditioning,
-      time: TimeArray,
-      cond_outputs: TargetInfo,
-      uncond_outputs: TargetInfo,
-  ) -> TargetInfo:
-    """Simple scalar guidance function."""
+      time: TimeTree,
+      cond_outputs: TargetInfoTree,
+      uncond_outputs: TargetInfoTree,
+  ) -> TargetInfoTree:
+    """Limited interval guidance function."""
     del conditioning  # unused
     time = utils.bcast_right(time, xt.ndim)
 
