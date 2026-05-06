@@ -68,7 +68,7 @@ class SamplingPrecisionMode(enum.StrEnum):
 
 
 ################################################################################
-# MARK: Post-corruption functions
+# MARK: Post-Corruption Functions
 ################################################################################
 
 
@@ -356,7 +356,7 @@ class SimplicialProcess(CorruptionProcess):
     return self.schedule.evaluate(time)
 
   ##############################################################################
-  # MARK: Factory methods
+  # MARK: Factory Methods
   ##############################################################################
 
   @classmethod

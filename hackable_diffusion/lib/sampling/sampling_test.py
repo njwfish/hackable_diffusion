@@ -34,7 +34,7 @@ from absl.testing import parameterized
 SamplerStep = base.SamplerStep
 
 ################################################################################
-# MARK: Helper functions
+# MARK: Helper Functions
 ################################################################################
 
 dummy_inference_fn = lambda xt, conditioning, time: {'x0': xt}
@@ -76,7 +76,7 @@ class DummyStep(SamplerStep):
 
 class DiffusionSamplingTest(parameterized.TestCase):
 
-  # MARK: Test for helper functions
+  # MARK: Test for Helper Functions
 
   def setUp(self):
     super().setUp()

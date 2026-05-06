@@ -30,7 +30,9 @@ from absl.testing import parameterized
 
 class UniformTimeScheduleTest(absltest.TestCase):
 
-  def test_all_step_infos(self):
+  # MARK: UniformTimeSchedule Tests
+
+  def test_uniform_all_step_infos(self):
     time_schedule = time_scheduling.UniformTimeSchedule(
         span=utils.SafeSpan(safety_epsilon=0.1)
     )
@@ -90,6 +92,8 @@ class UniformTimeScheduleTest(absltest.TestCase):
         ).time,
         expected,
     )
+
+  # MARK: EDMTimeSchedule Tests
 
 
 class EDMTimeScheduleTest(parameterized.TestCase):

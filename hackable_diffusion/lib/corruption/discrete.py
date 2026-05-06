@@ -66,7 +66,7 @@ class SamplingPrecisionMode(enum.StrEnum):
 
 
 ################################################################################
-# MARK: Projection functions
+# MARK: Projection Functions
 ################################################################################
 
 
@@ -333,7 +333,7 @@ class CategoricalProcess(CorruptionProcess):
     return self.schedule.evaluate(time)
 
   ##############################################################################
-  # MARK: Factory methods
+  # MARK: Factory Methods
   ##############################################################################
 
   @classmethod

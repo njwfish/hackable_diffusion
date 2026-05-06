@@ -44,7 +44,7 @@ ConditioningMechanism = arch_typing.ConditioningMechanism
 EmbeddingMergeMethod = arch_typing.EmbeddingMergeMethod
 
 ################################################################################
-# MARK: Base classes
+# MARK: Base Classes
 ################################################################################
 
 
@@ -81,7 +81,7 @@ class BaseConditioningEncoder(Protocol):
 
 
 ################################################################################
-# MARK: Time embedders
+# MARK: Time Embedders
 ################################################################################
 
 
@@ -162,7 +162,7 @@ class IdentityTimeEmbedder(nn.Module, BaseTimeEmbedder):
 
 
 ################################################################################
-# MARK: Conditioning embedders
+# MARK: Conditioning Embedders
 ################################################################################
 
 
@@ -338,7 +338,7 @@ class FieldSelector(nn.Module, BaseEmbedder):
 
 
 ################################################################################
-# MARK: Process and combine time and conditioning signals
+# MARK: Process and Combine Time and Conditioning Signals
 ################################################################################
 
 

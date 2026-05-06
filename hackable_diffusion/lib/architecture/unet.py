@@ -27,7 +27,7 @@ import jax.numpy as jnp
 import kauldron.ktyping as kt
 
 ################################################################################
-# MARK: Common types
+# MARK: Type Aliases
 ################################################################################
 
 DType = hd_typing.DType

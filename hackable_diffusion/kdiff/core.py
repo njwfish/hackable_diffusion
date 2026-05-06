@@ -56,7 +56,7 @@ from hackable_diffusion.lib import hd_typing
 from kauldron import kd
 
 ################################################################################
-# MARK: Type aliases
+# MARK: Type Aliases
 ################################################################################
 
 Array = hd_typing.Array
