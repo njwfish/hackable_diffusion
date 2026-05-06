@@ -425,11 +425,11 @@ class MultiModalDiffusionNetwork(nn.Module, BaseDiffusionNetwork):
   @kt.typechecked
   def __call__(
       self,
-      xt: DataTree,
       time: TimeTree,
+      xt: DataTree,
       conditioning: Conditioning | None,
       is_training: bool,
-  ):
+  ) -> TargetInfoTree:
     if self.time_rescaler is not None:
       time_rescaled = utils.lenient_map(
           lambda time, time_rescaler: time_rescaler(time)
