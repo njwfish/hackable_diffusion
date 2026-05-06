@@ -134,6 +134,50 @@ print(f"Output shape: {output.shape}")
 # Output shape: (1, 64, 64, 3)
 ```
 
+### `DiT`
+
+(`lib/architecture/dit.py`)
+
+The `DiT` class implements a **Diffusion Transformer** backbone based on
+<https://arxiv.org/abs/2212.09748>. It uses adaptive layer norm zero
+(adaLN-Zero) as the conditioning mechanism. The architecture consists of
+repeated transformer blocks with optional encoder/decoder and absolute
+positional encoding.
+
+Key parameters:
+
+  * `num_blocks`: Number of DiT blocks.
+  * `block`: A DiT block module (e.g., `DiTBlockAdaLNZero`).
+  * `encoder`: Optional encoder (e.g., `Patchify` for image inputs).
+  * `decoder`: Optional decoder (e.g., `DePatchify` for image outputs).
+  * `absolute_posenc`: Optional positional encoding module.
+  * `use_padding_mask`: Whether to mask out padding tokens (for tokenized
+    inputs).
+
+The `DiT` expects an `ADAPTIVE_NORM` conditioning embedding. The `mnist_dit`
+notebook demonstrates its usage.
+
+## Diffusion Network
+
+(`lib/diffusion_network.py`)
+
+The **`DiffusionNetwork`** class is the primary entry point for constructing a
+complete diffusion model. It composes a backbone (e.g., `Unet` or `DiT`) with a
+`ConditioningEncoder` into a single Flax module that conforms to the
+`BaseDiffusionNetwork` protocol.
+
+  * **`DiffusionNetwork`**: Single-modal model. Takes `(time, xt,
+    conditioning)` and internally runs the conditioning encoder, applies any
+    input/time rescaling, and calls the backbone.
+  * **`MultiModalDiffusionNetwork`**: Generalizes `DiffusionNetwork` to
+    multi-modal PyTree data, allowing different prediction types and data
+    dtypes per leaf.
+  * **`SelfConditioningDiffusionNetwork`**: Adds self-conditioning, where the
+    model receives its own previous prediction as an additional input.
+
+These classes also support `InputRescaler` and `TimeRescaler` for
+schedule-dependent input preprocessing (e.g., EDM preconditioning).
+
 ### `ConditionalMLP`
 
 (`lib/architecture/mlp.py`)

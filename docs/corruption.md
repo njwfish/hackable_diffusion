@@ -367,9 +367,13 @@ The torus is a flat space with periodic boundary conditions.
 ### Example Usage
 
 ```python
+import jax
+import jax.numpy as jnp
 from hackable_diffusion.lib import manifolds
 from hackable_diffusion.lib.corruption.riemannian import RiemannianProcess
 from hackable_diffusion.lib.corruption.schedules import LinearRiemannianSchedule
+
+key = jax.random.PRNGKey(0)
 
 # 1. Define manifold and process
 manifold = manifolds.Sphere()
@@ -379,6 +383,7 @@ process = RiemannianProcess(manifold=manifold, schedule=schedule)
 # 2. Corrupt data
 x0 = jnp.array([[1.0, 0.0, 0.0]]) # Point on S2
 time = jnp.array([0.5])
+key, subkey = jax.random.split(key)
 xt, target_info = process.corrupt(subkey, x0, time)
 
 # target_info['velocity'] is the regression target u_t

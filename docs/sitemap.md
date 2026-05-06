@@ -3,6 +3,6 @@
 *   [Architecture](./architecture.md)
 *   [Corruption Processes](./corruption.md)
 *   [Inference Function](./inference.md)
-*   [Diffusion Loss Functions](./loss.md)
+*   [Multimodal](./multimodal.md)
 *   [Sampling](./sampling.md)
-
+*   [Training](./training.md)

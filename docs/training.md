@@ -1,4 +1,4 @@
-# Diffusion Loss Functions
+# Training
 
 This document details the loss functions used for training diffusion models in
 the Hackable Diffusion library. The loss modules are designed with flexibility
@@ -86,11 +86,10 @@ formulations from recent literature within a single framework.
 
 ### `SiD2Loss`
 
-This is a concrete implementation of the sigmoid weighting introduced in
-<https://arxiv.org/abs/2303.00848> and use in Simpler Diffusion (SiD2)
-<https://arxiv.org/abs/2410.19324>. It computes an MSE in `x0` space, converts
-it to logSNR time, and applies an additional sigmoid-based weighting. This has
-been shown to improve training stability and performance.
+This is a concrete implementation of the sigmoid weighting from Simpler
+Diffusion (SiD2) <https://arxiv.org/abs/2410.19324>. It computes an MSE in `x0`
+space, converts it to logSNR time, and applies an additional sigmoid-based
+weighting. This has been shown to improve training stability and performance.
 
 #### Example
 
@@ -197,3 +196,58 @@ ensures this via:
 
 By enforcing the tangent space constraint, the RFM objective can be optimized
 using standard MSE loss while remaining geometrically rigorous.
+
+## Time Sampling
+
+(`lib/training/time_sampling.py`)
+
+During training, the diffusion loss is computed at random timesteps sampled from
+`[0, 1]`. The `TimeSampler` protocol defines how these timesteps are drawn. The
+choice of time distribution can significantly affect training dynamics.
+
+### `TimeSampler` Protocol
+
+```python
+def __call__(self, key: PRNGKey, data_spec: DataTree) -> TimeTree:
+  ...
+```
+
+Takes a PRNG key and a data specification (used to infer batch size and shape),
+and returns sampled timesteps. Supports both array and PyTree data.
+
+### Implementations
+
+*   **`UniformTimeSampler`**: Draws `t ~ Uniform(span)`. This is the simplest
+    and most common strategy. The `axes` parameter controls which data axes
+    share the same time (default: only batch axis).
+*   **`LogitNormalTimeSampler`**: Draws `t` from a logit-normal distribution,
+    following <https://arxiv.org/abs/2403.03206> (Eq. 19). Parameterized by
+    `mean` and `scale`, this concentrates samples around specific noise levels,
+    which can improve training efficiency.
+*   **`UniformStratifiedTimeSampler`**: Stratified uniform sampling following
+    <https://arxiv.org/abs/2107.00630> (I.1). Reduces variance by ensuring
+    each example in the batch sees a different stratum of the time interval.
+*   **`UnbalancedTimestepSampler`**: A multimodal-aware sampler from the
+    JointDiT paper <https://arxiv.org/abs/2505.00482> (Section 3.1). It
+    samples different times for different modalities, with a probability
+    `p_equal` of synchronizing them.
+
+### Example
+
+```python
+from hackable_diffusion.lib.training.time_sampling import (
+    LogitNormalTimeSampler,
+    UniformTimeSampler,
+)
+import jax
+import jax.numpy as jnp
+
+# Uniform sampling
+uniform_sampler = UniformTimeSampler()
+data_spec = jnp.zeros((8, 32, 32, 3))
+times = uniform_sampler(jax.random.PRNGKey(0), data_spec)
+
+# Logit-normal sampling (concentrates around t=0.5)
+logit_sampler = LogitNormalTimeSampler(mean=0.0, scale=1.0)
+times = logit_sampler(jax.random.PRNGKey(0), data_spec)
+```

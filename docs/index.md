@@ -80,13 +80,14 @@ encapsulates the call to the model and can be composed with other
 functionalities like classifier-free guidance. This allows the main sampling
 loop to be agnostic to the details of how a prediction is made.
 
-### [Diffusion Loss Functions](./loss.md)
+### [Training](./training.md)
 
 (`lib/training/`)
 
 This module provides flexible loss functions for training diffusion models. It
 includes highly configurable weighted MSE losses for Gaussian processes (like
-`SiD2Loss`) and cross-entropy losses for discrete data.
+`SiD2Loss`) and cross-entropy losses for discrete data. It also provides time
+sampling strategies for selecting training timesteps.
 
 ### [Sampling](./sampling.md)
 
@@ -107,14 +108,18 @@ excellent starting points for understanding the library's components in action.
     a simple 2D toy dataset.
 *   **`mnist.ipynb`**: Trains a standard continuous diffusion model (Gaussian
     process) on the MNIST dataset, demonstrating image data handling.
+*   **`mnist_dit.ipynb`**: Trains a Diffusion Transformer (DiT) on MNIST,
+    showcasing the DiT backbone as an alternative to U-Net.
 *   **`mnist_discrete.ipynb`**: Trains a discrete diffusion model on MNIST,
     treating pixel values as categorical data. This showcases the use of
     `CategoricalProcess`.
+*   **`mnist_simplicial.ipynb`**: Trains a simplicial diffusion model on MNIST
+    using `SimplicialProcess` with Dirichlet noise on the probability simplex.
 *   **`mnist_multimodal.ipynb`**: A more advanced example that trains a
     multimodal model to jointly generate MNIST images with discrete and
     continuous diffusion models, demonstrating the "Nested" design pattern in a
     practical setting.
+*   **`mnist_nn_and_nnx.ipynb`**: Demonstrates both Flax `nn` and `nnx` module
+    styles for defining diffusion networks.
 *   **`riemannian_sphere_training.ipynb`**: Demonstrates Riemannian Flow
     Matching on the unit sphere S^2.
-*   **`riemannian_torus_ode_to_sde.ipynb`**: Shows how to use Riemannian Flow
-    Matching on the torus manifold for both ODE and SDE sampling.
