@@ -404,11 +404,6 @@ def _identity(schedule, time: TimeArray) -> TimeArray:
   return jnp.ones_like(time)
 
 
-def _not_implemented(schedule, time: TimeArray) -> TimeArray:
-  del schedule, time  # Unused
-  raise NotImplementedError("Not implemented")
-
-
 CONVERTERS = immutabledict.immutabledict({
     "x0": {
         "x0": _identity,
