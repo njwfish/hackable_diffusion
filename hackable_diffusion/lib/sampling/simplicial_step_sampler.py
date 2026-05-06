@@ -160,9 +160,9 @@ class SimplicialDDIMStep(SamplerStep):
 
     # Get logits
     logits = self.corruption_process.convert_predictions(
-        prediction,
-        log_xt,
-        time,
+        prediction=prediction,
+        xt=log_xt,
+        time=time,
     )['logits']
 
     # Sample hard token

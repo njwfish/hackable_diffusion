@@ -90,7 +90,7 @@ class SdeStep(SamplerStep):
     )
 
   @kt.typechecked
-  def update(
+  def _update(
       self,
       prediction: TargetInfo,
       current_step: DiffusionStep,
@@ -138,13 +138,27 @@ class SdeStep(SamplerStep):
     )
 
   @kt.typechecked
+  def update(
+      self,
+      prediction: TargetInfo,
+      current_step: DiffusionStep,
+      next_step_info: StepInfo,
+  ) -> DiffusionStep:
+    return self._update(
+        prediction,
+        current_step,
+        next_step_info,
+        stochastic=True,
+    )
+
+  @kt.typechecked
   def finalize(
       self,
       prediction: TargetInfo,
       current_step: DiffusionStep,
       last_step_info: StepInfo,
   ) -> DiffusionStep:
-    return self.update(
+    return self._update(
         prediction,
         current_step,
         last_step_info,
@@ -381,7 +395,7 @@ class VelocityStep(SamplerStep):
     )
 
   @kt.typechecked
-  def update(
+  def _update(
       self,
       prediction: TargetInfo,
       current_step: DiffusionStep,
@@ -425,13 +439,27 @@ class VelocityStep(SamplerStep):
     )
 
   @kt.typechecked
+  def update(
+      self,
+      prediction: TargetInfo,
+      current_step: DiffusionStep,
+      next_step_info: StepInfo,
+  ) -> DiffusionStep:
+    return self._update(
+        prediction,
+        current_step,
+        next_step_info,
+        stochastic=True,
+    )
+
+  @kt.typechecked
   def finalize(
       self,
       prediction: TargetInfo,
       current_step: DiffusionStep,
       last_step_info: StepInfo,
   ) -> DiffusionStep:
-    return self.update(
+    return self._update(
         prediction,
         current_step,
         last_step_info,
