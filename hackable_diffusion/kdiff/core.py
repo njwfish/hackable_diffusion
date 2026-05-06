@@ -44,6 +44,8 @@ context.preds = model(
     x0=context.batch["image"],
     cond={"label": context.batch["label"]})
 ```
+
+See also https://kauldron.readthedocs.io/en/latest/kontext.html#use-case
 """
 
 import dataclasses
