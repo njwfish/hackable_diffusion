@@ -87,6 +87,32 @@ class TimeSamplersTest(parameterized.TestCase):
     self.assertGreaterEqual(jnp.min(time), 0.4)
     self.assertLessEqual(jnp.max(time), 0.6)
 
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="uniform_no_batch",
+          sampler_cls=time_sampling.UniformTimeSampler,
+          axes=(1,),
+      ),
+      dict(
+          testcase_name="logit_normal_no_batch",
+          sampler_cls=time_sampling.LogitNormalTimeSampler,
+          axes=(1,),
+      ),
+      dict(
+          testcase_name="uniform_stratified_no_batch",
+          sampler_cls=time_sampling.UniformStratifiedTimeSampler,
+          axes=(1,),
+      ),
+      dict(
+          testcase_name="uniform_stratified_no_batch_multi",
+          sampler_cls=time_sampling.UniformStratifiedTimeSampler,
+          axes=(1, 2),
+      ),
+  )
+  def test_invalid_axes_missing_batch_dim(self, sampler_cls, axes):
+    with self.assertRaisesRegex(ValueError, "axes must include 0"):
+      sampler_cls(axes=axes)
+
 
 if __name__ == "__main__":
   absltest.main()

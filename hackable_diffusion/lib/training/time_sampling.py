@@ -192,6 +192,12 @@ class UniformStratifiedTimeSampler(TimeSampler):
       _minval=0.0, _maxval=1.0, safety_epsilon=0.0
   )
 
+  def __post_init__(self):
+    if 0 not in self.axes:
+      raise ValueError(
+          "axes must include 0. Broadcasting over the batch is not supported."
+      )
+
   @kt.typechecked
   def __call__(self, key: PRNGKey, data_spec: DataArray) -> TimeArray:
     shape = utils.get_broadcastable_shape(data_spec.shape, self.axes)
@@ -240,15 +246,22 @@ class UnbalancedTimestepSampler(TimeSampler):
     shape1 = utils.get_broadcastable_shape(data_spec[self.key1].shape, (0,))
     shape2 = utils.get_broadcastable_shape(data_spec[self.key2].shape, (0,))
 
-    key1, key2, switch_key = jax.random.split(key, 3)
+    random_key1, random_key2, switch_key = jax.random.split(key, 3)
 
-    z1 = jax.random.normal(key1, shape=shape1)
+    z1 = jax.random.normal(random_key1, shape=shape1)
     f = jax.nn.sigmoid(z1) * self.s1 / (1 + (self.s1 - 1) * jax.nn.sigmoid(z1))
 
-    z2 = jax.random.normal(key2, shape=shape2)
+    z2 = jax.random.normal(random_key2, shape=shape2)
     g = jax.nn.sigmoid(z2) * self.s2 / (1 + (self.s2 - 1) * jax.nn.sigmoid(z2))
 
     # With probability p_equal, set g = 1 - f.
-    equal_mask = jax.random.bernoulli(switch_key, p=self.p_equal, shape=shape1)
-    g = jax.lax.select(equal_mask, 1 - f, g)
+    # Use batch-only shape for the mask to avoid broadcasting issues when
+    # shape1 and shape2 differ in spatial dimensions.
+    batch_shape = (data_spec[self.key1].shape[0],)
+    equal_mask = jax.random.bernoulli(
+        switch_key, p=self.p_equal, shape=batch_shape
+    )
+    equal_mask = utils.bcast_right(equal_mask, len(shape2))
+    f_for_g = utils.bcast_right(f.reshape(batch_shape), len(shape2))
+    g = jax.lax.select(equal_mask, 1 - f_for_g, g)
     return {self.key1: f, self.key2: g}
