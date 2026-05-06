@@ -71,11 +71,21 @@ def safe_norm(
     keepdims: bool = True,
     eps: float = 1e-9,
 ) -> Array:
-  """Computes norm safely to avoid NaN gradients at zero."""
-  is_zero = jnp.all(x == 0, axis=axis, keepdims=keepdims)
-  safe_x = jnp.where(is_zero, eps, x)
-  n = jnp.linalg.norm(safe_x, axis=axis, keepdims=keepdims)
-  return jnp.where(is_zero, 0.0, n)
+  """Computes norm safely to avoid NaN gradients at zero.
+
+  Uses ``sqrt(max(sum(x^2), eps^2))`` instead of the standard ``norm``.
+
+  Args:
+    x: Input tensor.
+    axis: Axes over which to compute the norm.
+    keepdims: Whether to keep the original number of dimensions.
+    eps: Epsilon value to avoid NaN gradients at zero.
+
+  Returns:
+    The safe norm of x.
+  """
+  sq = jnp.sum(jnp.square(x), axis=axis, keepdims=keepdims)
+  return jnp.sqrt(jnp.maximum(sq, eps * eps))
 
 
 def transpose(x: DataArray) -> DataArray:

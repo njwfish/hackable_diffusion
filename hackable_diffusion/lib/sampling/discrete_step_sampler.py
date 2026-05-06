@@ -162,7 +162,7 @@ class RescaledRemaskingFn(RemaskingFn):
       )
 
   schedule: DiscreteSchedule
-  rescale_factor: float = 1.0
+  rescale_factor: float
   switch_min: float = 0.0
   switch_max: float = 1.0
 
