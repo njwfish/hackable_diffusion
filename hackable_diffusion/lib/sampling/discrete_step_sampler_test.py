@@ -1054,6 +1054,54 @@ class GreedyPlannerTest(absltest.TestCase):
     chex.assert_trees_all_close(out_probs.noise, expected.noise)
     chex.assert_trees_all_close(out_probs.clean, expected.clean)
 
+  def test_greedy_planner_2d_spatial(self):
+    """GreedyPlanner must work with 2D spatial data (e.g.
+
+    adjacency matrices).
+    """
+    planner = discrete_step_sampler.GreedyPlanner()
+    # Shape (1, 3, 3, 1): batch=1, spatial=(3,3), vocab_trailing=1.
+    routing_weights = discrete_step_sampler.RoutingWeights(
+        stay=jnp.full((1, 3, 3, 1), 0.3),
+        noise=jnp.full((1, 3, 3, 1), 0.2),
+        clean=jnp.full((1, 3, 3, 1), 0.5),
+    )
+    # 9 positions total, 2 vocab classes.
+    # Logits: position (0,0) has highest confidence, then (0,1), etc.
+    logits_flat = jnp.array([
+        [10.0, 0.0],
+        [9.0, 0.0],
+        [8.0, 0.0],
+        [7.0, 0.0],
+        [6.0, 0.0],
+        [5.0, 0.0],
+        [4.0, 0.0],
+        [3.0, 0.0],
+        [2.0, 0.0],
+    ])
+    logits = logits_flat.reshape(1, 3, 3, 2)
+    x0 = jnp.zeros((1, 3, 3, 1), dtype=jnp.int32)
+    xt = jnp.ones((1, 3, 3, 1), dtype=jnp.int32)
+    time = jnp.array([1.0])
+    next_time = jnp.array([0.5])  # frac = 0.5 -> budget = 9 * 0.5 = 4
+    key = jax.random.PRNGKey(0)
+
+    out = planner(routing_weights, logits, x0, xt, time, next_time, key)
+
+    # Output must have the same spatial shape.
+    self.assertEqual(out.stay.shape, (1, 3, 3, 1))
+    self.assertEqual(out.noise.shape, (1, 3, 3, 1))
+    self.assertEqual(out.clean.shape, (1, 3, 3, 1))
+
+    # Budget k = 4. Top-4 positions (by confidence) → forced CLEAN.
+    # Positions (0,0), (0,1), (0,2), (1,0) should be selected.
+    selected = out.clean[0, :, :, 0]  # (3, 3)
+    num_selected = int(jnp.sum(selected > 0))
+    self.assertEqual(num_selected, 4)
+    # Selected positions have stay=0, noise=0.
+    self.assertEqual(float(jnp.sum(out.stay[out.clean > 0])), 0.0)
+    self.assertEqual(float(jnp.sum(out.noise[out.clean > 0])), 0.0)
+
 
 if __name__ == '__main__':
   absltest.main()
