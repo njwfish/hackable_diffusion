@@ -381,6 +381,87 @@ class RoutingStrategy(Protocol):
     ...
 
 
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class GreedyPlanner(RoutingStrategy):
+  """Confidence-based top-k greedy planner.
+
+  Selects the top-k positions by confidence of the sampled x0 token, forces
+  those to CLEAN, and lets the remaining positions follow their natural
+  stay/noise dynamics (with p_clean zeroed out).
+
+  The budget k is computed as:
+    k = num_eligible * p_clean_norm
+  where num_eligible is the number of positions with p_clean > 0 and
+  p_clean_norm is the normalized clean probability. For a linear schedule
+  α = 1−t this simplifies to k = num_eligible * (1 − next_time/time).
+
+  Attributes:
+    tie_breaking_noise: Scale of uniform noise added to confidence scores for
+      tie-breaking. Default 1e-6.
+  """
+
+  tie_breaking_noise: float = 1e-6
+
+  @kt.typechecked
+  def __call__(
+      self,
+      routing_weights: RoutingWeights,
+      logits: Float['... M'],
+      x0: DataArray,
+      xt: DataArray,
+      time: TimeArray,
+      next_time: TimeArray,
+      key: PRNGKey,
+  ) -> RoutingWeights:
+    # Confidence = softmax(logits)[x0] per position
+    p = jax.nn.softmax(logits, axis=-1)
+    confidence = jnp.take_along_axis(p, x0, axis=-1).squeeze(-1)
+
+    # Only consider positions that could go clean (p_clean > 0)
+    eligible = routing_weights.clean[..., 0] > 0
+    confidence = jnp.where(eligible, confidence, -jnp.inf)
+
+    # Add tie-breaking noise
+    _, subkey = jax.random.split(key)
+    confidence += jax.random.uniform(subkey, confidence.shape) * (
+        self.tie_breaking_noise
+    )
+
+    # Budget: k = num_eligible * p_clean_norm.
+    # p_clean_norm = p_clean / (p_stay + p_noise + p_clean) is the same
+    # for all eligible positions (π(x_t) cancels in normalization).
+    # For a linear schedule (α = 1-t), this equals (1 - next_time/time).
+    total_weight = (
+        routing_weights.stay + routing_weights.noise + routing_weights.clean
+    )
+    p_clean_norm = routing_weights.clean / jnp.maximum(total_weight, 1e-12)
+    # p_clean_norm is the same for all eligible positions. Take max over spatial
+    # dimensions to get the value (ineligible positions have 0).
+    p_clean_norm_flat = p_clean_norm.reshape(p_clean_norm.shape[0], -1)
+    frac = jnp.max(p_clean_norm_flat, axis=-1, keepdims=True)
+    frac = jnp.clip(frac, 0.0, 1.0)
+
+    num_eligible = jnp.sum(eligible.astype(jnp.float32), axis=-1, keepdims=True)
+    k = (num_eligible * frac).astype(jnp.int32)
+
+    # Top-k threshold
+    seq_len = confidence.shape[-1]
+    sorted_conf = jnp.sort(confidence, axis=-1)[..., ::-1]
+    threshold = jnp.take_along_axis(
+        sorted_conf, jnp.clip(k - 1, 0, seq_len - 1), axis=-1
+    )
+    # When k=0, no positions should be selected.
+    to_update = (confidence >= threshold) & (k > 0)
+
+    # Selected positions → force CLEAN (zero out stay/noise).
+    # Non-selected positions → zero out p_clean, keep original stay/noise.
+    return RoutingWeights(
+        stay=jnp.where(to_update[..., None], 0.0, routing_weights.stay),
+        noise=jnp.where(to_update[..., None], 0.0, routing_weights.noise),
+        clean=jnp.where(to_update[..., None], 1.0, 0.0),
+    )
+
+
 ################################################################################
 # MARK: UnMasking Step
 ################################################################################

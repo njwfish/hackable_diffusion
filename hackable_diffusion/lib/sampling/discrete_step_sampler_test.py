@@ -963,5 +963,97 @@ class PlannerProtocolTest(absltest.TestCase):
     chex.assert_trees_all_equal(out, routing_weights)
 
 
+class GreedyPlannerTest(absltest.TestCase):
+
+  def test_greedy_planner_budget(self):
+    planner = discrete_step_sampler.GreedyPlanner()
+    # 1 batch, 4 seq len. Realistic routing: all eligible with stay/noise > 0.
+    routing_weights = discrete_step_sampler.RoutingWeights(
+        stay=jnp.full((1, 4, 1), 0.3),
+        noise=jnp.full((1, 4, 1), 0.2),
+        clean=jnp.full((1, 4, 1), 0.5),
+    )
+    logits = jnp.array(
+        [[[10.0, 0.0], [5.0, 0.0], [2.0, 0.0], [1.0, 0.0]]]
+    )  # high confidence first
+    x0 = jnp.zeros((1, 4, 1), dtype=jnp.int32)
+    xt = jnp.ones((1, 4, 1), dtype=jnp.int32)
+    time = jnp.array([1.0])
+    next_time = jnp.array([0.5])  # frac = 0.5 -> budget = 4 eligible * 0.5 = 2
+    key = jax.random.PRNGKey(0)
+
+    out_probs = planner(routing_weights, logits, x0, xt, time, next_time, key)
+
+    # Top 2 positions → force CLEAN (stay=0, noise=0, clean=1).
+    # Non-selected → keep original stay/noise, zero out clean.
+    expected = discrete_step_sampler.RoutingWeights(
+        stay=jnp.array([[[0.0], [0.0], [0.3], [0.3]]]),
+        noise=jnp.array([[[0.0], [0.0], [0.2], [0.2]]]),
+        clean=jnp.array([[[1.0], [1.0], [0.0], [0.0]]]),
+    )
+    chex.assert_trees_all_close(out_probs.stay, expected.stay)
+    chex.assert_trees_all_close(out_probs.noise, expected.noise)
+    chex.assert_trees_all_close(out_probs.clean, expected.clean)
+
+  def test_greedy_planner_eligibility(self):
+    planner = discrete_step_sampler.GreedyPlanner()
+    # Position 0 is NOT eligible (p_clean = 0), has original stay=1.0.
+    routing_weights = discrete_step_sampler.RoutingWeights(
+        stay=jnp.array([[[1.0], [0.3], [0.3], [0.3]]]),
+        noise=jnp.array([[[0.0], [0.2], [0.2], [0.2]]]),
+        clean=jnp.array([[[0.0], [0.5], [0.5], [0.5]]]),
+    )
+    logits = jnp.array(
+        [[[10.0, 0.0], [5.0, 0.0], [2.0, 0.0], [1.0, 0.0]]]
+    )  # Pos 0 has highest logit but ineligible
+    x0 = jnp.zeros((1, 4, 1), dtype=jnp.int32)
+    xt = jnp.ones((1, 4, 1), dtype=jnp.int32)
+    time = jnp.array([1.0])
+    next_time = jnp.array([0.5])  # frac = 0.5 -> budget = 3 eligible * 0.5 = 1
+    key = jax.random.PRNGKey(0)
+
+    out_probs = planner(routing_weights, logits, x0, xt, time, next_time, key)
+
+    # Pos 0 is ineligible (p_clean=0), so num_eligible=3.
+    # Budget = 3 * 0.5 = 1 (truncated to int).
+    # Top 1 eligible position by confidence: Pos 1 → force CLEAN.
+    # Non-selected (Pos 0, 2, 3) → keep original stay/noise, zero clean.
+    expected = discrete_step_sampler.RoutingWeights(
+        stay=jnp.array([[[1.0], [0.0], [0.3], [0.3]]]),
+        noise=jnp.array([[[0.0], [0.0], [0.2], [0.2]]]),
+        clean=jnp.array([[[0.0], [1.0], [0.0], [0.0]]]),
+    )
+    chex.assert_trees_all_close(out_probs.stay, expected.stay)
+    chex.assert_trees_all_close(out_probs.noise, expected.noise)
+    chex.assert_trees_all_close(out_probs.clean, expected.clean)
+
+  def test_greedy_planner_k_zero(self):
+    """When clean weight is small, budget k=0. Keep original stay/noise."""
+    planner = discrete_step_sampler.GreedyPlanner()
+    routing_weights = discrete_step_sampler.RoutingWeights(
+        stay=jnp.full((1, 4, 1), 0.7),
+        noise=jnp.full((1, 4, 1), 0.2),
+        clean=jnp.full((1, 4, 1), 0.1),
+    )
+    logits = jnp.array([[[10.0, 0.0], [5.0, 0.0], [2.0, 0.0], [1.0, 0.0]]])
+    x0 = jnp.zeros((1, 4, 1), dtype=jnp.int32)
+    xt = jnp.ones((1, 4, 1), dtype=jnp.int32)
+    time = jnp.array([1.0])
+    next_time = jnp.array([1.0])
+    key = jax.random.PRNGKey(0)
+
+    out_probs = planner(routing_weights, logits, x0, xt, time, next_time, key)
+
+    # k=0: no positions selected. All keep original stay/noise, clean zeroed.
+    expected = discrete_step_sampler.RoutingWeights(
+        stay=jnp.full((1, 4, 1), 0.7),
+        noise=jnp.full((1, 4, 1), 0.2),
+        clean=jnp.zeros((1, 4, 1)),
+    )
+    chex.assert_trees_all_close(out_probs.stay, expected.stay)
+    chex.assert_trees_all_close(out_probs.noise, expected.noise)
+    chex.assert_trees_all_close(out_probs.clean, expected.clean)
+
+
 if __name__ == '__main__':
   absltest.main()
