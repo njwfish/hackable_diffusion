@@ -42,8 +42,8 @@ class InferenceFn(Protocol):
 
   The InferenceFn is created by the create_inference_fn function.
 
-  The optional ``rng`` argument is used by stochastic inference fns (e.g. the
-  distributional-diffusion one that draws a fresh xi per reverse step). The
+  The optional ``rng`` argument is used by stochastic inference fns (e.g.
+  the posterior-sampler one that draws a fresh xi per reverse step). The
   sampling loop passes the current step's rng here. Deterministic inference
   fns accept it and ignore it.
   """

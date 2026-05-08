@@ -59,7 +59,7 @@ Modality compatibility
 ----------------------
 All five assume ``x_0`` lives in a Euclidean space where ``Cov`` is a
 well-defined linear operator against the canonical inner product.  That
-covers Gaussian (ODE + SDE) and distributional diffusion.  For
+covers Gaussian (ODE + SDE) and posterior-sampler diffusion.  For
 simplicial diffusion the "covariance" would need to be defined in the
 tangent space of the simplex -- use a simplex-aware correction instead.
 """
@@ -164,9 +164,9 @@ class PCAPosteriorCovarianceFn(PosteriorCovarianceFn):
   training distribution and truncate to whatever ``k`` fits in memory.
 
   Shapes: the factor is flattened against the non-batch axes, so the
-  adapter works unchanged on rank-2 (distributional) or rank-4
-  (images, ``(B, H, W, C)``) inputs.  ``u_factor`` is stored as
-  ``(d, k)`` and matvec uses ``v.reshape(B, -1)``.
+  adapter works unchanged on rank-2 (posterior-sampler / 1-D feature)
+  or rank-4 (images, ``(B, H, W, C)``) inputs.  ``u_factor`` is stored
+  as ``(d, k)`` and matvec uses ``v.reshape(B, -1)``.
   """
 
   u_factor: jax.Array  # (d, k)

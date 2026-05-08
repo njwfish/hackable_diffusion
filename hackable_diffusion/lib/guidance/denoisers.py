@@ -122,7 +122,7 @@ def make_posterior_cloud_fn(
   baseline used for ablations against full posterior MC.
 
   Output shape: ``(B, R, *x0_shape)`` -- the ``R`` axis is at position
-  1, matching :func:`hackable_diffusion.lib.distributional.ensemble_apply`
+  1, matching :func:`hackable_diffusion.lib.posterior.posterior_cloud_apply`
   at training time so the same downstream code paths can read it.
 
   Args:

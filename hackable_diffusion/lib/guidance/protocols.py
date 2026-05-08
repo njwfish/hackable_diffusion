@@ -61,7 +61,7 @@ class DenoiserFn(Protocol):
   ``corruption_process``.  The returned closure captures ``time``,
   ``conditioning``, and ``rng``, so JVP/grad through it trace a fixed
   noise realisation -- essential for differentiability of stochastic
-  denoisers (distributional diffusion).
+  denoisers (posterior-sampler inference fns).
   """
 
   def __call__(self, xt: jax.Array) -> jax.Array: ...
@@ -86,7 +86,7 @@ class PosteriorCloudFn(Protocol):
   ``R`` outputs are identical (the explicit mean-plug-in baseline).
 
   Output shape contract: ``(B, R, *x0_shape)`` -- the ``R`` axis is at
-  position 1, matching :func:`hackable_diffusion.lib.distributional.ensemble_apply`
+  position 1, matching :func:`hackable_diffusion.lib.posterior.posterior_cloud_apply`
   at training time and :class:`hackable_diffusion.lib.loss.EnergyScoreLoss`'s
   expected input.
   """

@@ -12,26 +12,38 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Training-side helpers for distributional diffusion (arXiv:2502.02483).
+"""Training-side helpers for posterior-sampler diffusion (arXiv:2502.02483).
 
-One canonical path: the network is **shape-preserving** under the
-``[x_t, xi]`` doubled-last-axis input. That invariant is provided by
-distributional backbone variants —
-:class:`hackable_diffusion.lib.architecture.NoiseTrimBackbone` for any
-backbone whose last axis is a clean feature dim (MLPs, per-token
-transformers), or a dedicated subclass for backbones that reshape the last
-axis into an image (e.g.
-``mdt.model.unet_patch_distributional.DistributionalUNetPatch``).
+The training-time analogue of the sampling-time
+:class:`hackable_diffusion.lib.inference.PosteriorSamplerInferenceFn`
+and :func:`hackable_diffusion.lib.guidance.make_posterior_cloud_fn`:
+all three call the same shape-preserving network ``M`` (or ``R``)
+times with fresh ``xi`` draws to produce a posterior cloud
+``[B, M, *data]``.
 
-With that invariant, :func:`ensemble_apply` is just:
-  1. draw M i.i.d. Gaussian ``xi``, each with the same shape as ``x_t``,
+The network is **shape-preserving** under the ``[x_t, xi]``
+doubled-last-axis input. That invariant is provided by posterior-cloud
+backbone variants -- :class:`hackable_diffusion.lib.architecture.NoiseTrimBackbone`
+for any backbone whose last axis is a clean feature dim (MLPs,
+per-token transformers), or a dedicated subclass for backbones that
+reshape the last axis into an image (e.g.
+``mdt.model.unet_patch_distributional.DistributionalUNetPatch`` -- the
+"distributional" naming there is the literature name of the training
+method, kept for citation continuity).
+
+With that invariant, :func:`posterior_cloud_apply` is just:
+  1. draw ``M`` i.i.d. Gaussian ``xi``, each with the same shape as
+     ``x_t``,
   2. inject each via a user-supplied ``xi_injector`` (default:
      channel-concat along the last axis),
-  3. vmap the network over the M axis.
+  3. vmap the network over the ``M`` axis.
 
 The returned predictions pytree has an extra axis of size ``M`` at
-position 1 of every leaf (``[B, M, *data]``), ready for
-:class:`hackable_diffusion.lib.loss.EnergyScoreLoss`.
+position 1 of every leaf (``[B, M, *data]``) -- the same shape as
+:func:`hackable_diffusion.lib.guidance.make_posterior_cloud_fn`'s
+sampling-time output, ready for
+:class:`hackable_diffusion.lib.loss.EnergyScoreLoss` or any
+posterior-aware downstream consumer.
 """
 
 from typing import Any, Callable, Mapping
@@ -65,11 +77,11 @@ def channel_concat_xi(xt: DataArray, xi: DataArray) -> DataArray:
 
 
 ################################################################################
-# MARK: Ensemble forward
+# MARK: Posterior cloud forward
 ################################################################################
 
 
-def ensemble_apply(
+def posterior_cloud_apply(
     apply_fn: Callable[..., TargetInfo],
     variables: PyTree,
     *,
@@ -84,10 +96,18 @@ def ensemble_apply(
 ) -> TargetInfo:
   """Calls a shape-preserving diffusion network M times with fresh xi draws.
 
+  Training-time counterpart of
+  :func:`hackable_diffusion.lib.guidance.make_posterior_cloud_fn`: both
+  produce an ``[B, M, *data]`` posterior cloud by ``vmap``-ing the
+  network over ``M`` independent ``xi`` draws.  Use this in the energy
+  score / scoring-rule training loop; use ``make_posterior_cloud_fn``
+  inside a sampler when a cloud-aware twist or projection needs ``R``
+  posterior samples at one ``x_t``.
+
   Pair this with a network whose output shape matches the original data
-  shape — i.e. one built around a distributional backbone variant (see the
-  module docstring). Do not hand a raw backbone whose output has a doubled
-  last axis; wrap it first.
+  shape -- i.e. one built around a posterior-cloud backbone variant
+  (see the module docstring). Do not hand a raw backbone whose output
+  has a doubled last axis; wrap it first.
 
   Args:
     apply_fn: The Flax apply fn of the diffusion network (``network.apply``).
@@ -95,16 +115,16 @@ def ensemble_apply(
     time: Time array ``[B, ...]``.
     xt: Noisy data ``[B, *data]``. The network sees ``xi_injector(xt, xi)``;
       with the default injector that is the doubled-last-axis tensor that
-      distributional backbones expect.
+      posterior-cloud backbones expect.
     conditioning: Optional conditioning pytree.
     xi_rng: PRNGKey used *only* to draw the xi noise tensor. Dropout / other
       RNGs the network may need are passed through ``apply_rngs``.
-    population_size: M, the number of ensemble members per example.
+    population_size: M, the number of cloud members per example.
     xi_injector: How to combine ``xt`` and a single xi draw into the tensor the
       network consumes. Default is ``channel_concat_xi`` (concat along last
       axis), matching the paper.
     apply_rngs: Additional RNGs forwarded to ``apply_fn`` (e.g. ``{"dropout":
-      key}``). Shared across the M ensemble members — downstream dropout
+      key}``). Shared across the M cloud members -- downstream dropout
       patterns will therefore be identical per member, which matches the
       paper's setup. Split this yourself if you want per-member dropout.
     **apply_kwargs: Additional kwargs forwarded to ``apply_fn`` (e.g.
@@ -112,7 +132,9 @@ def ensemble_apply(
 
   Returns:
     A predictions pytree with an extra axis of size ``M`` inserted at position
-    1 of every leaf — e.g. ``{"x0": [B, M, *data]}``.
+    1 of every leaf -- e.g. ``{"x0": [B, M, *data]}``.  Same shape as
+    :func:`hackable_diffusion.lib.guidance.make_posterior_cloud_fn`'s
+    sampling-time output.
   """
   if population_size < 1:
     raise ValueError(f"population_size must be >= 1, got {population_size}.")
@@ -133,5 +155,6 @@ def ensemble_apply(
     )
 
   # out_axes=1 places the M axis at position 1 of every leaf, i.e. right
-  # after the batch dim — the shape the energy-score loss expects.
+  # after the batch dim -- the shape the energy-score loss and any
+  # cloud-aware downstream consumer expect.
   return jax.vmap(_one, in_axes=0, out_axes=1)(xi)

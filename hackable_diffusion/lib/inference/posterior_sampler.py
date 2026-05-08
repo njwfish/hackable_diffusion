@@ -17,7 +17,7 @@
 At each reverse step the network takes ``(t, x_t, xi)`` with ``xi ~ N(0, I)``
 and outputs an approximate *sample* from the clean-endpoint posterior
 ``p_{0|t}(x_0 | x_t)`` rather than its mean.  In the posterior-bridge
-framework this is the local distributional object the bridge step
+framework this is the local posterior the bridge step
 ``K_{s|0,t}(. | x_0, x_t)`` averages against; everything downstream
 (twists, projection, SMC potentials) reads it as a posterior sample
 rather than a denoiser point estimate.
@@ -30,17 +30,17 @@ independent rngs gives an ``R``-sample posterior cloud at the same
 ``hackable_diffusion.lib.guidance.denoisers`` for that helper.
 
 The network is expected to be shape-preserving under the doubled input --
-see :mod:`hackable_diffusion.lib.distributional` for the training-time
-invariant (which still bears the "distributional diffusion" name from the
-original paper) and
+see :mod:`hackable_diffusion.lib.posterior` for the training-time
+invariant (the literature name "distributional diffusion" is preserved
+in citations) and
 :class:`hackable_diffusion.lib.architecture.NoiseTrimBackbone` for the
 canonical wrapper.
 """
 
 import dataclasses
 
-from hackable_diffusion.lib import distributional
 from hackable_diffusion.lib import hd_typing
+from hackable_diffusion.lib import posterior
 from hackable_diffusion.lib.inference import base
 import flax.linen as nn
 import jax
@@ -61,7 +61,7 @@ TimeTree = hd_typing.TimeTree
 
 InferenceFn = base.InferenceFn
 
-XiInjector = distributional.XiInjector
+XiInjector = posterior.XiInjector
 
 # Salt mixed into the per-step rng before drawing xi, so any other consumer
 # of the same step rng (e.g. the Z-noise in a stochastic DDIM update) gets
@@ -83,18 +83,19 @@ class PosteriorSamplerInferenceFn(InferenceFn):
   shape-preserving under ``[x_t, xi]`` doubled inputs -- use
   :class:`hackable_diffusion.lib.architecture.NoiseTrimBackbone` around
   any plain backbone whose I/O share a last-axis layout, or a dedicated
-  distributional subclass for backbones that reshape the last axis into
+  posterior-cloud subclass for backbones that reshape the last axis into
   an image (e.g.
-  ``mdt.model.unet_patch_distributional.DistributionalUNetPatch``).
+  ``mdt.model.unet_patch_distributional.DistributionalUNetPatch`` --
+  "distributional" is the literature naming).
   Either way this class simply injects ``xi`` and forwards; it never
   trims output.
 
   One xi draw per reverse step -- not a population.  The energy-score
-  training (Phase 4 in the bridge framework) is what buys the ability to
-  take big steps with a single sample.  Algorithms that need an
-  ``R``-sample posterior cloud at the same ``x_t`` (SMC potential
-  estimation, projection) call this fn ``R`` times with independent
-  rngs; see :func:`make_posterior_cloud_fn` for that helper.
+  training is what buys the ability to take big steps with a single
+  sample.  Algorithms that need an ``R``-sample posterior cloud at the
+  same ``x_t`` (SMC potential estimation, projection) call this fn
+  ``R`` times with independent rngs; see :func:`make_posterior_cloud_fn`
+  for that helper.
 
   Attributes:
     network: The trained Linen diffusion network.
@@ -108,7 +109,7 @@ class PosteriorSamplerInferenceFn(InferenceFn):
   network: nn.Module
   params: PyTree
   xi_injector: XiInjector = dataclasses.field(
-      default=distributional.channel_concat_xi
+      default=posterior.channel_concat_xi
   )
 
   @kt.typechecked

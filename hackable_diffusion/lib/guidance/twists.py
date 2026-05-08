@@ -30,7 +30,7 @@ plumbing -- the closure lives inside ``denoiser_fn``.
 Modality compatibility
 ----------------------
 - ``GaussianLikelihoodTwistFn``: Euclidean-x0 (Gaussian ODE/SDE,
-  distributional).  Not meaningful on a simplex.
+  posterior-sampler).  Not meaningful on a simplex.
 - ``DiscreteCompositionTwistFn`` / multi-head: simplicial only.
 - ``ClassifierTwistFn`` / ``EnergyTwistFn``: universal -- the caller
   decides what ``log_prob_fn`` / ``energy_fn`` accepts as input.

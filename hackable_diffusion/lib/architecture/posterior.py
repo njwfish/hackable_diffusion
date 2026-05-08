@@ -12,25 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Noise-injection backbone wrapper for distributional diffusion.
+"""Noise-injection backbone wrapper for posterior-sampler diffusion.
 
 Implements the architecture recipe of De Bortoli et al., "Distributional
-Diffusion Models with Scoring Rules" (arXiv:2502.02483): the network
-receives ``[x_t, xi]`` concatenated along the last axis and emits an output
-of the same doubled shape; we slice off the xi-half to recover the
-data-shape prediction.
+Diffusion Models with Scoring Rules" (arXiv:2502.02483) -- the literature
+name of the training method we use here for posterior-sampler inference:
+the network receives ``[x_t, xi]`` concatenated along the last axis and
+emits an output of the same doubled shape; we slice off the xi-half to
+recover the data-shape prediction.
 
 This is the canonical way to make any ``ConditionalBackbone`` whose input
 and output share the same last-axis layout (MLPs, per-token transformers,
-etc.) shape-preserving under the distributional recipe. Use it whenever you
-configure a distributional training run against a non-U-Net backbone.
+etc.) shape-preserving under the posterior-cloud recipe.  Use it whenever
+you configure a posterior-sampler training run against a non-U-Net
+backbone.
 
 For U-Net-style backbones that reshape the last axis into an image before
-applying convolutions, a last-axis token-level slice would interleave pixel
-and channel indices. Those backbones need to split/concat/slice at the
-**image** channel axis instead; provide a distributional subclass (see e.g.
-``mdt.model.unet_patch_distributional.DistributionalUNetPatch``) rather
-than wrapping with this module.
+applying convolutions, a last-axis token-level slice would interleave
+pixel and channel indices.  Those backbones need to split/concat/slice
+at the **image** channel axis instead; provide a posterior-cloud
+subclass (see e.g.
+``mdt.model.unet_patch_distributional.DistributionalUNetPatch`` -- the
+"distributional" naming there is the literature name of the training
+method, kept for citation continuity) rather than wrapping with this
+module.
 """
 
 from __future__ import annotations
@@ -46,7 +51,8 @@ class NoiseTrimBackbone(nn.Module, ConditionalBackbone):
   """Shape-preserving wrapper: run ``base``, slice last axis to data size.
 
   The caller (typically
-  ``hackable_diffusion.lib.distributional.ensemble_apply`` at train time or
+  ``hackable_diffusion.lib.posterior.posterior_cloud_apply`` at train
+  time or
   ``hackable_diffusion.lib.inference.PosteriorSamplerInferenceFn`` at
   sampling time) concatenates ``xi`` onto ``x_t`` along the last axis.
   The wrapped backbone sees this doubled input unchanged; we only trim
@@ -57,7 +63,7 @@ class NoiseTrimBackbone(nn.Module, ConditionalBackbone):
       last-axis layout (e.g. ``hackable_diffusion.lib.architecture.mlp.
       ConditionalMLP``). Wrapping a backbone that internally reshapes
       channel axes (e.g. a patch-token U-Net) will produce wrong slicing
-      semantics; supply a dedicated distributional subclass instead.
+      semantics; supply a dedicated posterior-cloud subclass instead.
     keep_channels: Number of last-axis elements to keep from the output.
       If ``None`` (the default), inferred as half of the incoming last-axis
       size — the right setting whenever the caller doubled the input by

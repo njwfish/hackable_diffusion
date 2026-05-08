@@ -85,7 +85,7 @@ class _RequireRngInferenceFn(InferenceFn):
     if rng is None:
       raise ValueError(
           "_RequireRngInferenceFn: rng is None -- the sampler is calling "
-          "us without a key, which would break a real distributional "
+          "us without a key, which would break a real posterior-sampler "
           "inference fn."
       )
     del time, conditioning

@@ -56,10 +56,10 @@ class GuidedDiffusionInferenceFn(InferenceFn):
   ) -> TargetInfoTree:
     """Returns the model outputs.
 
-    The optional ``rng`` is forwarded to both cond and uncond calls on the
-    base inference fn, so stochastic base fns (e.g. distributional) share the
-    same noise between the cond/uncond predictions — necessary for a
-    well-defined classifier-free guidance direction.
+    The optional ``rng`` is forwarded to both cond and uncond calls on
+    the base inference fn, so stochastic base fns (e.g. posterior-
+    sampler) share the same noise between the cond/uncond predictions
+    -- necessary for a well-defined classifier-free guidance direction.
     """
 
     cond_outputs = self.base_inference_fn(

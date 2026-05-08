@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Scoring-rule losses for distributional diffusion.
+"""Scoring-rule losses for posterior-sampler diffusion.
 
 Implements the (generalized) energy-score loss from De Bortoli et al.,
 "Distributional Diffusion Models with Scoring Rules" (arXiv:2502.02483),
-Eq. (15-16). The network is expected to output ``m`` samples per input via an
-extra noise input ``xi``; the loss consumes those samples through an extra
+Eq. (15-16) -- the literature title is preserved.  The network is
+expected to output ``m`` posterior samples per input via an extra noise
+input ``xi``; the loss consumes those samples through an extra
 "population" axis in ``preds``.
 """
 
@@ -86,8 +87,8 @@ def compute_energy_score_loss(
 
   Args:
     preds: Dict of predictions; ``preds[prediction_type]`` has shape
-      ``[B, M, *data]``. Produced by m forward passes of the distributional
-      network with different ``xi`` draws, stacked along axis 1.
+      ``[B, M, *data]``. Produced by m forward passes of the posterior-
+      sampler network with different ``xi`` draws, stacked along axis 1.
     targets: Dict of targets; ``targets[prediction_type]`` has shape
       ``[B, *data]``. Compared against each of the M prediction samples.
     time: Time array ``[B, ...]`` (only used by an optional ``weight_fn``).

@@ -288,7 +288,7 @@ class AnalyticGaussianPosteriorTest(unittest.TestCase):
     the method runs end-to-end and produces finite samples, not that it
     concentrates near the posterior mean -- DPS quality on realistic
     problems is established in the papers, and Pi-GDM (covered in the
-    preceding tests) is the correct comparison point for distributional
+    preceding tests) is the correct comparison point for posterior
     accuracy.
     """
     # Rebuild setup with a DPS-appropriate sigma_y.

@@ -121,10 +121,10 @@ def _get_input_inference_fn(
 def _accepts_rng_kwarg(fn: Callable[..., object]) -> bool:
   """Returns True if ``fn`` can be called with an ``rng=`` keyword.
 
-  Used once at trace time so the sampling loop can optionally pass a per-step
-  rng to stochastic inference fns (e.g. distributional diffusion) while
-  remaining compatible with deterministic fns — including naked lambdas —
-  that don't take one.
+  Used once at trace time so the sampling loop can optionally pass a
+  per-step rng to stochastic inference fns (e.g. posterior-sampler
+  inference fns) while remaining compatible with deterministic fns --
+  including naked lambdas -- that don't take one.
 
   Caveat: ``functools.partial`` and similar wrappers can mask an inner
   ``rng`` parameter. If you're wrapping a stochastic inference fn,
@@ -147,8 +147,9 @@ def _accepts_rng_kwarg(fn: Callable[..., object]) -> bool:
 def _get_step_rng(step_carry: DiffusionStepTree) -> PRNGKey | None:
   """Extracts a single rng from the step's state.
 
-  Stochastic inference fns (e.g. distributional diffusion, which draws a fresh
-  xi per reverse step) use this to derive their own noise. If the sampling
+  Stochastic inference fns (e.g. posterior-sampler inference fns, which
+  draw a fresh xi per reverse step) use this to derive their own noise.
+  If the sampling
   tree is nested (multi-modal), the first leaf's rng is returned; downstream
   stochastic fns are expected to fold_in their own salts to get independent
   streams.

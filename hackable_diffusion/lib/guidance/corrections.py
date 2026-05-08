@@ -33,7 +33,7 @@ plumbing -- those are captured inside ``denoiser_fn``.
 Modality compatibility
 ----------------------
 - ``KalmanCorrectionFn``: Euclidean-x0 only (Gaussian ODE / SDE /
-  distributional).  Kalman math assumes a standard inner product.
+  posterior-sampler).  Kalman math assumes a standard inner product.
 - ``GradientCorrectionFn``: Euclidean-x0 in principle (the gradient
   step is a Euclidean shift).  On a simplex the Euclidean step leaves
   the constraint set; use a simplex-aware correction.
