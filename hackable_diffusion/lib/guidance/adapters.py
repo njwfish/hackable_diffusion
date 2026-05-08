@@ -35,7 +35,9 @@ from typing import Any
 
 import jax
 
-from hackable_diffusion.lib.guidance.protocols import CorrectionFn, DenoiserFn
+from hackable_diffusion.lib.guidance.protocols import (
+    CorrectionFn, DenoiserFn, PosteriorCloudFn,
+)
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
@@ -79,8 +81,10 @@ class BoundAggregateGuidanceFn(CorrectionFn):
       *,
       denoiser_fn: DenoiserFn,
       schedule: Any,
+      cloud_fn: PosteriorCloudFn | None = None,
+      rng: jax.Array | None = None,
   ) -> jax.Array:
-    del denoiser_fn
+    del denoiser_fn, cloud_fn, rng
     kwarg = "aggregate_targets" if self.multi_head else "aggregate_target"
     legacy_outputs = self.guidance(
         outputs={"x0": x0},

@@ -50,10 +50,14 @@ import jax.numpy as jnp
 from hackable_diffusion.lib.sampling.sampling import (
     DiffusionSampler, _concat_pytree,
 )
-from hackable_diffusion.lib.guidance.denoisers import make_denoiser_fn
+from hackable_diffusion.lib.guidance.denoisers import (
+    make_denoiser_fn,
+    make_posterior_cloud_fn,
+)
 from hackable_diffusion.lib.guidance.protocols import (
     CorrectionFn,
     DenoiserFn,
+    PosteriorCloudFn,
     ResamplerFn,
     TwistFn,
 )
@@ -62,6 +66,19 @@ from hackable_diffusion.lib.guidance.resamplers import NoResamplerFn
 from hackable_diffusion.lib.guidance.utils import (
     accepts_rng_kwarg, call_inference_fn,
 )
+
+
+# RNG slot salts.  When posterior_cloud_size > 0 we derive distinct
+# cloud rngs per (step, slot) via fold_in(step_rng, salt) so the cloud
+# at the *current* state, the cloud at the *next* state (for twist
+# evaluation), the *initial-twist* cloud, the *final-step* cloud, and
+# the *correction*'s categorical-sample rng all get independent
+# streams.  Hex constants for traceability in logs.
+_CLOUD_SLOT_CURRENT = 0xC1_01
+_CLOUD_SLOT_NEW = 0xC1_02
+_CLOUD_SLOT_INITIAL = 0xC1_03
+_CLOUD_SLOT_FINAL = 0xC1_04
+_CORRECTION_RNG_SALT = 0xC0_44
 
 
 def _outputs_with_x0(
@@ -165,6 +182,16 @@ class ConditionalDiffusionSampler:
       stopping the resampler there preserves population diversity at
       the price of slightly looser posterior weighting.  This is the
       TDS (Wu et al. 2023) recipe for diffusion SMC.
+    posterior_cloud_size: ``R`` posterior samples to draw at every step
+      and pass to cloud-aware twists / corrections via the
+      ``cloud_fn`` closure.  ``0`` (default) disables the cloud --
+      single-point twists / corrections work unchanged and pay no extra
+      inference cost.  ``> 0`` builds the cloud unconditionally each
+      step alongside ``denoiser_fn`` (R extra inference-fn calls per
+      step), feeding cloud-aware ops like
+      :class:`EndpointTiltCloudTwistFn` (manuscript Algorithm 1's
+      ``\\hat h_k^R``) and :class:`ProjectionCloudCorrectionFn`
+      (Algorithm 2).
   """
 
   base_sampler: DiffusionSampler
@@ -174,6 +201,7 @@ class ConditionalDiffusionSampler:
   resampler_fn: ResamplerFn = dataclasses.field(default_factory=NoResamplerFn)
   num_particles: int = 1
   resample_until_step_frac: float = 1.0
+  posterior_cloud_size: int = 0
 
   def __call__(
       self,
@@ -208,12 +236,16 @@ class ConditionalDiffusionSampler:
       time: jax.Array,
       denoiser_fn: DenoiserFn,
       schedule: Any,
+      cloud_fn: PosteriorCloudFn | None = None,
+      rng: jax.Array | None = None,
   ) -> jax.Array:
-    """``x0_new = correction_fn(x0, xt, t, denoiser_fn, schedule)``, identity if None."""
+    """``x0_new = correction_fn(x0, xt, t, ...)``, identity if None."""
     if self.correction_fn is None:
       return x0
     return self.correction_fn(
-        x0, xt, time, denoiser_fn=denoiser_fn, schedule=schedule,
+        x0, xt, time,
+        denoiser_fn=denoiser_fn, schedule=schedule,
+        cloud_fn=cloud_fn, rng=rng,
     )
 
   def _evaluate_twist(
@@ -221,11 +253,14 @@ class ConditionalDiffusionSampler:
       xt: jax.Array,
       time: jax.Array,
       denoiser_fn: DenoiserFn,
+      cloud_fn: PosteriorCloudFn | None = None,
   ) -> jax.Array:
-    """``twist_fn(xt, time, denoiser_fn=...)``, zero if None."""
+    """``twist_fn(xt, time, denoiser_fn=..., cloud_fn=...)``, zero if None."""
     if self.twist_fn is None:
       return jnp.zeros(xt.shape[0], dtype=xt.dtype)
-    return self.twist_fn(xt, time, denoiser_fn=denoiser_fn)
+    return self.twist_fn(
+        xt, time, denoiser_fn=denoiser_fn, cloud_fn=cloud_fn,
+    )
 
   def _run_loop(
       self,
@@ -264,22 +299,58 @@ class ConditionalDiffusionSampler:
           time=time, conditioning=conditioning, rng=rng_or_none,
       )
 
+    def _build_cloud(time, base_rng_or_none, slot_salt):
+      """Build a posterior-cloud closure at ``(time, ...)`` with rng
+      diversified by ``slot_salt``.  ``None`` when
+      ``posterior_cloud_size == 0`` -- the universal "no cloud" path
+      that single-point twists / corrections see and ignore."""
+      if self.posterior_cloud_size <= 0:
+        return None
+      # Deterministic-inference-fn fallback: still produce R identical
+      # copies (the explicit mean-plug-in baseline) by feeding a
+      # constant key.  Salt the constant the same way as the stochastic
+      # path so independent slots get independent (still-constant) keys.
+      base = (
+          base_rng_or_none if base_rng_or_none is not None
+          else jax.random.PRNGKey(0)
+      )
+      cloud_rng = jax.random.fold_in(base, slot_salt)
+      return make_posterior_cloud_fn(
+          inference_fn, corruption,
+          time=time, conditioning=conditioning, rng=cloud_rng,
+          population_size=self.posterior_cloud_size,
+      )
+
     def _correct_and_advance(*, current_step, advance_fn, rng_or_none):
-      """Build denoiser, correct ``x_0``, advance to the next step.
+      """Build denoiser + cloud, correct ``x_0``, advance to the next step.
 
       Returns ``(next_step, outputs_uncorrected, outputs_corrected)``.
       Used by both the scan body (``advance_fn = stepper.update``) and the
       final-step block (``advance_fn = stepper.finalize``); the only
       difference is which ``stepper`` method advances the state.
+
+      Cloud-aware corrections additionally receive a ``cloud_fn``
+      closure at the current ``(xt, time)`` and a fold-in-derived
+      ``rng`` for any internal categorical / IS-resampling step.
       """
       xt, time = _xt_time(current_step)
       denoiser_fn = _build_denoiser(time, rng_or_none)
+      cloud_fn_current = _build_cloud(
+          time, rng_or_none, _CLOUD_SLOT_CURRENT,
+      )
+      correction_rng = (
+          jax.random.fold_in(rng_or_none, _CORRECTION_RNG_SALT)
+          if rng_or_none is not None else None
+      )
       raw_outputs = call_inference_fn(
           inference_fn, xt=xt, time=time,
           conditioning=conditioning, rng=rng_or_none,
       )
       x0_unc = denoiser_fn(xt)
-      x0_cor = self._apply_correction(x0_unc, xt, time, denoiser_fn, schedule)
+      x0_cor = self._apply_correction(
+          x0_unc, xt, time, denoiser_fn, schedule,
+          cloud_fn=cloud_fn_current, rng=correction_rng,
+      )
       outputs_corrected = _outputs_with_x0(raw_outputs, x0_cor)
       next_step = advance_fn(outputs_corrected, current_step)
       return next_step, raw_outputs, outputs_corrected
@@ -296,7 +367,9 @@ class ConditionalDiffusionSampler:
       initial_twist_rng = None
     xt0, t0 = _xt_time(first_step)
     log_psi_prev = self._evaluate_twist(
-        xt0, t0, denoiser_fn=_build_denoiser(t0, initial_twist_rng),
+        xt0, t0,
+        denoiser_fn=_build_denoiser(t0, initial_twist_rng),
+        cloud_fn=_build_cloud(t0, initial_twist_rng, _CLOUD_SLOT_INITIAL),
     )
     log_weights = jnp.zeros(initial_noise.shape[0], dtype=initial_noise.dtype)
     log_weights = log_weights + log_psi_prev
@@ -325,7 +398,11 @@ class ConditionalDiffusionSampler:
           correction_identity=correction_identity,
       )
       log_psi_new = self._evaluate_twist(
-          xt_new, time_new, _build_denoiser(time_new, step_rng_or_none),
+          xt_new, time_new,
+          _build_denoiser(time_new, step_rng_or_none),
+          cloud_fn=_build_cloud(
+              time_new, step_rng_or_none, _CLOUD_SLOT_NEW,
+          ),
       )
       log_w = log_w + log_proposal_ratio + (log_psi_new - log_psi_old)
 
@@ -393,6 +470,9 @@ class ConditionalDiffusionSampler:
       log_psi_at_final = self._evaluate_twist(
           xt_final, time_final,
           _build_denoiser(time_final, final_rng_or_none),
+          cloud_fn=_build_cloud(
+              time_final, final_rng_or_none, _CLOUD_SLOT_FINAL,
+          ),
       )
       log_w_final = log_w_final + log_proposal_ratio_final + (
           log_psi_at_final - log_psi_final

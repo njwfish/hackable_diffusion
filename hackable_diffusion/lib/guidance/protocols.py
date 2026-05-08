@@ -159,6 +159,13 @@ class CorrectionFn(Protocol):
   (all threaded via ``denoiser_fn``).  The sampler converts
   ``{"x0": x0_new}`` back to the stepper's native prediction type at
   the boundary -- once per step, not inside every correction.
+
+  Cloud-aware corrections (e.g. projection guidance, manuscript
+  Algorithm 2) consume ``cloud_fn`` -- an ``R``-sample posterior cloud
+  closure built by the sampler when ``posterior_cloud_size > 0`` -- and
+  may sample categorically from it, which is why ``rng`` is also
+  available.  Existing single-point corrections accept and ignore both
+  kwargs.
   """
 
   def __call__(
@@ -169,6 +176,8 @@ class CorrectionFn(Protocol):
       *,
       denoiser_fn: DenoiserFn,
       schedule: Any,
+      cloud_fn: 'PosteriorCloudFn | None' = None,
+      rng: jax.Array | None = None,
   ) -> jax.Array: ...
 
 
@@ -179,6 +188,12 @@ class TwistFn(Protocol):
   the likelihood at the denoiser's Tweedie output.  Implementations
   consume only a :class:`DenoiserFn` -- no raw ``inference_fn``,
   ``corruption_process``, or ``rng`` plumbing.
+
+  Cloud-aware twists (e.g. the posterior-bridge SMC potential
+  estimator ``log \\hat h_t^R(x_t) = log [(1/R) sum_r L_y(x_0^r)]``)
+  consume ``cloud_fn`` -- an ``R``-sample posterior cloud closure
+  built by the sampler when ``posterior_cloud_size > 0``.  Existing
+  single-point twists accept and ignore the kwarg.
 
   ``jax.grad(twist_fn, argnums=0)`` (at fixed ``time, denoiser_fn``)
   gives the DPS gradient: that's what :class:`GradientCorrectionFn`
@@ -191,6 +206,7 @@ class TwistFn(Protocol):
       time: jax.Array,
       *,
       denoiser_fn: DenoiserFn,
+      cloud_fn: 'PosteriorCloudFn | None' = None,
   ) -> jax.Array: ...
 
 

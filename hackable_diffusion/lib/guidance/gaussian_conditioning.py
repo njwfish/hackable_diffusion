@@ -49,6 +49,7 @@ from hackable_diffusion.lib.guidance.protocols import (
     CorrectionFn,
     DenoiserFn,
     ForwardFn,
+    PosteriorCloudFn,
     PosteriorCovarianceFn,
     TwistFn,
 )
@@ -174,7 +175,10 @@ class PseudoInverseKalmanCorrectionFn(CorrectionFn):
       *,
       denoiser_fn: DenoiserFn,
       schedule: Any,
+      cloud_fn: PosteriorCloudFn | None = None,
+      rng: jax.Array | None = None,
   ) -> jax.Array:
+    del cloud_fn, rng  # single-point correction; cloud / rng unused here.
     cov_matvec = self.posterior_covariance_fn(
         xt=xt, time=time, schedule=schedule, denoiser_fn=denoiser_fn,
     )
@@ -228,7 +232,9 @@ class PosteriorPredictiveGaussianTwistFn(TwistFn):
       time: jax.Array,
       *,
       denoiser_fn: DenoiserFn,
+      cloud_fn: PosteriorCloudFn | None = None,
   ) -> jax.Array:
+    del cloud_fn  # single-point twist; cloud is unused here.
     x0 = denoiser_fn(xt)
     cov_matvec = self.posterior_covariance_fn(
         xt=xt, time=time, schedule=self.schedule, denoiser_fn=denoiser_fn,

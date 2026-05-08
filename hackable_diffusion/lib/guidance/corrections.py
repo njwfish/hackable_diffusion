@@ -61,6 +61,7 @@ from hackable_diffusion.lib.guidance.protocols import (
     CorrectionFn,
     DenoiserFn,
     ForwardFn,
+    PosteriorCloudFn,
     PosteriorCovarianceFn,
     TwistFn,
 )
@@ -191,7 +192,10 @@ class KalmanCorrectionFn(CorrectionFn):
       *,
       denoiser_fn: DenoiserFn,
       schedule: Any,
+      cloud_fn: PosteriorCloudFn | None = None,
+      rng: jax.Array | None = None,
   ) -> jax.Array:
+    del cloud_fn, rng  # single-point correction; cloud / rng unused here.
     adjoint = linear_adjoint(self.forward_fn, x0)
     sigma_y2 = max(float(self.observation_noise) ** 2, 1e-30)
 
@@ -252,7 +256,10 @@ class GradientCorrectionFn(CorrectionFn):
       *,
       denoiser_fn: DenoiserFn,
       schedule: Any,
+      cloud_fn: PosteriorCloudFn | None = None,
+      rng: jax.Array | None = None,
   ) -> jax.Array:
+    del cloud_fn, rng  # single-point correction; cloud / rng unused here.
     alpha, sigma = scalar_alpha_sigma(schedule, time)
 
     def scalar_twist(xt_inner: jax.Array) -> jax.Array:
@@ -299,7 +306,10 @@ class IteratedCorrectionFn(CorrectionFn):
       *,
       denoiser_fn: DenoiserFn,
       schedule: Any,
+      cloud_fn: PosteriorCloudFn | None = None,
+      rng: jax.Array | None = None,
   ) -> jax.Array:
+    del cloud_fn, rng  # single-point correction; cloud / rng unused here.
     alpha = scalar_alpha(schedule, time)
     xt_curr, x0_curr = xt, x0
     for _ in range(int(self.num_iters) - 1):
@@ -313,3 +323,119 @@ class IteratedCorrectionFn(CorrectionFn):
         x0_curr, xt_curr, time,
         denoiser_fn=denoiser_fn, schedule=schedule,
     )
+
+
+################################################################################
+# MARK: Cloud-aware projection (posterior-bridges Algorithm 2)
+################################################################################
+
+
+# Signature of an x_0-space projection map.  Takes a single sample
+# ``[B, *x0_shape]`` and returns the projected sample of the same shape.
+ProjectionFn = Callable[[jax.Array], jax.Array]
+
+# Signature of an optional importance weight ``w_{t, y}`` for the
+# projected proposal.  Takes ``(\\tilde x_0, x_t, time)`` -- typically
+# ``\\tilde x_0`` and ``x_t`` are ``[B, *data]`` and ``time`` is ``[B,
+# ...]`` -- and returns log weights of shape ``[B,]``.
+LogImportanceFn = Callable[
+    [jax.Array, jax.Array, jax.Array], jax.Array,
+]
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class ProjectionCloudCorrectionFn(CorrectionFn):
+  """Per-step projection guidance with optional importance weighting.
+
+  Implements manuscript Algorithm 2 (Projected endpoint local move):
+
+    1. Draw an ``R``-sample posterior cloud ``x_0^r ~ \\hat p_{0|t}(.
+       | x_t)`` (provided by the sampler via ``cloud_fn``).
+    2. Project each member onto the constraint set:
+       ``\\tilde x_0^r = T_{t, y}(x_0^r)``.
+    3. Compute optional log-importance weights
+       ``log w_{t, y}(\\tilde x_0^r, x_t)`` to correct for the change
+       of measure under the projection.  Without a weight, the cloud is
+       weighted uniformly (the projection is treated as exact, as in
+       the manuscript's single-Gaussian example).
+    4. Categorical-sample one index ``I`` per particle from
+       ``softmax(log w)``.
+    5. Return the selected projected sample ``\\tilde x_0^I`` as the
+       corrected ``x_0``.  The bridge step ``K_{s|0,t}(. |
+       \\tilde x_0^I, x_t)`` runs in ``stepper.update``.
+
+  When the projection is exact for the unconstrained posterior (e.g.
+  the single-isotropic-Gaussian case in Proposition
+  ``gaussian-affine-example``), no importance weight is needed and the
+  uniform-weighted random pick is unbiased.  When the projection is a
+  proposal that produces wrong responsibilities (Proposition
+  ``gaussian-mixture-example``), supplying ``log_importance_fn`` =
+  ``log A_{+/-}(x_t)`` removes the bias floor.
+
+  Inputs / outputs:
+    - The base x_0 from the single-denoiser path is *ignored* -- this
+      correction overrides x_0 entirely with a projected cloud sample.
+    - The sampler's stepper sees ``{"x0": \\tilde x_0^I}`` and advances
+      via ``K_{s|0,t}``.
+
+  Attributes:
+    projection_fn: ``T_{t, y}(x_0) -> \\tilde x_0`` applied per cloud
+      member.  Called as ``jax.vmap(projection_fn, in_axes=1,
+      out_axes=1)`` so a function that handles one batched sample
+      ``[B, *x0_shape] -> [B, *x0_shape]`` works unchanged.
+    log_importance_fn: Optional ``log w_{t, y}(\\tilde x_0, xt, t) ->
+      [B,]`` weight evaluator.  If ``None``, uniform weights are used
+      (the manuscript's single-Gaussian regime).
+  """
+
+  projection_fn: ProjectionFn
+  log_importance_fn: LogImportanceFn | None = None
+
+  def __call__(
+      self,
+      x0: jax.Array,
+      xt: jax.Array,
+      time: jax.Array,
+      *,
+      denoiser_fn: DenoiserFn,
+      schedule: Any,
+      cloud_fn: PosteriorCloudFn | None = None,
+      rng: jax.Array | None = None,
+  ) -> jax.Array:
+    del x0, denoiser_fn, schedule  # cloud-only correction
+    if cloud_fn is None:
+      raise ValueError(
+          "ProjectionCloudCorrectionFn requires cloud_fn; set "
+          "ConditionalDiffusionSampler.posterior_cloud_size > 0 so the "
+          "sampler builds a posterior cloud at each step."
+      )
+    if rng is None:
+      raise ValueError(
+          "ProjectionCloudCorrectionFn requires rng for the categorical "
+          "selection of one projected sample per particle."
+      )
+    cloud = cloud_fn(xt)                                       # [B, R, *data]
+    projected = jax.vmap(
+        self.projection_fn, in_axes=1, out_axes=1,
+    )(cloud)                                                    # [B, R, *data]
+
+    bsz, R = projected.shape[:2]
+    if self.log_importance_fn is None:
+      log_w = jnp.zeros((bsz, R), dtype=projected.dtype)
+    else:
+      def _per_sample_log_w(proj_r):
+        return self.log_importance_fn(proj_r, xt, time)
+      log_w = jax.vmap(_per_sample_log_w, in_axes=1, out_axes=1)(projected)
+      if log_w.shape != (bsz, R):
+        raise ValueError(
+            f"log_importance_fn must produce shape [B, R]; got {log_w.shape}, "
+            f"expected {(bsz, R)}."
+        )
+
+    # Per-particle categorical sample over the R proposals.
+    indices = jax.random.categorical(rng, log_w, axis=-1)      # [B]
+    return jnp.take_along_axis(
+        projected,
+        indices.reshape((bsz, 1) + (1,) * (projected.ndim - 2)),
+        axis=1,
+    ).squeeze(axis=1)                                           # [B, *data]

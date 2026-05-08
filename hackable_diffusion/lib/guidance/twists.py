@@ -45,7 +45,7 @@ import jax
 import jax.numpy as jnp
 
 from hackable_diffusion.lib.guidance.protocols import (
-    DenoiserFn, ForwardFn, TwistFn,
+    DenoiserFn, ForwardFn, PosteriorCloudFn, TwistFn,
 )
 
 
@@ -71,9 +71,14 @@ class GaussianLikelihoodTwistFn(TwistFn):
   observation_noise: float = 0.1
 
   def __call__(
-      self, xt: jax.Array, time: jax.Array, *, denoiser_fn: DenoiserFn,
+      self,
+      xt: jax.Array,
+      time: jax.Array,
+      *,
+      denoiser_fn: DenoiserFn,
+      cloud_fn: PosteriorCloudFn | None = None,
   ) -> jax.Array:
-    del time
+    del time, cloud_fn
     x0 = denoiser_fn(xt)
     residual = self.observation - self.forward_fn.forward(x0)
     flat = residual.reshape(residual.shape[0], -1)
@@ -123,9 +128,14 @@ class DiscreteCompositionTwistFn(TwistFn):
   softness: float = 1.0
 
   def __call__(
-      self, xt: jax.Array, time: jax.Array, *, denoiser_fn: DenoiserFn,
+      self,
+      xt: jax.Array,
+      time: jax.Array,
+      *,
+      denoiser_fn: DenoiserFn,
+      cloud_fn: PosteriorCloudFn | None = None,
   ) -> jax.Array:
-    del time
+    del time, cloud_fn
     probs = denoiser_fn(xt)
     return _categorical_block_log_likelihood(
         probs, self.forward_fn, self.observation,
@@ -152,9 +162,14 @@ class DiscreteMultiHeadCompositionTwistFn(TwistFn):
       )
 
   def __call__(
-      self, xt: jax.Array, time: jax.Array, *, denoiser_fn: DenoiserFn,
+      self,
+      xt: jax.Array,
+      time: jax.Array,
+      *,
+      denoiser_fn: DenoiserFn,
+      cloud_fn: PosteriorCloudFn | None = None,
   ) -> jax.Array:
-    del time
+    del time, cloud_fn
     probs = denoiser_fn(xt)
     total = jnp.zeros(probs.shape[0], dtype=probs.dtype)
     for obs, fwd in zip(self.observations, self.forward_fns):
@@ -188,9 +203,14 @@ class ClassifierTwistFn(TwistFn):
   log_prob_fn: LogProbFn
 
   def __call__(
-      self, xt: jax.Array, time: jax.Array, *, denoiser_fn: DenoiserFn,
+      self,
+      xt: jax.Array,
+      time: jax.Array,
+      *,
+      denoiser_fn: DenoiserFn,
+      cloud_fn: PosteriorCloudFn | None = None,
   ) -> jax.Array:
-    del time
+    del time, cloud_fn
     return self.log_prob_fn(denoiser_fn(xt))
 
 
@@ -206,7 +226,113 @@ class EnergyTwistFn(TwistFn):
   temperature: float = 1.0
 
   def __call__(
-      self, xt: jax.Array, time: jax.Array, *, denoiser_fn: DenoiserFn,
+      self,
+      xt: jax.Array,
+      time: jax.Array,
+      *,
+      denoiser_fn: DenoiserFn,
+      cloud_fn: PosteriorCloudFn | None = None,
   ) -> jax.Array:
-    del time
+    del time, cloud_fn
     return -self.energy_fn(denoiser_fn(xt)) / float(self.temperature)
+
+
+################################################################################
+# MARK: Cloud-aware twists (posterior-bridges Algorithm 1)
+################################################################################
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class EndpointTiltCloudTwistFn(TwistFn):
+  """Posterior-MC estimator of ``log H_t(x_t) = log E[L_y(X_0) | x_t]``.
+
+  Implements the manuscript's Algorithm 1 potential
+  ``\\hat h_k^R(x) = (1/R) sum_r L_y(x_0^r)`` with
+  ``x_0^r ~ \\hat p_{0|t}(. | x)`` from the cloud closure built by the
+  sampler when ``posterior_cloud_size > 0``.  Returns ``log \\hat h_k``,
+  so the existing scan body's ``log psi_new - log psi_old`` increment
+  becomes ``log \\hat h_{k-1}(z) - log \\hat h_k(x)`` -- exactly the
+  manuscript's incremental SMC weight ``a_k(z, x) = h_{k-1}(z) /
+  h_k(x)`` once we exponentiate.
+
+  Numerically: we evaluate ``log L_y(x_0^r)`` per cloud member and
+  combine with ``logsumexp(log_L) - log R``, which is stable when the
+  per-sample log-likelihoods span many orders of magnitude.
+
+  Strict propriety regime: as ``R -> infty`` the estimator converges
+  almost surely to ``H_t(x_t)`` (manuscript Corollary
+  ``potential-consistency``); at finite ``R`` the SMC sampler is
+  consistent in the large-particle limit.
+
+  Attributes:
+    log_L_y: ``[B, R, *x0_shape] -> [B, R]`` log-likelihood evaluator
+      applied across the cloud's leading two axes.  Caller closes over
+      the conditioning ``y``.  We ``jax.vmap`` over the ``R`` axis so a
+      callable that takes ``[B, *x0_shape] -> [B]`` works without
+      modification.
+  """
+
+  log_L_y: Callable[[jax.Array], jax.Array]
+
+  def __call__(
+      self,
+      xt: jax.Array,
+      time: jax.Array,
+      *,
+      denoiser_fn: DenoiserFn,
+      cloud_fn: PosteriorCloudFn | None = None,
+  ) -> jax.Array:
+    del time, denoiser_fn  # cloud-only twist
+    if cloud_fn is None:
+      raise ValueError(
+          "EndpointTiltCloudTwistFn requires cloud_fn; set "
+          "ConditionalDiffusionSampler.posterior_cloud_size > 0 so the "
+          "sampler builds an R-sample posterior cloud at each step."
+      )
+    cloud = cloud_fn(xt)                                      # [B, R, *data]
+    # vmap log_L_y over the R axis so single-batch implementations work.
+    log_L = jax.vmap(self.log_L_y, in_axes=1, out_axes=1)(cloud)  # [B, R]
+    R = cloud.shape[1]
+    log_R = jnp.log(jnp.asarray(R, dtype=log_L.dtype))
+    return jax.nn.logsumexp(log_L, axis=-1) - log_R           # [B]
+
+
+################################################################################
+# MARK: Self-normalised endpoint Monte Carlo
+################################################################################
+
+
+def self_normalized_posterior_expectation(
+    f: Callable[[jax.Array], jax.Array],
+    log_L: Callable[[jax.Array], jax.Array],
+    cloud: jax.Array,
+) -> jax.Array:
+  """Self-normalised MC estimator of ``E_{p_{0|t}^y}[f(X_0) | x_t]``.
+
+  Manuscript Corollary ``self-normalized``:
+
+      sum_r f(x_0^r) L_y(x_0^r) / sum_r L_y(x_0^r)
+      ->  E[f(X_0) | x_t, Y = y]   a.s. as R -> infty,
+
+  for any ``f`` integrable against the tilted posterior.  Implementation:
+  vmap ``f`` and ``log_L`` over the ``R`` axis, normalise via
+  ``softmax(log_L)``, and contract.
+
+  Args:
+    f: Per-sample functional ``[..., *x0_shape] -> [...]`` (or
+      vectorisable via jax broadcasting).  We ``jax.vmap`` over the
+      ``R`` axis.
+    log_L: Per-sample log-likelihood ``[..., *x0_shape] -> [...]``.
+    cloud: ``[B, R, *x0_shape]`` posterior cloud.
+
+  Returns:
+    ``[B, ...]`` estimator with the same trailing shape that ``f``
+    produces per sample.
+  """
+  f_values = jax.vmap(f, in_axes=1, out_axes=1)(cloud)        # [B, R, ...]
+  log_L_values = jax.vmap(log_L, in_axes=1, out_axes=1)(cloud)  # [B, R]
+  weights = jax.nn.softmax(log_L_values, axis=-1)             # [B, R]
+  # Broadcast weights over f's trailing axes.
+  weight_shape = weights.shape + (1,) * (f_values.ndim - weights.ndim)
+  weights_b = weights.reshape(weight_shape)
+  return jnp.sum(weights_b * f_values, axis=1)                # [B, ...]
