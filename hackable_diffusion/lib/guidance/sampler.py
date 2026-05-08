@@ -47,7 +47,9 @@ from typing import Any, Callable
 import jax
 import jax.numpy as jnp
 
-from hackable_diffusion.lib.sampling.sampling import DiffusionSampler
+from hackable_diffusion.lib.sampling.sampling import (
+    DiffusionSampler, _concat_pytree,
+)
 from hackable_diffusion.lib.guidance.denoisers import make_denoiser_fn
 from hackable_diffusion.lib.guidance.protocols import (
     CorrectionFn,
@@ -133,10 +135,21 @@ class ConditionalDiffusionSampler:
   """Conditional sampler composing CorrectionFn, TwistFn, and ResamplerFn.
 
   With no correction, no twist, and the identity resampler, delegates
-  directly to ``base_sampler`` for bit-for-bit parity.
+  directly to ``base_sampler`` for bit-for-bit parity (returning the
+  base sampler's ``(final_step, trajectory_or_none)`` 2-tuple).
+
+  Otherwise returns ``(final_step, trajectory_or_none, log_w_final)``,
+  where ``trajectory_or_none`` mirrors ``base_sampler.return_trajectory``:
+  a stacked :class:`DiffusionStepTree` over all ``num_steps`` steps when
+  trajectory return is on, and ``None`` otherwise.  The intermediate
+  steps emitted into the stack are post-resample, so the trajectory
+  reflects the particles actually carried forward at each step.
 
   Attributes:
-    base_sampler: the underlying :class:`DiffusionSampler`.
+    base_sampler: the underlying :class:`DiffusionSampler`.  Its
+      ``return_trajectory`` flag controls whether this sampler emits a
+      stacked trajectory (the SMC-loop path mirrors the base sampler's
+      behaviour).
     corruption_process: the corruption process; used to build per-step
       :class:`DenoiserFn` closures.
     correction_fn: optional ``x0 -> x0_new`` correction.
@@ -227,6 +240,7 @@ class ConditionalDiffusionSampler:
     stepper = self.base_sampler.stepper
     time_schedule = self.base_sampler.time_schedule
     num_steps = self.base_sampler.num_steps
+    return_trajectory = bool(self.base_sampler.return_trajectory)
     correction_identity = self.correction_fn is None
     uses_rng = accepts_rng_kwarg(inference_fn)
 
@@ -244,24 +258,45 @@ class ConditionalDiffusionSampler:
     )
     resample_cutoff = max(0, min(resample_cutoff, num_middle_steps))
 
+    def _build_denoiser(time, rng_or_none):
+      return make_denoiser_fn(
+          inference_fn, corruption,
+          time=time, conditioning=conditioning, rng=rng_or_none,
+      )
+
+    def _correct_and_advance(*, current_step, advance_fn, rng_or_none):
+      """Build denoiser, correct ``x_0``, advance to the next step.
+
+      Returns ``(next_step, outputs_uncorrected, outputs_corrected)``.
+      Used by both the scan body (``advance_fn = stepper.update``) and the
+      final-step block (``advance_fn = stepper.finalize``); the only
+      difference is which ``stepper`` method advances the state.
+      """
+      xt, time = _xt_time(current_step)
+      denoiser_fn = _build_denoiser(time, rng_or_none)
+      raw_outputs = call_inference_fn(
+          inference_fn, xt=xt, time=time,
+          conditioning=conditioning, rng=rng_or_none,
+      )
+      x0_unc = denoiser_fn(xt)
+      x0_cor = self._apply_correction(x0_unc, xt, time, denoiser_fn, schedule)
+      outputs_corrected = _outputs_with_x0(raw_outputs, x0_cor)
+      next_step = advance_fn(outputs_corrected, current_step)
+      return next_step, raw_outputs, outputs_corrected
+
     # Initial twist evaluation at (xt_0, t_0).  Stochastic inference fns
     # (e.g. DistributionalInferenceFn) need an rng to draw their per-call
     # noise; deterministic inference fns ignore it entirely.  Split only
     # in the stochastic branch so the rng stream feeding the scan body is
     # bit-identical to the pre-fix behaviour for every existing
     # deterministic-inference-fn caller.
-    xt0, t0 = _xt_time(first_step)
     if uses_rng:
       rng, initial_twist_rng = jax.random.split(rng)
-      initial_twist_rng_or_none = initial_twist_rng
     else:
-      initial_twist_rng_or_none = None
+      initial_twist_rng = None
+    xt0, t0 = _xt_time(first_step)
     log_psi_prev = self._evaluate_twist(
-        xt0, t0,
-        denoiser_fn=make_denoiser_fn(
-            inference_fn, corruption,
-            time=t0, conditioning=conditioning, rng=initial_twist_rng_or_none,
-        ),
+        xt0, t0, denoiser_fn=_build_denoiser(t0, initial_twist_rng),
     )
     log_weights = jnp.zeros(initial_noise.shape[0], dtype=initial_noise.dtype)
     log_weights = log_weights + log_psi_prev
@@ -269,31 +304,16 @@ class ConditionalDiffusionSampler:
     def scan_body(carry, scan_input):
       step_carry, log_w, log_psi_old, rng_state, step_idx = carry
       next_info = scan_input
-      xt, time = _xt_time(step_carry)
 
       rng_state, step_rng = jax.random.split(rng_state)
       step_rng_or_none = step_rng if uses_rng else None
 
-      # One DenoiserFn per step, closed over the current (time, cond, rng).
-      denoiser_fn = make_denoiser_fn(
-          inference_fn, corruption,
-          time=time, conditioning=conditioning, rng=step_rng_or_none,
+      xt, time = _xt_time(step_carry)
+      next_step, outputs_uncorrected, outputs_corrected = _correct_and_advance(
+          current_step=step_carry,
+          advance_fn=lambda outputs, cur: stepper.update(outputs, cur, next_info),
+          rng_or_none=step_rng_or_none,
       )
-
-      # Raw native outputs -- kept as the uncorrected prediction so the
-      # stepper can advance via its preferred parameterisation.
-      raw_outputs = call_inference_fn(
-          inference_fn, xt=xt, time=time,
-          conditioning=conditioning, rng=step_rng_or_none,
-      )
-
-      x0_unc = denoiser_fn(xt)
-      x0_cor = self._apply_correction(x0_unc, xt, time, denoiser_fn, schedule)
-
-      outputs_uncorrected = raw_outputs
-      outputs_corrected = _outputs_with_x0(raw_outputs, x0_cor)
-
-      next_step = stepper.update(outputs_corrected, step_carry, next_info)
       xt_new, time_new = _xt_time(next_step)
 
       log_proposal_ratio = proposal_log_ratio(
@@ -304,14 +324,9 @@ class ConditionalDiffusionSampler:
           time_prev=time, time_next=time_new,
           correction_identity=correction_identity,
       )
-
-      # New twist at (xt_new, time_new); note: fresh denoiser_fn at new time.
-      denoiser_fn_new = make_denoiser_fn(
-          inference_fn, corruption,
-          time=time_new, conditioning=conditioning, rng=step_rng_or_none,
+      log_psi_new = self._evaluate_twist(
+          xt_new, time_new, _build_denoiser(time_new, step_rng_or_none),
       )
-      log_psi_new = self._evaluate_twist(xt_new, time_new, denoiser_fn_new)
-
       log_w = log_w + log_proposal_ratio + (log_psi_new - log_psi_old)
 
       rng_state, resample_rng = jax.random.split(rng_state)
@@ -333,37 +348,36 @@ class ConditionalDiffusionSampler:
           lambda: next_step,
       )
 
-      return (
+      new_carry = (
           next_step_after, log_w_after, log_psi_after, rng_state, step_idx + 1,
-      ), None
+      )
+      # Emit the post-resample step into the stacked trajectory so it
+      # reflects the particles actually carried forward.
+      scan_emit = next_step_after if return_trajectory else None
+      return new_carry, scan_emit
 
-    init_rng, scan_rng = jax.random.split(rng)
+    # Reserve a separate rng tree for the final stepper.finalize call;
+    # taking ``finalize_seed`` from the *first* half of the split keeps
+    # ``scan_rng`` (the second half) bit-identical to the pre-refactor
+    # behaviour for every existing caller.
+    finalize_seed, scan_rng = jax.random.split(rng)
+    _, final_rng = jax.random.split(finalize_seed)
     carry_init = (first_step, log_weights, log_psi_prev, scan_rng, 0)
-    (last_before_carry, log_w_final, log_psi_final, _, _), _ = jax.lax.scan(
-        scan_body, carry_init, next_infos,
+    (last_before_carry, log_w_final, log_psi_final, _, _), intermediate_steps = (
+        jax.lax.scan(scan_body, carry_init, next_infos)
     )
 
     # Final step (stepper.finalize advances to t=0).
     xt_last, time_last = _xt_time(last_before_carry)
-    _, final_rng = jax.random.split(init_rng)
     final_rng_or_none = final_rng if uses_rng else None
-
-    final_denoiser_fn = make_denoiser_fn(
-        inference_fn, corruption,
-        time=time_last, conditioning=conditioning, rng=final_rng_or_none,
-    )
-    final_raw_outputs = call_inference_fn(
-        inference_fn, xt=xt_last, time=time_last,
-        conditioning=conditioning, rng=final_rng_or_none,
-    )
-    x0_final_unc = final_denoiser_fn(xt_last)
-    x0_final_cor = self._apply_correction(
-        x0_final_unc, xt_last, time_last, final_denoiser_fn, schedule,
-    )
-    final_outputs_uncorrected = final_raw_outputs
-    final_outputs_corrected = _outputs_with_x0(final_raw_outputs, x0_final_cor)
-    final_step = stepper.finalize(
-        final_outputs_corrected, last_before_carry, last_info,
+    final_step, final_outputs_uncorrected, final_outputs_corrected = (
+        _correct_and_advance(
+            current_step=last_before_carry,
+            advance_fn=lambda outputs, cur: stepper.finalize(
+                outputs, cur, last_info,
+            ),
+            rng_or_none=final_rng_or_none,
+        )
     )
 
     if self.twist_fn is not None:
@@ -376,15 +390,16 @@ class ConditionalDiffusionSampler:
           time_prev=time_last, time_next=time_final,
           correction_identity=correction_identity,
       )
-      denoiser_fn_final = make_denoiser_fn(
-          inference_fn, corruption,
-          time=time_final, conditioning=conditioning, rng=final_rng_or_none,
-      )
       log_psi_at_final = self._evaluate_twist(
-          xt_final, time_final, denoiser_fn_final,
+          xt_final, time_final,
+          _build_denoiser(time_final, final_rng_or_none),
       )
       log_w_final = log_w_final + log_proposal_ratio_final + (
           log_psi_at_final - log_psi_final
       )
 
-    return final_step, None, log_w_final
+    trajectory = (
+        _concat_pytree(first_step, intermediate_steps, final_step)
+        if return_trajectory else None
+    )
+    return final_step, trajectory, log_w_final
