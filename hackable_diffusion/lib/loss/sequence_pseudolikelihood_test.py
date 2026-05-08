@@ -46,7 +46,9 @@ import numpy as np
 import optax
 
 from hackable_diffusion.lib.loss import compute_masked_pseudolikelihood_loss
+from hackable_diffusion.lib.loss import compute_masked_pseudolikelihood_nce_loss
 from hackable_diffusion.lib.loss import MaskedPseudolikelihoodLoss
+from hackable_diffusion.lib.loss import MaskedPseudolikelihoodNCELoss
 
 
 def logsumexp_np(arr: np.ndarray, axis: int | None = None):
@@ -400,6 +402,226 @@ class MaskedPseudolikelihoodLossWrapperTest(unittest.TestCase):
         "x0": jnp.array(
             [[0, 1, 2, 0], [2, 1, 0, 1]], dtype=jnp.int32,
         )[..., None],  # [B, n, 1] -- existing convention
+        "is_corrupted": jnp.ones((B, n, 1), dtype=jnp.bool_),
+        "xt": jnp.full((B, n), V, dtype=jnp.int32),
+    }
+    time = jnp.zeros((B,), dtype=jnp.float64)
+    out = loss_obj(preds=preds, targets=targets, time=time)
+    self.assertEqual(out.shape, (B,))
+
+
+################################################################################
+# MARK: NCE variant -- shape, baseline behaviours, gradient flow
+################################################################################
+
+
+class NCELossTest(unittest.TestCase):
+  """Conditional-NCE pseudolikelihood for large vocabularies.
+
+  Verifies the K+1-candidate construction, the binary logistic
+  contract, and a hand-checked baseline: when ``lambda=0``, the energy
+  is identically zero, the proposal is uniform over the vocabulary,
+  and the bias is set to ``log(K/V)``, the corrected classifier logit
+  collapses to ``log q_theta(v|xt) - log V``, so the per-site loss
+  equals ``softplus(-r_pos) + sum_k softplus(r_neg)`` with
+  ``r = log_softmax(logits) - log V``.
+  """
+
+  def _zero_energy(self, x0c, xt, time):
+    del xt, time
+    return jnp.zeros(x0c.shape[0], dtype=jnp.float64)
+
+  def _bias_fixed(self, val: float):
+    def b(x0, xt, time):
+      del xt, time
+      return jnp.full(x0.shape, val, dtype=jnp.float64)
+    return b
+
+  def test_shape_is_per_batch(self):
+    rng = jax.random.PRNGKey(0)
+    B, n, V, K = 2, 5, 4, 3
+    logits = jax.random.normal(rng, (B, n, V), dtype=jnp.float64)
+    x0 = jnp.array([[0, 1, 2, 3, 0], [3, 2, 1, 0, 1]], dtype=jnp.int32)
+    xt = jnp.full((B, n), V, dtype=jnp.int32)
+    time = jnp.zeros((B,), dtype=jnp.float64)
+    masked = jnp.ones((B, n), dtype=jnp.bool_)
+    proposal = jnp.broadcast_to(
+        jnp.full((V,), -jnp.log(V), dtype=jnp.float64),
+        (B, n, V),
+    )  # uniform proposal
+    negatives = jax.random.randint(rng, (B, n, K), 0, V).astype(jnp.int32)
+
+    out = compute_masked_pseudolikelihood_nce_loss(
+        logits=logits, energy_fn=self._zero_energy,
+        bias_fn=self._bias_fixed(0.0),
+        x0=x0, xt=xt, time=time,
+        masked_sites=masked,
+        proposal_log_probs=proposal,
+        negatives=negatives,
+        lam=1.0,
+    )
+    self.assertEqual(out.shape, (B,))
+    self.assertTrue(bool(jnp.all(jnp.isfinite(out))))
+
+  def test_uniform_proposal_zero_energy_baseline(self):
+    """With lambda=0, zero energy, uniform proposal, and bias=0:
+    r_lambda(v; c) = log_softmax(logits)[b, i, v] - log K - (-log V)
+                   = log_softmax(logits)[b, i, v] + log V - log K.
+
+    Verify the per-site loss matches the softplus formula by hand."""
+    rng = jax.random.PRNGKey(11)
+    B, n, V, K = 2, 4, 5, 2
+    logits = jax.random.normal(rng, (B, n, V), dtype=jnp.float64)
+    x0 = jnp.array([[0, 1, 2, 3], [4, 0, 1, 2]], dtype=jnp.int32)
+    xt = jnp.full((B, n), V, dtype=jnp.int32)
+    time = jnp.zeros((B,), dtype=jnp.float64)
+    masked = jnp.ones((B, n), dtype=jnp.bool_)
+    proposal = jnp.broadcast_to(
+        jnp.full((V,), -jnp.log(V), dtype=jnp.float64), (B, n, V),
+    )
+    # Deterministic negatives so we can check the formula.
+    negatives = jnp.array(
+        [[[0, 1], [1, 2], [2, 3], [3, 4]],
+         [[4, 3], [0, 4], [1, 0], [2, 1]]],
+        dtype=jnp.int32,
+    )
+
+    out = compute_masked_pseudolikelihood_nce_loss(
+        logits=logits, energy_fn=self._zero_energy,
+        bias_fn=self._bias_fixed(0.0),
+        x0=x0, xt=xt, time=time,
+        masked_sites=masked,
+        proposal_log_probs=proposal,
+        negatives=negatives,
+        lam=0.0,
+    )
+
+    # By hand: r_pos = log_softmax(logits)[b, i, x0[b, i]] + log V - log K
+    log_q = jax.nn.log_softmax(logits, axis=-1)
+    log_V = jnp.log(jnp.asarray(V, dtype=jnp.float64))
+    log_K = jnp.log(jnp.asarray(K, dtype=jnp.float64))
+    pos_idx = jnp.take_along_axis(log_q, x0[..., None], axis=-1).squeeze(-1)
+    r_pos = pos_idx + log_V - log_K                              # [B, n]
+    neg_idx = jnp.take_along_axis(log_q, negatives, axis=-1)     # [B, n, K]
+    r_neg = neg_idx + log_V - log_K                              # [B, n, K]
+    expected_per_site = (
+        jax.nn.softplus(-r_pos)
+        + jnp.sum(jax.nn.softplus(r_neg), axis=-1)
+    )
+    expected_per_sample = jnp.mean(expected_per_site, axis=-1)
+    self.assertTrue(jnp.allclose(out, expected_per_sample, atol=1e-12))
+
+  def test_unmasked_sites_do_not_contribute(self):
+    rng = jax.random.PRNGKey(22)
+    B, n, V, K = 2, 5, 4, 3
+    logits = jax.random.normal(rng, (B, n, V), dtype=jnp.float64)
+    x0 = jnp.array([[0, 1, 2, 3, 0], [3, 2, 1, 0, 2]], dtype=jnp.int32)
+    xt = jnp.full((B, n), V, dtype=jnp.int32)
+    time = jnp.zeros((B,), dtype=jnp.float64)
+    masked = jnp.array(
+        [[True, False, True, False, False],
+         [True, False, True, False, False]],
+    )
+    proposal = jnp.broadcast_to(
+        jnp.full((V,), -jnp.log(V), dtype=jnp.float64), (B, n, V),
+    )
+    negatives = jnp.array(
+        [[[0, 1, 2], [1, 2, 3], [2, 3, 0], [3, 0, 1], [0, 1, 2]],
+         [[3, 2, 1], [0, 3, 2], [1, 0, 3], [2, 1, 0], [0, 1, 2]]],
+        dtype=jnp.int32,
+    )
+
+    base = compute_masked_pseudolikelihood_nce_loss(
+        logits=logits, energy_fn=self._zero_energy,
+        bias_fn=self._bias_fixed(0.0),
+        x0=x0, xt=xt, time=time,
+        masked_sites=masked,
+        proposal_log_probs=proposal,
+        negatives=negatives,
+        lam=1.0,
+    )
+    # Perturb logits at unmasked positions.
+    perturbed = logits.at[:, 1, :].add(50.0).at[:, 3:, :].add(-100.0)
+    perturbed_loss = compute_masked_pseudolikelihood_nce_loss(
+        logits=perturbed, energy_fn=self._zero_energy,
+        bias_fn=self._bias_fixed(0.0),
+        x0=x0, xt=xt, time=time,
+        masked_sites=masked,
+        proposal_log_probs=proposal,
+        negatives=negatives,
+        lam=1.0,
+    )
+    self.assertTrue(jnp.allclose(base, perturbed_loss, atol=1e-10))
+
+  def test_gradient_flows_to_logits_energy_bias(self):
+    rng = jax.random.PRNGKey(33)
+    B, n, V, K = 2, 4, 4, 3
+    logits0 = jax.random.normal(rng, (B, n, V), dtype=jnp.float64)
+    x0 = jnp.array([[0, 1, 2, 3], [3, 2, 1, 0]], dtype=jnp.int32)
+    xt = jnp.full((B, n), V, dtype=jnp.int32)
+    time = jnp.zeros((B,), dtype=jnp.float64)
+    masked = jnp.ones((B, n), dtype=jnp.bool_)
+    proposal = jnp.broadcast_to(
+        jnp.full((V,), -jnp.log(V), dtype=jnp.float64), (B, n, V),
+    )
+    negatives = jnp.array(
+        [[[0, 1, 2], [1, 2, 3], [2, 3, 0], [3, 0, 1]],
+         [[3, 2, 1], [0, 3, 2], [1, 0, 3], [2, 1, 0]]],
+        dtype=jnp.int32,
+    )
+
+    def loss_at(logits_in, w_e, w_b):
+      def energy_fn(x0c, xt_, t_):
+        return w_e * jnp.sum(x0c.astype(jnp.float64), axis=-1)
+      def bias_fn(x0_, xt_, t_):
+        return w_b * jnp.ones(x0_.shape, dtype=jnp.float64)
+      per_sample = compute_masked_pseudolikelihood_nce_loss(
+          logits=logits_in, energy_fn=energy_fn, bias_fn=bias_fn,
+          x0=x0, xt=xt, time=time, masked_sites=masked,
+          proposal_log_probs=proposal, negatives=negatives,
+          lam=1.0,
+      )
+      return jnp.mean(per_sample)
+
+    grads = jax.grad(loss_at, argnums=(0, 1, 2))(logits0, 0.1, 0.05)
+    self.assertEqual(grads[0].shape, logits0.shape)
+    self.assertTrue(bool(jnp.any(jnp.abs(grads[0]) > 1e-9)))
+    self.assertGreater(float(jnp.abs(grads[1])), 1e-9)
+    self.assertGreater(float(jnp.abs(grads[2])), 1e-9)
+
+
+class MaskedPseudolikelihoodNCELossWrapperTest(unittest.TestCase):
+
+  def test_wrapper_roundtrip(self):
+    rng = jax.random.PRNGKey(0)
+    B, n, V, K = 2, 4, 4, 2
+    logits = jax.random.normal(rng, (B, n, V), dtype=jnp.float64)
+
+    def zero_e(x0c, xt_, t_):
+      return jnp.zeros(x0c.shape[0], dtype=jnp.float64)
+    def zero_b(x0_, xt_, t_):
+      return jnp.zeros(x0_.shape, dtype=jnp.float64)
+
+    loss_obj = MaskedPseudolikelihoodNCELoss(
+        energy_fn=zero_e, bias_fn=zero_b, lam=0.0,
+    )
+    proposal = jnp.broadcast_to(
+        jnp.full((V,), -jnp.log(V), dtype=jnp.float64), (B, n, V),
+    )
+    negatives = jnp.array(
+        [[[0, 1], [1, 2], [2, 3], [3, 0]],
+         [[3, 2], [0, 3], [1, 0], [2, 1]]],
+        dtype=jnp.int32,
+    )
+    preds = {
+        "logits": logits,
+        "proposal_log_probs": proposal,
+        "negatives": negatives,
+    }
+    targets = {
+        "x0": jnp.array(
+            [[0, 1, 2, 3], [3, 2, 1, 0]], dtype=jnp.int32,
+        )[..., None],
         "is_corrupted": jnp.ones((B, n, 1), dtype=jnp.bool_),
         "xt": jnp.full((B, n), V, dtype=jnp.int32),
     }

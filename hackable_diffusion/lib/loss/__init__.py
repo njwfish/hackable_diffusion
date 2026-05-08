@@ -26,11 +26,18 @@ from hackable_diffusion.lib.loss.gaussian import NoWeightGaussianLoss
 from hackable_diffusion.lib.loss.gaussian import SiD2Loss
 from hackable_diffusion.lib.loss.scoring_rules import compute_energy_score_loss
 from hackable_diffusion.lib.loss.scoring_rules import EnergyScoreLoss
+from hackable_diffusion.lib.loss.sequence_pseudolikelihood import BiasSiteFn
 from hackable_diffusion.lib.loss.sequence_pseudolikelihood import (
     compute_masked_pseudolikelihood_loss,
+)
+from hackable_diffusion.lib.loss.sequence_pseudolikelihood import (
+    compute_masked_pseudolikelihood_nce_loss,
 )
 from hackable_diffusion.lib.loss.sequence_pseudolikelihood import EnergySequenceFn
 from hackable_diffusion.lib.loss.sequence_pseudolikelihood import (
     MaskedPseudolikelihoodLoss,
+)
+from hackable_diffusion.lib.loss.sequence_pseudolikelihood import (
+    MaskedPseudolikelihoodNCELoss,
 )
 # pylint: enable=g-importing-member
