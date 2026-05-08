@@ -26,6 +26,18 @@ from hackable_diffusion.lib.loss.gaussian import NoWeightGaussianLoss
 from hackable_diffusion.lib.loss.gaussian import SiD2Loss
 from hackable_diffusion.lib.loss.scoring_rules import compute_energy_score_loss
 from hackable_diffusion.lib.loss.scoring_rules import EnergyScoreLoss
+from hackable_diffusion.lib.loss.spectral_riesz import (
+    compute_riesz_energy_score_loss,
+)
+from hackable_diffusion.lib.loss.spectral_riesz import (
+    make_sphere_riesz_distance_fn,
+)
+from hackable_diffusion.lib.loss.spectral_riesz import make_torus_modes
+from hackable_diffusion.lib.loss.spectral_riesz import (
+    make_torus_riesz_distance_fn,
+)
+from hackable_diffusion.lib.loss.spectral_riesz import RiemannianDistanceFn
+from hackable_diffusion.lib.loss.spectral_riesz import RieszEnergyScoreLoss
 from hackable_diffusion.lib.loss.sequence_pseudolikelihood import BiasSiteFn
 from hackable_diffusion.lib.loss.sequence_pseudolikelihood import (
     compute_masked_pseudolikelihood_loss,
