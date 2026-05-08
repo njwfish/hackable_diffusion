@@ -56,6 +56,7 @@ from hackable_diffusion.lib.guidance.denoisers import (
     LinearBlendDenoiserFn,
     make_cfg_inference_fn,
     make_denoiser_fn,
+    make_posterior_cloud_fn,
 )
 from hackable_diffusion.lib.guidance.forward_ops import (
     ComposeForwardFn,
@@ -1483,6 +1484,120 @@ class CFGCompositionTest(unittest.TestCase):
     out = blended(jnp.zeros((batch, n)))
     expected = x0_cond * (1.0 + w) - x0_uncond * w
     self.assertTrue(jnp.allclose(out, expected, atol=1e-12))
+
+
+################################################################################
+# MARK: Posterior cloud (R-sample wrapper around any inference fn)
+################################################################################
+
+
+class PosteriorCloudFnTest(unittest.TestCase):
+  """``make_posterior_cloud_fn`` should:
+
+    1. Emit ``[B, R, *x0_shape]`` for any ``R >= 1``.
+    2. For a stochastic inference fn, the ``R`` slices along the
+       population axis are independent draws.
+    3. For a deterministic inference fn, the ``R`` slices are bit-equal
+       (the explicit mean-plug-in baseline).
+    4. The ``R=1`` slice ``cloud[:, 0]`` is bit-identical to the same-rng
+       :func:`make_denoiser_fn` output -- the cloud is a strict
+       generalisation, not an alternative code path.
+  """
+
+  def test_shape_and_independence_for_stochastic_inference_fn(self):
+    schedule = schedules.CosineSchedule()
+    corruption = GaussianProcess(schedule=schedule)
+
+    # Stochastic inference fn: x_0 = xt + 0.1 * Z, Z ~ N(0, I).
+    def stoch_fn(xt, time, conditioning=None, rng=None):
+      del time, conditioning
+      if rng is None:
+        raise ValueError("stoch_fn needs rng")
+      return {"x0": xt + 0.1 * jax.random.normal(rng, xt.shape, dtype=xt.dtype)}
+
+    batch, n, R = 4, 8, 6
+    xt = jnp.ones((batch, n), dtype=jnp.float64)
+    t = jnp.asarray([0.5], dtype=jnp.float64)
+    rng = jax.random.PRNGKey(0)
+
+    cloud_fn = make_posterior_cloud_fn(
+        stoch_fn, corruption,
+        time=t, rng=rng, population_size=R,
+    )
+    cloud = cloud_fn(xt)
+    self.assertEqual(cloud.shape, (batch, R, n))
+
+    # All R slices should differ (independent rng splits).
+    for r in range(1, R):
+      self.assertFalse(
+          jnp.allclose(cloud[:, 0], cloud[:, r], atol=1e-8),
+          f"cloud[:, 0] and cloud[:, {r}] are identical -- rng split broken.",
+      )
+
+  def test_deterministic_inference_fn_collapses_to_identical_copies(self):
+    schedule = schedules.CosineSchedule()
+    corruption = GaussianProcess(schedule=schedule)
+
+    def det_fn(xt, time, conditioning=None):
+      del time, conditioning
+      return {"x0": xt}
+
+    batch, n, R = 3, 5, 4
+    xt = jax.random.normal(jax.random.PRNGKey(7), (batch, n), dtype=jnp.float64)
+    t = jnp.asarray([0.5], dtype=jnp.float64)
+
+    cloud = make_posterior_cloud_fn(
+        det_fn, corruption,
+        time=t, rng=jax.random.PRNGKey(0), population_size=R,
+    )(xt)
+    self.assertEqual(cloud.shape, (batch, R, n))
+    # All R slices identical -- the mean-plug-in baseline.
+    for r in range(1, R):
+      self.assertTrue(jnp.allclose(cloud[:, 0], cloud[:, r], atol=1e-12))
+
+  def test_R_eq_1_matches_make_denoiser_fn_with_first_split_key(self):
+    """Cloud is a strict generalisation: cloud[:, 0] == denoiser(xt) when
+    both use the same first split key from rng."""
+    schedule = schedules.CosineSchedule()
+    corruption = GaussianProcess(schedule=schedule)
+
+    def stoch_fn(xt, time, conditioning=None, rng=None):
+      del time, conditioning
+      if rng is None:
+        raise ValueError("stoch_fn needs rng")
+      return {"x0": xt + 0.05 * jax.random.normal(rng, xt.shape, dtype=xt.dtype)}
+
+    batch, n = 2, 4
+    xt = jnp.ones((batch, n), dtype=jnp.float64)
+    t = jnp.asarray([0.5], dtype=jnp.float64)
+    rng = jax.random.PRNGKey(11)
+
+    # Cloud with R=1 must match make_denoiser_fn called with split(rng, 1)[0].
+    cloud = make_posterior_cloud_fn(
+        stoch_fn, corruption,
+        time=t, rng=rng, population_size=1,
+    )(xt)
+    expected = make_denoiser_fn(
+        stoch_fn, corruption,
+        time=t, rng=jax.random.split(rng, 1)[0],
+    )(xt)
+    self.assertEqual(cloud.shape, (batch, 1, n))
+    self.assertTrue(jnp.allclose(cloud[:, 0], expected, atol=1e-12))
+
+  def test_population_size_zero_raises(self):
+    schedule = schedules.CosineSchedule()
+    corruption = GaussianProcess(schedule=schedule)
+
+    def det_fn(xt, time, conditioning=None):
+      del time, conditioning
+      return {"x0": xt}
+
+    with self.assertRaises(ValueError):
+      make_posterior_cloud_fn(
+          det_fn, corruption,
+          time=jnp.asarray([0.5]), rng=jax.random.PRNGKey(0),
+          population_size=0,
+      )
 
 
 if __name__ == "__main__":

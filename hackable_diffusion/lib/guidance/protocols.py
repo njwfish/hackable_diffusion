@@ -67,6 +67,33 @@ class DenoiserFn(Protocol):
   def __call__(self, xt: jax.Array) -> jax.Array: ...
 
 
+class PosteriorCloudFn(Protocol):
+  """Pure ``xt -> [B, R, *x0_shape]`` posterior-sample cloud at fixed time.
+
+  The cloud-valued analogue of :class:`DenoiserFn`.  Every cloud-aware
+  primitive that needs ``R`` posterior samples at one ``x_t`` -- SMC
+  potential estimation ``\\hat h_k^R = (1/R) \\sum L_y(x_0^r)``, projection
+  guidance, self-normalised endpoint MC -- consumes a
+  ``PosteriorCloudFn``.
+
+  Build one with :func:`make_posterior_cloud_fn` from a raw
+  ``inference_fn`` + ``corruption_process`` and a per-step rng.  The
+  returned closure captures ``time``, ``conditioning``, and ``R``
+  independent rng splits, calling ``inference_fn`` ``R`` times via
+  ``jax.vmap`` -- one call per posterior sample.  When the inference fn
+  is a :class:`PosteriorSamplerInferenceFn` the ``R`` calls draw ``R``
+  independent posterior samples; for a deterministic inference fn the
+  ``R`` outputs are identical (the explicit mean-plug-in baseline).
+
+  Output shape contract: ``(B, R, *x0_shape)`` -- the ``R`` axis is at
+  position 1, matching :func:`hackable_diffusion.lib.distributional.ensemble_apply`
+  at training time and :class:`hackable_diffusion.lib.loss.EnergyScoreLoss`'s
+  expected input.
+  """
+
+  def __call__(self, xt: jax.Array) -> jax.Array: ...
+
+
 class ForwardFn(Protocol):
   """Measurement / aggregation map ``y = A(x_0)``.
 

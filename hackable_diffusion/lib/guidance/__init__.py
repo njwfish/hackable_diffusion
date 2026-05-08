@@ -14,12 +14,22 @@
 
 """Composable conditional-sampling framework.
 
-Six callable Protocols (``DenoiserFn``, ``ForwardFn``,
-``PosteriorCovarianceFn``, ``CorrectionFn``, ``TwistFn``,
-``ResamplerFn``) plus the step-level ``StepKernel`` compose inside
-:class:`ConditionalDiffusionSampler` to express Pi-GDM (Kalman), DPS,
-TDS, MCGDiff, CFG, classifier guidance, iterated Pi-GDM, and other
+Seven callable Protocols (``DenoiserFn``, ``PosteriorCloudFn``,
+``ForwardFn``, ``PosteriorCovarianceFn``, ``CorrectionFn``,
+``TwistFn``, ``ResamplerFn``) plus the step-level ``StepKernel``
+compose inside :class:`ConditionalDiffusionSampler` to express Pi-GDM
+(Kalman), DPS, TDS, MCGDiff, CFG, classifier guidance, iterated
+Pi-GDM, posterior-sample SMC, projection guidance, and other
 posterior-sampling methods as configurations.
+
+``DenoiserFn`` and ``PosteriorCloudFn`` are the two interfaces a
+twist or correction can read from: ``DenoiserFn`` is one prediction
+``xt -> xhat_0(xt)`` (R=1); ``PosteriorCloudFn`` is the cloud-valued
+analogue ``xt -> [B, R, *x0_shape]`` built by
+:func:`make_posterior_cloud_fn`.  Cloud-aware twists (e.g. the SMC
+potential estimator ``\\hat h_k^R = (1/R) \\sum L_y(x_0^r)``)
+consume the cloud; the existing single-sample twists consume the
+denoiser.
 """
 
 from hackable_diffusion.lib.guidance.adapters import BoundAggregateGuidanceFn
@@ -36,6 +46,7 @@ from hackable_diffusion.lib.guidance.denoisers import (
     cfg_denoiser_fn,
     make_cfg_inference_fn,
     make_denoiser_fn,
+    make_posterior_cloud_fn,
 )
 from hackable_diffusion.lib.guidance.forward_ops import (
     ComposeForwardFn,
@@ -67,6 +78,7 @@ from hackable_diffusion.lib.guidance.protocols import (
     CorrectionFn,
     DenoiserFn,
     ForwardFn,
+    PosteriorCloudFn,
     PosteriorCovarianceFn,
     ResamplerFn,
     TwistFn,
@@ -131,6 +143,7 @@ __all__ = [
     "LowRankTweediePosteriorCovarianceFn",
     "MultinomialResamplerFn",
     "NoResamplerFn",
+    "PosteriorCloudFn",
     "PosteriorCovarianceFn",
     "PosteriorPredictiveGaussianTwistFn",
     "PrefactorFn",
@@ -152,6 +165,7 @@ __all__ = [
     "linear_adjoint",
     "make_cfg_inference_fn",
     "make_denoiser_fn",
+    "make_posterior_cloud_fn",
     "miyasawa_prefactor",
     "miyasawa_scale",
     "normalised_weights",

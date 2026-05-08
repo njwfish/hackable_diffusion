@@ -12,11 +12,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Denoiser-level composition primitives.
+"""Denoiser- and posterior-cloud-level composition primitives.
 
 - :func:`make_denoiser_fn`: the canonical constructor: raw
   ``inference_fn`` + corruption process -> :class:`DenoiserFn` closure
-  at a fixed ``(time, conditioning, rng)``.
+  at a fixed ``(time, conditioning, rng)``.  Returns one prediction
+  ``xt -> xhat_0(xt)``; for stochastic inference fns this is one
+  posterior sample.
+- :func:`make_posterior_cloud_fn`: the cloud-valued analogue.  Returns
+  ``xt -> [B, R, *x0_shape]`` by splitting ``rng`` into ``R`` keys and
+  vmap'ing :func:`make_denoiser_fn` over them.  Cloud-aware twists
+  (``\\hat h_k^R = (1/R) \\sum L_y(x_0^r)``), projection guidance, and
+  self-normalised endpoint MC consume the cloud closure.
 - :class:`LinearBlendDenoiserFn`: arbitrary linear combination of
   base denoisers.  Covers classifier-free guidance as a scalar special
   case (see :func:`cfg_denoiser_fn`); also supports multi-condition
@@ -42,7 +49,9 @@ from typing import Any, Callable
 import jax
 import jax.numpy as jnp
 
-from hackable_diffusion.lib.guidance.protocols import DenoiserFn
+from hackable_diffusion.lib.guidance.protocols import (
+    DenoiserFn, PosteriorCloudFn,
+)
 from hackable_diffusion.lib.guidance.utils import call_inference_fn
 
 
@@ -87,6 +96,71 @@ def make_denoiser_fn(
     return x0
 
   return denoiser_fn
+
+
+def make_posterior_cloud_fn(
+    inference_fn: Callable,
+    corruption_process: Any,
+    *,
+    time: jax.Array,
+    conditioning: Any = None,
+    rng: jax.Array,
+    population_size: int,
+) -> PosteriorCloudFn:
+  """Build a pure ``xt -> [B, R, *x0_shape]`` posterior-cloud closure.
+
+  The cloud-valued analogue of :func:`make_denoiser_fn`.  Splits ``rng``
+  into ``R = population_size`` independent keys and ``jax.vmap``s a
+  per-sample :func:`make_denoiser_fn` over them, returning a closure that
+  produces ``R`` posterior samples at any ``x_t``.
+
+  For a :class:`PosteriorSamplerInferenceFn` (or any other stochastic
+  inference fn that accepts ``rng``), the ``R`` calls draw ``R``
+  independent posterior samples from ``\\hat p_{0|t}(. | x_t)`` -- the
+  manuscript's clean-endpoint cloud.  For a deterministic inference fn,
+  the ``R`` outputs are identical, which is the explicit mean-plug-in
+  baseline used for ablations against full posterior MC.
+
+  Output shape: ``(B, R, *x0_shape)`` -- the ``R`` axis is at position
+  1, matching :func:`hackable_diffusion.lib.distributional.ensemble_apply`
+  at training time so the same downstream code paths can read it.
+
+  Args:
+    inference_fn: The model.  Either a stochastic
+      :class:`PosteriorSamplerInferenceFn` (R calls produce R distinct
+      samples) or any deterministic inference fn (R calls produce R
+      identical copies -- the mean-plug-in baseline).
+    corruption_process: Used by the per-sample
+      :func:`make_denoiser_fn` to convert raw network output to the
+      soft ``x_0`` representation.
+    time: The fixed time at which the cloud is built.
+    conditioning: Optional conditioning passed to the inference fn.
+    rng: PRNGKey to split into ``R`` per-sample subkeys.  Required --
+      a cloud always needs splittable rng even if the per-sample
+      inference fn happens to ignore it.
+    population_size: The cloud size ``R``.  Must be ``>= 1``.
+
+  Returns:
+    A :class:`PosteriorCloudFn` closure that, given ``x_t``, returns a
+    cloud of shape ``(B, R, *x0_shape)``.
+  """
+  if population_size < 1:
+    raise ValueError(
+        f"population_size must be >= 1, got {population_size}."
+    )
+  rngs = jax.random.split(rng, population_size)
+
+  def cloud_fn(xt: jax.Array) -> jax.Array:
+    def _one(rng_r: jax.Array) -> jax.Array:
+      return make_denoiser_fn(
+          inference_fn, corruption_process,
+          time=time, conditioning=conditioning, rng=rng_r,
+      )(xt)
+    # vmap over the R rng axis; out_axes=1 puts R right after the batch
+    # dim, matching ensemble_apply's [B, R, *data] training-time shape.
+    return jax.vmap(_one, in_axes=0, out_axes=1)(rngs)
+
+  return cloud_fn
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
