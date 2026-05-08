@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Distributional inference fn x guidance composability tests.
+"""Posterior-sampler inference fn x guidance composability tests.
 
-A distributional inference fn (De Bortoli et al. 2025) is **stochastic**:
-the same ``(xt, time)`` produces different ``x_0`` samples under different
-``rng`` keys.  This breaks anything in the guidance stack that assumes the
-denoiser is deterministic, and the existing literature tests
+A posterior-sampler inference fn (De Bortoli et al. 2025; the
+``PosteriorSamplerInferenceFn`` interface) is **stochastic**: the same
+``(xt, time)`` produces different ``x_0`` samples under different
+``rng`` keys.  This breaks anything in the guidance stack that assumes
+the denoiser is deterministic, and the existing literature tests
 (``guidance_literature_test.py``) only exercise deterministic inference
 fns.  The fixture below fills that gap.
 

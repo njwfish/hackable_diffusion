@@ -12,16 +12,27 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Sampling-time inference fn for distributional diffusion (arXiv:2502.02483).
+"""Posterior-sampler inference fn (arXiv:2502.02483; posterior-bridge view).
 
 At each reverse step the network takes ``(t, x_t, xi)`` with ``xi ~ N(0, I)``
-and outputs an approximate *sample* from ``p_{0|t}(x_0 | x_t)`` rather than
-its mean. The sampling-loop scan body passes us the step's rng; we use it to
-draw ``xi``, inject it via the same ``xi_injector`` used at training, and
-call the network once per step.
+and outputs an approximate *sample* from the clean-endpoint posterior
+``p_{0|t}(x_0 | x_t)`` rather than its mean.  In the posterior-bridge
+framework this is the local distributional object the bridge step
+``K_{s|0,t}(. | x_0, x_t)`` averages against; everything downstream
+(twists, projection, SMC potentials) reads it as a posterior sample
+rather than a denoiser point estimate.
 
-The network is expected to be shape-preserving under the doubled input —
-see :mod:`hackable_diffusion.lib.distributional` for the invariant and
+The sampling-loop scan body passes us the step's rng; we use it to draw
+``xi``, inject it via the same ``xi_injector`` used at training, and
+call the network once per step.  Calling this fn ``R`` times with
+independent rngs gives an ``R``-sample posterior cloud at the same
+``x_t`` --  see :func:`make_posterior_cloud_fn` in
+``hackable_diffusion.lib.guidance.denoisers`` for that helper.
+
+The network is expected to be shape-preserving under the doubled input --
+see :mod:`hackable_diffusion.lib.distributional` for the training-time
+invariant (which still bears the "distributional diffusion" name from the
+original paper) and
 :class:`hackable_diffusion.lib.architecture.NoiseTrimBackbone` for the
 canonical wrapper.
 """
@@ -59,25 +70,31 @@ _XI_RNG_SALT = 0x1D01  # distinctive constant for traceability in logs.
 
 
 ################################################################################
-# MARK: DistributionalInferenceFn
+# MARK: PosteriorSamplerInferenceFn
 ################################################################################
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
-class DistributionalInferenceFn(InferenceFn):
+class PosteriorSamplerInferenceFn(InferenceFn):
   """Stochastic inference fn: calls the network with a per-step xi draw.
 
-  The trained network must be shape-preserving under ``[x_t, xi]`` doubled
-  inputs — use
-  :class:`hackable_diffusion.lib.architecture.NoiseTrimBackbone` around any
-  plain backbone whose I/O share a last-axis layout, or a dedicated
-  distributional subclass for backbones that reshape the last axis into an
-  image (e.g.
-  ``mdt.model.unet_patch_distributional.DistributionalUNetPatch``). Either
-  way this class simply injects ``xi`` and forwards; it never trims output.
+  Returns one approximate sample from the clean-endpoint posterior
+  ``p_{0|t}(. | x_t)`` per call.  The trained network must be
+  shape-preserving under ``[x_t, xi]`` doubled inputs -- use
+  :class:`hackable_diffusion.lib.architecture.NoiseTrimBackbone` around
+  any plain backbone whose I/O share a last-axis layout, or a dedicated
+  distributional subclass for backbones that reshape the last axis into
+  an image (e.g.
+  ``mdt.model.unet_patch_distributional.DistributionalUNetPatch``).
+  Either way this class simply injects ``xi`` and forwards; it never
+  trims output.
 
-  One xi draw per reverse step — not a population. The energy-score
-  training is what buys the ability to take big steps with a single sample.
+  One xi draw per reverse step -- not a population.  The energy-score
+  training (Phase 4 in the bridge framework) is what buys the ability to
+  take big steps with a single sample.  Algorithms that need an
+  ``R``-sample posterior cloud at the same ``x_t`` (SMC potential
+  estimation, projection) call this fn ``R`` times with independent
+  rngs; see :func:`make_posterior_cloud_fn` for that helper.
 
   Attributes:
     network: The trained Linen diffusion network.
@@ -104,7 +121,7 @@ class DistributionalInferenceFn(InferenceFn):
   ) -> TargetInfoTree:
     if rng is None:
       raise ValueError(
-          "DistributionalInferenceFn requires an rng; the sampling loop "
+          "PosteriorSamplerInferenceFn requires an rng; the sampling loop "
           "should be passing one from step_info. If you're calling this fn "
           "directly, pass rng= explicitly."
       )

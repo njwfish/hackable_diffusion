@@ -47,9 +47,10 @@ class NoiseTrimBackbone(nn.Module, ConditionalBackbone):
 
   The caller (typically
   ``hackable_diffusion.lib.distributional.ensemble_apply`` at train time or
-  ``hackable_diffusion.lib.inference.DistributionalInferenceFn`` at sampling
-  time) concatenates ``xi`` onto ``x_t`` along the last axis. The wrapped
-  backbone sees this doubled input unchanged; we only trim its output.
+  ``hackable_diffusion.lib.inference.PosteriorSamplerInferenceFn`` at
+  sampling time) concatenates ``xi`` onto ``x_t`` along the last axis.
+  The wrapped backbone sees this doubled input unchanged; we only trim
+  its output.
 
   Attributes:
     base: Any ``ConditionalBackbone`` whose input and output share the same
