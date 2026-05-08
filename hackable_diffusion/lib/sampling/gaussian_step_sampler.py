@@ -488,29 +488,33 @@ class DDIMStep(SamplerStep):
       time_prev: jax.Array,
       time_next: jax.Array,
   ) -> GaussianStepKernel:
-    """Linear-mean-shift DDIM kernel.
+    """Linear-Gaussian kernel matching :meth:`update` exactly.
 
-    ``mu = coeff_x0 xhat_0 + coeff_xt xt`` with
-
-        coeff_x0 = alpha_s - alpha_r sigma_s sqrt(1 - eta^2) / sigma_r
-        coeff_xt = sigma_s sqrt(1 - eta^2) / sigma_r
-
-    and ``sigma_step = sigma_s eta``.  ODE limit ``eta = 0``:
+    The sampler's ``stoch_coeff`` is not the usual DDIM ``eta`` formula;
+    :meth:`update` linearly interpolates the DDIM and DDPM coefficients.
+    The SMC proposal ratio is only valid if this kernel uses the same
+    mean and volatility as ``update``.  ODE limit ``stoch_coeff = 0``:
     ``sigma_step = 0`` and the ratio is identically zero.
     """
     schedule = self.corruption_process.schedule
-    alpha_r = _scalar(time_prev, schedule.alpha)
-    sigma_r = _scalar(time_prev, schedule.sigma)
-    alpha_s = _scalar(time_next, schedule.alpha)
-    sigma_s = _scalar(time_next, schedule.sigma)
-    eta = self.stoch_coeff
+    alpha = _scalar(time_prev, schedule.alpha)
+    sigma = _scalar(time_prev, schedule.sigma)
+    next_alpha = _scalar(time_next, schedule.alpha)
+    next_sigma = _scalar(time_next, schedule.sigma)
+    eta = float(self.stoch_coeff)
 
-    det_factor = jnp.sqrt(jnp.maximum(1.0 - eta ** 2, 0.0))
-    coeff_x0 = (
-        alpha_s - alpha_r * sigma_s * det_factor / jnp.maximum(sigma_r, 1e-12)
+    sigma_safe = jnp.maximum(sigma, 1e-12)
+    next_alpha_safe = jnp.maximum(next_alpha, 1e-12)
+    r01 = next_sigma / sigma_safe
+    r11 = alpha / next_alpha_safe * r01
+    r12 = r11 * r01
+    r22 = r11 * r11
+
+    coeff_xt = eta * r12 + (1.0 - eta) * r01
+    coeff_x0 = next_alpha * (1.0 - eta * r22 - (1.0 - eta) * r11)
+    sigma_step = next_sigma * jnp.sqrt(
+        jnp.maximum(1.0 - jnp.square(eta * r11 + (1.0 - eta)), 0.0)
     )
-    coeff_xt = sigma_s * det_factor / jnp.maximum(sigma_r, 1e-12)
-    sigma_step = sigma_s * eta
 
     return GaussianStepKernel(
         coeff_x0=coeff_x0, coeff_xt=coeff_xt, sigma_step=sigma_step,

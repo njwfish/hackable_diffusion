@@ -64,6 +64,10 @@ from hackable_diffusion.lib.guidance.forward_ops import (
     LinearForwardFn,
     SubsampleForwardFn,
 )
+from hackable_diffusion.lib.guidance.gaussian_conditioning import (
+    PosteriorPredictiveGaussianTwistFn,
+    PseudoInverseKalmanCorrectionFn,
+)
 from hackable_diffusion.lib.guidance.linalg import (
     batch_inner,
     batched_cg,
@@ -110,6 +114,21 @@ class _MeanForwardFn:
 
   def forward(self, x: jax.Array) -> jax.Array:
     return jnp.mean(x, axis=-1, keepdims=True)
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class _FixedPosteriorCovarianceFn:
+  covariance: jax.Array
+
+  def __call__(self, *, xt, time, schedule, denoiser_fn=None):
+    del time, schedule, denoiser_fn
+    cov = self.covariance.astype(xt.dtype)
+
+    def matvec(v: jax.Array) -> jax.Array:
+      v_flat = v.reshape(v.shape[0], -1)
+      return (v_flat @ cov.T).reshape(v.shape)
+
+    return matvec
 
 
 def _identity_x0_inference_fn(x0_fixed: jax.Array):
@@ -336,6 +355,41 @@ class GaussianTwistTest(unittest.TestCase):
         t_on(xt, time, denoiser_fn=denoiser_fn)
         > t_off(xt, time, denoiser_fn=denoiser_fn),
     )))
+
+
+class PosteriorPredictiveGaussianTwistTest(unittest.TestCase):
+
+  def test_singular_log_density_uses_predictive_covariance(self):
+    schedule = schedules.CosineSchedule()
+    corruption = GaussianProcess(schedule=schedule)
+    # Duplicate observation rows make A C A^T singular but consistent.
+    A = jnp.asarray([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=jnp.float64)
+    fwd = LinearForwardFn(matrix=A)
+    cov = jnp.diag(jnp.asarray([1.0, 0.0, 0.0], dtype=jnp.float64))
+    x0 = jnp.asarray([[0.25, -1.0, 2.0]], dtype=jnp.float64)
+    y = jnp.asarray([[1.0, 1.0]], dtype=jnp.float64)
+    time = jnp.asarray([0.5], dtype=jnp.float64)
+
+    twist = PosteriorPredictiveGaussianTwistFn(
+        observation=y,
+        forward_fn=fwd,
+        posterior_covariance_fn=_FixedPosteriorCovarianceFn(covariance=cov),
+        schedule=schedule,
+        observation_noise=0.0,
+        pinv_rtol=1e-12,
+        pinv_atol=1e-12,
+    )
+    logp = twist(
+        jnp.zeros_like(x0),
+        time,
+        denoiser_fn=_denoiser_from_x0(x0, corruption, time),
+    )
+
+    residual = 0.75
+    expected = -0.5 * (
+        residual ** 2 + jnp.log(2.0) + jnp.log(2.0 * jnp.pi)
+    )
+    self.assertTrue(jnp.allclose(logp, expected[None], atol=1e-10))
 
 
 ################################################################################
@@ -1085,6 +1139,43 @@ class KalmanCorrectionTest(unittest.TestCase):
     res_new = jnp.abs(fwd.forward(x0_new) - y)
     self.assertTrue(bool(jnp.all(res_new < res_old)))
 
+  def test_full_tweedie_default_solver_auto_selects_minres(self):
+    # Same indefinite-Jacobian setup as the explicit-MINRES test, but
+    # leaving ``solver`` unset.  KalmanCorrectionFn should auto-pick
+    # MINRES because TweediePosteriorCovarianceFn doesn't enforce PSD,
+    # and the residual should still drop.  Regression guard against
+    # silently falling back to CG on indefinite operators.
+    schedule, corruption, fwd, x0, y = self._setup()
+    n = x0.shape[1]
+    del x0
+
+    rng = jax.random.PRNGKey(7)
+    G = jax.random.normal(rng, (n, n), dtype=jnp.float64) * 0.5
+    G_sym = 0.5 * (G + G.T)
+    self.assertTrue(bool(jnp.any(jnp.linalg.eigvalsh(G_sym) < 0.0)))
+
+    def inference_fn(xt, time, conditioning=None):
+      del time, conditioning
+      return {"x0": xt @ G.T}
+
+    correction = KalmanCorrectionFn(
+        observation=y, forward_fn=fwd,
+        posterior_covariance_fn=TweediePosteriorCovarianceFn(symmetrize=True),
+        observation_noise=0.5, cg_max_iter=80, cg_tol=1e-10,
+        # solver intentionally omitted -- exercise the auto-select path.
+    )
+    self.assertIsNone(correction.solver)
+    xt = jnp.full((y.shape[0], n), 0.3, dtype=jnp.float64)
+    time = jnp.asarray([0.5], dtype=jnp.float64)
+    denoiser_fn = make_denoiser_fn(inference_fn, corruption, time=time)
+    x0_at_xt = denoiser_fn(xt)
+    x0_new = correction(
+        x0_at_xt, xt, time, denoiser_fn=denoiser_fn, schedule=schedule,
+    )
+    res_old = jnp.abs(fwd.forward(x0_at_xt) - y)
+    res_new = jnp.abs(fwd.forward(x0_new) - y)
+    self.assertTrue(bool(jnp.all(res_new < res_old)))
+
   def test_low_rank_tweedie_reduces_residual(self):
     # Same correction as test_tweedie_runs_and_reduces_residual, but
     # using the randomized-SVD sketch.  Rank set to n for full-rank
@@ -1114,6 +1205,39 @@ class KalmanCorrectionTest(unittest.TestCase):
     res_old = jnp.abs(fwd.forward(x0_at_xt) - y)
     res_new = jnp.abs(fwd.forward(x0_new) - y)
     self.assertTrue(bool(jnp.all(res_new < res_old)))
+
+
+class PseudoInverseKalmanCorrectionTest(unittest.TestCase):
+
+  def test_hard_singular_update_matches_row_space_conditional_mean(self):
+    schedule = schedules.CosineSchedule()
+    corruption = GaussianProcess(schedule=schedule)
+    A = jnp.asarray([[1.0, 0.0, 0.0], [1.0, 0.0, 0.0]], dtype=jnp.float64)
+    fwd = LinearForwardFn(matrix=A)
+    cov = jnp.diag(jnp.asarray([1.0, 0.0, 0.0], dtype=jnp.float64))
+    x0 = jnp.asarray([[0.25, -1.0, 2.0]], dtype=jnp.float64)
+    y = jnp.asarray([[1.0, 1.0]], dtype=jnp.float64)
+    time = jnp.asarray([0.5], dtype=jnp.float64)
+
+    correction = PseudoInverseKalmanCorrectionFn(
+        observation=y,
+        forward_fn=fwd,
+        posterior_covariance_fn=_FixedPosteriorCovarianceFn(covariance=cov),
+        observation_noise=0.0,
+        pinv_rtol=1e-12,
+        pinv_atol=1e-12,
+    )
+    x0_new = correction(
+        x0,
+        jnp.zeros_like(x0),
+        time,
+        denoiser_fn=_denoiser_from_x0(x0, corruption, time),
+        schedule=schedule,
+    )
+
+    expected = jnp.asarray([[1.0, -1.0, 2.0]], dtype=jnp.float64)
+    self.assertTrue(jnp.allclose(x0_new, expected, atol=1e-10))
+    self.assertTrue(jnp.allclose(fwd.forward(x0_new), y, atol=1e-10))
 
 
 ################################################################################

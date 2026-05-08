@@ -44,6 +44,12 @@ from hackable_diffusion.lib.guidance.forward_ops import (
     LinearForwardFn,
     SubsampleForwardFn,
 )
+from hackable_diffusion.lib.guidance.gaussian_conditioning import (
+    PosteriorPredictiveGaussianTwistFn,
+    PseudoInverseKalmanCorrectionFn,
+    psd_pinv_solve,
+    singular_gaussian_logpdf,
+)
 from hackable_diffusion.lib.guidance.linalg import (
     batch_inner,
     batched_cg,
@@ -52,6 +58,7 @@ from hackable_diffusion.lib.guidance.linalg import (
 from hackable_diffusion.lib.guidance.posterior_covariance import (
     FixedPriorPosteriorCovarianceFn,
     IsotropicPosteriorCovarianceFn,
+    LowRankTweediePosteriorCovarianceFn,
     ScaleFn,
     TweediePosteriorCovarianceFn,
     miyasawa_scale,
@@ -121,10 +128,13 @@ __all__ = [
     "LinearBlendDenoiserFn",
     "LinearForwardFn",
     "LogProbFn",
+    "LowRankTweediePosteriorCovarianceFn",
     "MultinomialResamplerFn",
     "NoResamplerFn",
     "PosteriorCovarianceFn",
+    "PosteriorPredictiveGaussianTwistFn",
     "PrefactorFn",
+    "PseudoInverseKalmanCorrectionFn",
     "ResamplerFn",
     "ScaleFn",
     "SimplicialStepKernel",
@@ -146,6 +156,8 @@ __all__ = [
     "miyasawa_scale",
     "normalised_weights",
     "proposal_log_ratio",
+    "psd_pinv_solve",
     "scalar_alpha",
     "scalar_alpha_sigma",
+    "singular_gaussian_logpdf",
 ]
