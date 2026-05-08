@@ -258,6 +258,36 @@ class UnMaskingStepTest(absltest.TestCase):
     ):
       discrete_step_sampler.UnMaskingStep(corruption_process=process)
 
+  def test_update_rejects_2d_input(self):
+    """Passing xt without trailing dim should raise ValueError."""
+    noise_2d = jnp.ones((2, 4), dtype=jnp.int32) * (
+        self.process.process_num_categories - 1
+    )
+    initial_step_info = StepInfo(
+        step=0,
+        time=jnp.array([0.5, 0.5]),
+        rng=jax.random.PRNGKey(0),
+    )
+    initial_step = self.unmasking_step.initialize(
+        initial_noise=noise_2d,
+        initial_step_info=initial_step_info,
+    )
+    # Logits must be (B, L, V) to match the model output convention.
+    logits = jnp.zeros(noise_2d.shape + (self.process.num_categories,))
+    logits = logits.at[..., 1].set(10.0)
+    prediction = {'logits': logits}
+    next_step_info = StepInfo(
+        step=1,
+        time=jnp.array([0.0, 0.0]),
+        rng=jax.random.PRNGKey(1),
+    )
+    with self.assertRaisesRegex(ValueError, 'In _generate_candidates'):
+      self.unmasking_step.update(
+          prediction=prediction,
+          current_step=initial_step,
+          next_step_info=next_step_info,
+      )
+
 
 class DiscreteDDIMStepTest(absltest.TestCase):
   """Tests for the DiscreteDDIMStep sampler."""
@@ -391,6 +421,38 @@ class DiscreteDDIMStepTest(absltest.TestCase):
         ' with 0.0 probability mass for any element.',
     ):
       discrete_step_sampler.DiscreteDDIMStep(corruption_process=process)
+
+  def test_update_rejects_2d_input(self):
+    """Passing xt without trailing dim should raise ValueError."""
+    noise_2d = jax.random.randint(
+        jax.random.PRNGKey(0),
+        (2, 4),
+        0,
+        self.process.process_num_categories,
+    )
+    initial_step_info = StepInfo(
+        step=0,
+        time=jnp.array([0.5, 0.5]),
+        rng=jax.random.PRNGKey(0),
+    )
+    initial_step = self.ddim_step.initialize(
+        initial_noise=noise_2d,
+        initial_step_info=initial_step_info,
+    )
+    logits = jnp.zeros(noise_2d.shape + (self.process.process_num_categories,))
+    logits = logits.at[..., 1].set(10.0)
+    prediction = {'logits': logits}
+    next_step_info = StepInfo(
+        step=1,
+        time=jnp.array([0.0, 0.0]),
+        rng=jax.random.PRNGKey(1),
+    )
+    with self.assertRaisesRegex(ValueError, 'In _generate_candidates'):
+      self.ddim_step.update(
+          prediction=prediction,
+          current_step=initial_step,
+          next_step_info=next_step_info,
+      )
 
 
 class IntegratedDiscreteDDIMStepTest(absltest.TestCase):
@@ -572,7 +634,7 @@ class DiscreteFlowMatchingStepTest(absltest.TestCase):
     init_logits = jnp.repeat(
         self.initial_noise, self.process.num_categories, axis=-1
     )
-    init_logits = jnp.zeros_like(init_logits, dtype=jnp.float32) - jnp.inf
+    init_logits = jnp.zeros_like(init_logits, dtype=jnp.float32)
 
     chex.assert_trees_all_equal(
         initial_step,
@@ -665,6 +727,38 @@ class DiscreteFlowMatchingStepTest(absltest.TestCase):
 
     # Some tokens should have changed to noise (not 1).
     self.assertTrue(jnp.any(next_step.xt != 1))
+
+  def test_update_rejects_2d_input(self):
+    """Passing xt without trailing dim should raise ValueError."""
+    noise_2d = jax.random.randint(
+        jax.random.PRNGKey(0),
+        (2, 4),
+        0,
+        self.process.process_num_categories,
+    )
+    initial_step_info = StepInfo(
+        step=0,
+        time=jnp.array([0.5, 0.5]),
+        rng=jax.random.PRNGKey(0),
+    )
+    initial_step = self.dfm_step.initialize(
+        initial_noise=noise_2d,
+        initial_step_info=initial_step_info,
+    )
+    logits = jnp.zeros(noise_2d.shape + (self.process.num_categories,))
+    logits = logits.at[..., 1].set(10.0)
+    prediction = {'logits': logits}
+    next_step_info = StepInfo(
+        step=1,
+        time=jnp.array([0.4, 0.4]),
+        rng=jax.random.PRNGKey(1),
+    )
+    with self.assertRaisesRegex(ValueError, 'In _generate_candidates'):
+      self.dfm_step.update(
+          prediction=prediction,
+          current_step=initial_step,
+          next_step_info=next_step_info,
+      )
 
 
 class DDIMRoutingEquivalenceTest(absltest.TestCase):
@@ -961,6 +1055,39 @@ class PlannerProtocolTest(absltest.TestCase):
 
     out = planner(routing_weights, logits, x0, xt, time, next_time, key)
     chex.assert_trees_all_equal(out, routing_weights)
+
+
+class RoutingWeightsTest(absltest.TestCase):
+  """Tests for RoutingWeights shape validation."""
+
+  def test_consistent_shapes_accepted(self):
+    """RoutingWeights with matching shapes should construct without error."""
+    w = discrete_step_sampler.RoutingWeights(
+        stay=jnp.ones((2, 4, 1)),
+        noise=jnp.ones((2, 4, 1)),
+        clean=jnp.ones((2, 4, 1)),
+    )
+    self.assertEqual(w.stay.shape, (2, 4, 1))
+
+  def test_mismatched_shapes_raises(self):
+    """RoutingWeights with inconsistent shapes should raise ValueError."""
+    with self.assertRaisesRegex(
+        ValueError, 'RoutingWeights fields must all have the same shape'
+    ):
+      discrete_step_sampler.RoutingWeights(
+          stay=jnp.ones((1, 64, 64)),
+          noise=jnp.ones((1, 1)),
+          clean=jnp.ones((1, 64, 64)),
+      )
+
+  def test_scalar_accepted(self):
+    """Scalar routing weights are valid with jnp.stack."""
+    w = discrete_step_sampler.RoutingWeights(
+        stay=jnp.array(0.5),
+        noise=jnp.array(0.3),
+        clean=jnp.array(0.2),
+    )
+    self.assertEqual(w.stay.shape, ())
 
 
 class GreedyPlannerTest(absltest.TestCase):

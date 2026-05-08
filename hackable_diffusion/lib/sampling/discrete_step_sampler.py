@@ -270,9 +270,27 @@ class RoutingAction(enum.IntEnum):
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
 class RoutingWeights:
+  """Per-position routing weights for the 3-way discrete diffusion update.
+
+  All three fields must have the same shape.
+
+  Attributes:
+    stay: Probability of staying at the current token.
+    noise: Probability of sampling from the invariant distribution.
+    clean: Probability of using the predicted clean token.
+  """
+
   stay: Float['...']
   noise: Float['...']
   clean: Float['...']
+
+  def __post_init__(self):
+    if not (self.stay.shape == self.noise.shape == self.clean.shape):
+      raise ValueError(
+          'RoutingWeights fields must all have the same shape, got'
+          f' stay={self.stay.shape}, noise={self.noise.shape},'
+          f' clean={self.clean.shape}.'
+      )
 
 
 def _sample_routing(
@@ -292,14 +310,15 @@ def _sample_routing(
   3. CLEAN: Use the predicted clean token `x0`.
 
   The computation operates by:
-  1. Concatenating the weights for stay, noise, and clean along the last axis.
+  1. Stacking the weights for stay, noise, and clean into a new last axis.
   2. Sampling an action index (0, 1, or 2) for each position using
-  `jax.random.categorical`.
-  3. Selecting the corresponding token (xt, x_noise, or x0) based on the sampled
-  action.
+     ``jax.random.categorical``.
+  3. Selecting the corresponding token (xt, x_noise, or x0) based on the
+     sampled action.
 
   Args:
     routing_weights: Routing weights containing stay, noise, and clean arrays.
+      Each field has shape ``(*)``.
     xt: Current state. Shape ``(*, 1)``.
     x0: Predicted clean state. Shape ``(*, 1)``.
     x_noise: Sample from invariant distribution. Shape ``(*, 1)``.
@@ -308,7 +327,7 @@ def _sample_routing(
   Returns:
     The new state ``new_xt``. Shape ``(*, 1)``.
   """
-  weights = jnp.concatenate(
+  weights = jnp.stack(
       [routing_weights.stay, routing_weights.noise, routing_weights.clean],
       axis=-1,
   )
@@ -316,9 +335,9 @@ def _sample_routing(
       key=key, logits=jnp.log(jnp.maximum(weights, 1e-12))
   )
   new_xt = jnp.where(
-      action[..., None] == RoutingAction.CLEAN,
+      action == RoutingAction.CLEAN,
       x0,
-      jnp.where(action[..., None] == RoutingAction.NOISE, x_noise, xt),
+      jnp.where(action == RoutingAction.NOISE, x_noise, xt),
   )
   return new_xt
 
@@ -340,6 +359,12 @@ def _generate_candidates(
   x0_key, noise_key = jax.random.split(key)
   x0 = jax.random.categorical(key=x0_key, logits=logits)[..., None]
   x_noise = corruption_process.sample_from_invariant(noise_key, data_spec=xt)
+
+  if not (x0.shape == x_noise.shape == xt.shape):
+    raise ValueError(
+        'In _generate_candidates, x0, x_noise, and xt must all have the same'
+        f' shape, got x0={x0.shape}, x_noise={x_noise.shape}, xt={xt.shape}.'
+    )
 
   return x0, x_noise, logits
 
@@ -626,7 +651,6 @@ class UnMaskingStep(SamplerStep):
     p_clean = jnp.where(currently_masked, p_clean_masked, p_clean_unmasked)
 
     routing_weights = RoutingWeights(stay=p_stay, noise=p_noise, clean=p_clean)
-    # (bsz, seq_len, 3)
 
     # Apply planner transformation (if any)
     if self.planner:
@@ -833,7 +857,6 @@ class DiscreteDDIMStep(SamplerStep):
     p_clean = (1.0 - x0_eq_xt) * p_clean
 
     routing_weights = RoutingWeights(stay=p_stay, noise=p_noise, clean=p_clean)
-    # (bsz, *seq_len, 3)
 
     # Apply planner transformation (if any)
     if self.planner:
@@ -921,7 +944,7 @@ class DiscreteFlowMatchingStep(SamplerStep):
     init_logits = jnp.repeat(
         initial_noise, self.corruption_process.num_categories, axis=-1
     )
-    init_logits = jnp.zeros_like(init_logits, dtype=jnp.float32) - jnp.inf
+    init_logits = jnp.zeros_like(init_logits, dtype=jnp.float32)
 
     return DiffusionStep(
         xt=initial_noise,
@@ -985,7 +1008,6 @@ class DiscreteFlowMatchingStep(SamplerStep):
     p_stay = 1.0 - p_clean - p_noise
 
     routing_weights = RoutingWeights(stay=p_stay, noise=p_noise, clean=p_clean)
-    # (bsz, *seq_len, 3)
 
     # Apply planner transformation (if any)
     if self.planner:
