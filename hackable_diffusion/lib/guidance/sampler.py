@@ -371,7 +371,12 @@ class ConditionalDiffusionSampler:
         denoiser_fn=_build_denoiser(t0, initial_twist_rng),
         cloud_fn=_build_cloud(t0, initial_twist_rng, _CLOUD_SLOT_INITIAL),
     )
-    log_weights = jnp.zeros(initial_noise.shape[0], dtype=initial_noise.dtype)
+    # Log weights must be floating-point.  ``initial_noise.dtype`` is
+    # float for Gaussian / simplicial corruption but integer for the
+    # MDM token state, where using the noise dtype would produce an
+    # int32 weight array and trigger a ``scan`` carry dtype mismatch
+    # the moment the proposal log-ratio (always float) is added.
+    log_weights = jnp.zeros(initial_noise.shape[0], dtype=jnp.float32)
     log_weights = log_weights + log_psi_prev
 
     def scan_body(carry, scan_input):

@@ -383,8 +383,9 @@ class CategoricalProjectionCorrectionFn(CorrectionFn):
       *,
       denoiser_fn: DenoiserFn,
       schedule: Any,
+      **kwargs,                                                  # cloud_fn / rng
   ) -> jax.Array:
-    del xt, denoiser_fn, schedule
+    del xt, denoiser_fn, schedule, kwargs
     log_prior = jnp.log(jnp.clip(x0, self.eps, 1.0))
     log_lik = self.log_likelihood_fn(x0, time)
     log_post = log_prior + log_lik
