@@ -204,7 +204,7 @@ class SimplicialDDIMStep(SamplerStep):
       prediction: TargetInfo,
       current_step: DiffusionStep,
       next_step_info: StepInfo,
-      eps: Float = 1e-6,
+      eps: float = 1e-6,
   ) -> DiffusionStep:
 
     current_step_info = current_step.step_info

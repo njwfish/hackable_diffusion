@@ -59,6 +59,7 @@ SamplerStep = base.SamplerStep
 
 CategoricalProcess = discrete.CategoricalProcess
 DiscreteSchedule = schedules.DiscreteSchedule
+StepKernel = base.StepKernel
 
 ################################################################################
 # MARK: Remasking strategy
@@ -383,6 +384,78 @@ class UnMaskingStep(SamplerStep):
         current_step,
         last_step_info,
     )
+
+  def kernel(
+      self,
+      *,
+      prediction_uncorrected: TargetInfo,
+      prediction_corrected: TargetInfo,
+      xt: DataArray,
+      time_prev: jax.Array,
+      time_next: jax.Array,
+  ) -> "UnMaskingStepKernel":
+    """Per-position categorical log-prob kernel.
+
+    The MDM unmask transition picks a per-position categorical sample
+    from the model's logits, then resamples currently-masked positions
+    with a deterministic Bernoulli (independent of the corrected vs
+    uncorrected logits).  The proposal log-ratio therefore reduces to
+    the per-position categorical log-prob difference at the positions
+    that actually transitioned from mask to a clean token between
+    ``xt_prev`` and ``xt_next``.
+    """
+    del time_next
+    logits_unc = self.corruption_process.convert_predictions(
+        prediction_uncorrected, xt, time_prev,
+    )["logits"]
+    logits_cor = self.corruption_process.convert_predictions(
+        prediction_corrected, xt, time_prev,
+    )["logits"]
+    return UnMaskingStepKernel(
+        log_probs_uncorrected=jax.nn.log_softmax(logits_unc, axis=-1),
+        log_probs_corrected=jax.nn.log_softmax(logits_cor, axis=-1),
+        mask_value=int(self.mask_value),
+    )
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class UnMaskingStepKernel(StepKernel):
+  """Per-position categorical proposal-ratio kernel for ``UnMaskingStep``.
+
+  ``log_probs_*`` are softmaxed model logits over the *clean* vocabulary
+  (shape ``(B, *sites, K)``).  ``mask_value`` identifies the absorbing
+  symbol in the integer trajectory tensors.
+
+  ``log_density_ratio(xt_prev, xt_next)`` recovers the unmasked positions
+  via ``xt_prev == mask_value`` & ``xt_next != mask_value``, looks up
+  the categorical log-probability of the sampled token in both
+  proposals at those positions, and returns the per-particle sum.
+  Re-mask transitions are noise-only (independent of logits) and
+  cancel out of the ratio.
+  """
+
+  log_probs_uncorrected: jax.Array
+  log_probs_corrected: jax.Array
+  mask_value: int
+
+  def log_density_ratio(
+      self, xt_prev: jax.Array, xt_next: jax.Array,
+  ) -> jax.Array:
+    K = self.log_probs_uncorrected.shape[-1]
+    prev = xt_prev[..., 0]
+    nxt = xt_next[..., 0]
+    transitioned = (prev == self.mask_value) & (nxt != self.mask_value)
+    sampled = jnp.clip(nxt, 0, K - 1)
+    one_hot = jax.nn.one_hot(
+        sampled, K, dtype=self.log_probs_uncorrected.dtype,
+    )
+    per_site_unc = jnp.sum(self.log_probs_uncorrected * one_hot, axis=-1)
+    per_site_cor = jnp.sum(self.log_probs_corrected * one_hot, axis=-1)
+    diff = (per_site_unc - per_site_cor) * transitioned.astype(
+        per_site_unc.dtype,
+    )
+    # Sum over all site dims (everything after the leading batch axis).
+    return jnp.sum(diff, axis=tuple(range(1, diff.ndim)))
 
 
 ################################################################################

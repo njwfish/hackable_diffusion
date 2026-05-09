@@ -118,8 +118,8 @@ PrefactorFn = Callable[..., jax.Array]
 
 
 SOLVERS: dict[str, Callable] = {
-    'cg': batched_cg,
-    'minres': batched_minres,
+    "cg": batched_cg,
+    "minres": batched_minres,
 }
 
 
@@ -134,11 +134,11 @@ def _default_solver_for(cov_fn: PosteriorCovarianceFn) -> str:
   produce PSD ``Sigma`` and CG is cheaper.
   """
   if isinstance(cov_fn, TweediePosteriorCovarianceFn):
-    return 'minres'
+    return "minres"
   if (isinstance(cov_fn, LowRankTweediePosteriorCovarianceFn)
       and not cov_fn.project_psd):
-    return 'minres'
-  return 'cg'
+    return "minres"
+  return "cg"
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
@@ -219,7 +219,7 @@ class KalmanCorrectionFn(CorrectionFn):
     )
     if solver not in SOLVERS:
       raise ValueError(
-          f'Unknown solver {solver!r}; choose from {sorted(SOLVERS)}.'
+          f"Unknown solver {solver!r}; choose from {sorted(SOLVERS)}."
       )
     w = SOLVERS[solver](
         matvec, residual, max_iter=self.cg_max_iter, tol=self.cg_tol,
@@ -323,6 +323,72 @@ class IteratedCorrectionFn(CorrectionFn):
         x0_curr, xt_curr, time,
         denoiser_fn=denoiser_fn, schedule=schedule,
     )
+
+
+################################################################################
+# MARK: Categorical projection correction (discrete / simplicial state)
+################################################################################
+
+
+# Per-position log-likelihood: ``(x0_soft, time) -> [B, *sites, K]``.
+# Each entry is ``log L(x_0_i = k | y)`` -- the unnormalised log-likelihood
+# of category ``k`` at site ``i`` under the observation ``y``.  Closed-form
+# for site-factorised observations; the closure can also depend on the
+# soft-prior ``x0_soft`` if the likelihood is non-factorised.
+PerSiteLogLikelihoodFn = Callable[..., jax.Array]
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class CategoricalProjectionCorrectionFn(CorrectionFn):
+  """Per-site Bayes update of the soft-categorical ``x_0`` prediction.
+
+  For categorical / simplex state the denoiser exposes ``x_0`` as the
+  per-site soft probability ``p_theta(x_0_i = k | x_t)``.  When the
+  observation ``y`` factorises across sites with per-site log-likelihood
+  ``log L(x_0_i = k | y)``, the posterior is closed-form:
+
+    ``log p(x_0_i = k | x_t, y)`` =
+        ``log p_theta(x_0_i = k | x_t) + log L(x_0_i = k | y) + const``.
+
+  Renormalising per site produces the corrected soft-categorical
+  ``x_0`` that gets fed back into the simplex / discrete sampler.  This
+  is the discrete analogue of the (Pi-GDM / DPS) Gaussian projection
+  corrections above -- exact under per-site factorisation, no
+  finite-step approximation needed.
+
+  The correction is independent of ``xt`` and ``time``: the soft
+  ``x_0`` already encodes the posterior over ``x_t``.  Composing this
+  with :class:`IteratedCorrectionFn` re-evaluates the denoiser at a
+  shifted ``xt``, which is useful when the per-site likelihood is only
+  approximate.
+
+  Attributes:
+    log_likelihood_fn: ``(x0_soft, time) -> [B, *sites, K]`` returning
+      the per-site, per-category log-likelihood.  Most observations
+      depend only on the site index and the category, so the closure
+      typically ignores ``x0_soft`` and ``time``; we expose them so
+      that adaptive (denoiser-aware) likelihoods can also be used.
+    eps: clamp on the prior probability before taking ``log`` to
+      avoid ``-inf`` propagation.
+  """
+
+  log_likelihood_fn: PerSiteLogLikelihoodFn
+  eps: float = 1.0e-12
+
+  def __call__(
+      self,
+      x0: jax.Array,
+      xt: jax.Array,
+      time: jax.Array,
+      *,
+      denoiser_fn: DenoiserFn,
+      schedule: Any,
+  ) -> jax.Array:
+    del xt, denoiser_fn, schedule
+    log_prior = jnp.log(jnp.clip(x0, self.eps, 1.0))
+    log_lik = self.log_likelihood_fn(x0, time)
+    log_post = log_prior + log_lik
+    return jax.nn.softmax(log_post, axis=-1)
 
 
 ################################################################################

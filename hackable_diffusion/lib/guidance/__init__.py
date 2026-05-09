@@ -32,8 +32,8 @@ consume the cloud; the existing single-sample twists consume the
 denoiser.
 """
 
-from hackable_diffusion.lib.guidance.adapters import BoundAggregateGuidanceFn
 from hackable_diffusion.lib.guidance.corrections import (
+    CategoricalProjectionCorrectionFn,
     GradientCorrectionFn,
     IteratedCorrectionFn,
     KalmanCorrectionFn,
@@ -67,12 +67,14 @@ from hackable_diffusion.lib.guidance.gaussian_conditioning import (
 from hackable_diffusion.lib.guidance.linalg import (
     batch_inner,
     batched_cg,
+    batched_minres,
     linear_adjoint,
 )
 from hackable_diffusion.lib.guidance.posterior_covariance import (
     FixedPriorPosteriorCovarianceFn,
     IsotropicPosteriorCovarianceFn,
     LowRankTweediePosteriorCovarianceFn,
+    PCAPosteriorCovarianceFn,
     ScaleFn,
     TweediePosteriorCovarianceFn,
     miyasawa_scale,
@@ -121,7 +123,7 @@ from hackable_diffusion.lib.sampling.simplicial_step_sampler import (
 )
 
 __all__ = [
-    "BoundAggregateGuidanceFn",
+    "CategoricalProjectionCorrectionFn",
     "ClassifierTwistFn",
     "ComposeForwardFn",
     "ConditionalDiffusionSampler",
@@ -150,6 +152,7 @@ __all__ = [
     "LowRankTweediePosteriorCovarianceFn",
     "MultinomialResamplerFn",
     "NoResamplerFn",
+    "PCAPosteriorCovarianceFn",
     "PosteriorCloudFn",
     "PosteriorCovarianceFn",
     "PosteriorPredictiveGaussianTwistFn",
@@ -168,6 +171,7 @@ __all__ = [
     "accepts_rng_kwarg",
     "batch_inner",
     "batched_cg",
+    "batched_minres",
     "call_inference_fn",
     "cfg_denoiser_fn",
     "dps_prefactor",
