@@ -168,17 +168,18 @@ class TwistFn(Protocol):
 
 
 class ResamplerFn(Protocol):
-  """Resample particles according to log-weights.
+  """Pick gather indices for resampling, given log-weights.
 
-  Pure operation: no knowledge of the diffusion state space, schedule,
-  or twist.  After resampling, ``new_log_weights`` is set to
-  ``log(mean(weights))`` for every particle so cumulative-weight
-  estimators stay unbiased (Chopin and Papaspiliopoulos, Ch. 9).
+  Returns ``(indices, new_log_weights)``: ``indices`` is shape ``(K,)``
+  ``int32`` and selects which particles to keep (``new = old[indices]``);
+  ``new_log_weights`` is shape ``(K,)`` and is set to ``log(mean(weights))``
+  on every particle so cumulative-weight estimators stay unbiased
+  (Chopin and Papaspiliopoulos, Ch. 9).  Pure operation: no knowledge
+  of the diffusion state space, schedule, or twist.
   """
 
   def __call__(
       self,
-      particles: jax.Array,
       log_weights: jax.Array,
       *,
       rng: jax.Array,

@@ -33,15 +33,19 @@ own entry.
 | **Corrections** | | | | |
 | `GradientCorrectionFn` | ✓ | ✓ | ~* | ✓ |
 | `KalmanCorrectionFn` | ✓ | ✓ | ✗** | ~† |
+| `PseudoInverseKalmanCorrectionFn` | ✓ | ✓ | ✗** | ~† |
+| `CategoricalProjectionCorrectionFn` | ✗ | ✗ | ✓ | ✗ |
 | `IteratedCorrectionFn` | (base) | (base) | (base) | (base) |
 | `LinearBlendDenoiserFn` / `make_cfg_inference_fn` | ✓ | ✓ | ✓ | ✓ |
-| `BoundAggregateGuidanceFn` | (project-specific) | (project-specific) | (project-specific) | (project-specific) |
 | **Posterior-covariance operators** | | | | |
 | `IsotropicPosteriorCovarianceFn` | ✓ | ✓ | ✗ | ~ |
 | `FixedPriorPosteriorCovarianceFn` | ✓ | ✓ | ✗ | ~ |
+| `PCAPosteriorCovarianceFn` | ✓ | ✓ | ✗ | ~ |
 | `TweediePosteriorCovarianceFn` | ✓ | ✓ | ✓ | ✓‡ |
+| `LowRankTweediePosteriorCovarianceFn` | ✓ | ✓ | ✓ | ✓‡ |
 | **Twists** | | | | |
 | `GaussianLikelihoodTwistFn` | ✓ | ✓ | ✗ | ✓ |
+| `PosteriorPredictiveGaussianTwistFn` | ✓ | ✓ | ✗ | ✓ |
 | `DiscreteCompositionTwistFn` | ✗ | ✗ | ✓ | ✗ |
 | `DiscreteMultiHeadCompositionTwistFn` | ✗ | ✗ | ✓ | ✗ |
 | `ClassifierTwistFn` | ✓ | ✓ | ✓ | ✓ |
@@ -153,6 +157,25 @@ KalmanCorrectionFn(
     ), ...,
 )
 
+# --- Hard / clean-endpoint conditioning ``A x_0 = y`` (inpainting, --
+# --- exact-projection super-resolution) -- Gaussian ODE / SDE --------
+# Singular-Gaussian branch: ``observation_noise = 0`` plus
+# ``Cov = I`` (``IsotropicPosteriorCovarianceFn(scale_fn=unit_scale)``)
+# collapses the Kalman update to the exact affine projection
+#     x0_new = x0 + A^T (A A^T)^+ (y - A x0).
+# For an inpainting mask this is bit-for-bit ``mask * y + (1 - mask) * x0``.
+PseudoInverseKalmanCorrectionFn(
+    observation=y, forward_fn=A,
+    posterior_covariance_fn=IsotropicPosteriorCovarianceFn(scale_fn=unit_scale),
+    observation_noise=0.0,
+)
+# Companion twist for SMC weighting (singular Gaussian on affine support):
+PosteriorPredictiveGaussianTwistFn(
+    observation=y, forward_fn=A,
+    posterior_covariance_fn=IsotropicPosteriorCovarianceFn(scale_fn=unit_scale),
+    schedule=schedule, observation_noise=0.0, enforce_support=True,
+)
+
 # --- Energy / constraint guidance -- universal ------------------------
 GradientCorrectionFn(
     twist=EnergyTwistFn(energy_fn=lambda x0: penalty(x0), temperature=1.0),
@@ -255,57 +278,89 @@ Hand the wrapped object to `DiffusionSampler` / `ConditionalDiffusionSampler`.
 The polymorphic dispatcher only looks for a `kernel` attribute on the
 stepper it receives; there's no framework-side registry.
 
-## Example: TDS + Pi-GDM on image inpainting
+## Example: image inpainting on a clean endpoint
+
+Conditioning on a *clean* partial observation -- you know ``x_0`` exactly
+at some pixels and want the rest filled in -- is the
+``observation_noise = 0`` branch.  With ``Cov = I``
+(``IsotropicPosteriorCovarianceFn(scale_fn=unit_scale)``) the Kalman
+update degenerates to the exact affine projection
+``x0 + A^T (A A^T)^+ (y - A x0)``, which for an inpainting mask is
+``mask * y + (1 - mask) * x0``: observed pixels are clamped to ``y``,
+free pixels are left to the denoiser.  The step kernel then re-noises
+the clamped ``x_0`` to ``x_{t-1}`` so observed coordinates ride the
+clean forward process all the way down to ``t = 0``.
 
 ```python
 from hackable_diffusion.lib.guidance import (
     ConditionalDiffusionSampler,
     InpaintingForwardFn,
-    KalmanCorrectionFn,
-    TweediePosteriorCovarianceFn,
-    GaussianLikelihoodTwistFn,
+    IsotropicPosteriorCovarianceFn,
+    PosteriorPredictiveGaussianTwistFn,
+    PseudoInverseKalmanCorrectionFn,
     SystematicResamplerFn,
+    unit_scale,
 )
 
-mask = ...   # (H, W) of 0/1
-y    = mask * x_observed
+mask = ...                      # (H, W) of 0/1; 1 = observed
+y    = mask * x_clean           # clean-endpoint observation
 fwd  = InpaintingForwardFn(mask=mask)
+cov  = IsotropicPosteriorCovarianceFn(scale_fn=unit_scale)  # ``C = I``
 
-correction = KalmanCorrectionFn(
+correction = PseudoInverseKalmanCorrectionFn(
     observation=y, forward_fn=fwd,
-    posterior_covariance_fn=TweediePosteriorCovarianceFn(),
-    observation_noise=0.05,
+    posterior_covariance_fn=cov,
+    observation_noise=0.0,           # hard constraint
 )
-twist = GaussianLikelihoodTwistFn(
-    observation=y, forward_fn=fwd, observation_noise=0.05,
+twist = PosteriorPredictiveGaussianTwistFn(
+    observation=y, forward_fn=fwd,
+    posterior_covariance_fn=cov,
+    schedule=corruption.schedule,
+    observation_noise=0.0,
+    enforce_support=True,            # delta-on-affine-support log psi
 )
+
+# Seed x_T consistent with the clean endpoint on observed coords:
+#   x_T = mask * (alpha_T x_clean + sigma_T eps) + (1 - mask) * eps_free.
+alpha_T = corruption.schedule.alpha(jnp.asarray([1.0]))
+sigma_T = corruption.schedule.sigma(jnp.asarray([1.0]))
+eps      = jax.random.normal(rng, x_clean.shape)
+init     = mask * (alpha_T * x_clean + sigma_T * eps) + (1.0 - mask) * eps
+
 sampler = ConditionalDiffusionSampler(
     base_sampler=ddim_sampler,
     corruption_process=corruption,
     correction_fn=correction,
-    twist_fn=twist,
+    twist_fn=twist,                  # omit for non-SMC; use any sampler
     resampler_fn=SystematicResamplerFn(),
-    num_particles=32,
 )
 final_step, _, log_weights = sampler(
     inference_fn=model, rng=rng, initial_noise=init,
 )
 ```
 
+**Soft-noise variant.** For noisy partial observations swap to
+``KalmanCorrectionFn`` (or ``PseudoInverseKalmanCorrectionFn`` with
+``observation_noise > 0``) and ``GaussianLikelihoodTwistFn``, and use
+``TweediePosteriorCovarianceFn()`` (or another learned-prior variant)
+for ``Cov``.  The wiring is otherwise identical -- the choice of
+correction / covariance / twist is independent of the rest of the
+pipeline.
+
 ## Files
 
 | File | Contents |
 | --- | --- |
 | `protocols.py` | `DenoiserFn`, `ForwardFn`, `PosteriorCovarianceFn`, `CorrectionFn`, `TwistFn`, `ResamplerFn` |
-| `utils.py` | `make_denoiser_fn`, `replace_x0`, `call_inference_fn`, schedule helpers |
-| `linalg.py` | `batched_cg`, `batch_inner`, `linear_adjoint` |
-| `resamplers.py` | The four resampler implementations |
+| `utils.py` | `make_denoiser_fn`, `call_inference_fn`, schedule helpers |
+| `linalg.py` | `batched_cg`, `batched_minres`, `batch_inner`, `linear_adjoint`, `randomized_svd_jvp` |
+| `resamplers.py` | `NoResamplerFn`, `Systematic` / `Multinomial` / `ESSThresholded` resamplers |
 | `denoisers.py` | `make_denoiser_fn`, `LinearBlendDenoiserFn`, `cfg_denoiser_fn`, `make_cfg_inference_fn` |
-| `corrections.py` | `KalmanCorrectionFn`, `IteratedCorrectionFn`, `GradientCorrectionFn`, prefactors |
-| `posterior_covariance.py` | `Isotropic` / `FixedPrior` / `Tweedie` covariance operators |
+| `corrections.py` | `KalmanCorrectionFn`, `GradientCorrectionFn`, `IteratedCorrectionFn`, `CategoricalProjectionCorrectionFn`, prefactors |
+| `posterior_covariance.py` | `Isotropic` / `FixedPrior` / `PCA` / `Tweedie` / `LowRankTweedie` covariance operators, `miyasawa_scale`, `unit_scale` |
+| `gaussian_conditioning.py` | `PseudoInverseKalmanCorrectionFn`, `PosteriorPredictiveGaussianTwistFn`, `psd_pinv_solve`, `singular_gaussian_logpdf` -- the hard / singular-Gaussian branch |
 | `twists.py` | `GaussianLikelihood` / `DiscreteComposition` / `Classifier` / `Energy` twists |
 | `forward_ops.py` | `Linear` / `Subsample` / `Inpainting` / `Conv` / `Compose` forward operators |
-| `proposal_ratio.py` | Per-stepper closed-form ratios and the dispatch registry |
-| `adapters.py` | `BoundAggregateGuidanceFn` (legacy-shape project guidance) |
+| `proposal_ratio.py` | Per-stepper closed-form proposal-ratio dispatch |
 | `sampler.py` | `ConditionalDiffusionSampler` (the orchestrator) |
-| `guidance_test.py`, `guidance_literature_test.py` | 63 pure unit + literature-validation tests |
+| `guidance_test.py`, `guidance_literature_test.py` | Pure unit + literature-validation tests |

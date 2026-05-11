@@ -228,56 +228,47 @@ class UtilsTest(unittest.TestCase):
 class ResamplerTest(unittest.TestCase):
 
   def test_no_resampler_is_identity(self):
-    particles = jnp.arange(5, dtype=jnp.float64).reshape(5, 1)
     log_w = jnp.zeros(5)
-    p_out, w_out = NoResamplerFn()(
-        particles, log_w, rng=jax.random.PRNGKey(0),
-    )
-    self.assertTrue(bool(jnp.all(p_out == particles)))
+    indices, w_out = NoResamplerFn()(log_w, rng=jax.random.PRNGKey(0))
+    self.assertTrue(bool(jnp.all(indices == jnp.arange(5))))
     self.assertTrue(bool(jnp.all(w_out == log_w)))
 
   def test_systematic_resampler_preserves_count_and_equalises_weights(self):
     k = 32
-    particles = jnp.arange(k, dtype=jnp.float64).reshape(k, 1)
     log_w = jnp.zeros(k)
-    p_out, w_out = SystematicResamplerFn()(
-        particles, log_w, rng=jax.random.PRNGKey(0),
+    indices, w_out = SystematicResamplerFn()(
+        log_w, rng=jax.random.PRNGKey(0),
     )
-    self.assertEqual(p_out.shape, particles.shape)
+    self.assertEqual(indices.shape, (k,))
     self.assertTrue(jnp.allclose(w_out, w_out[0]))
 
   def test_multinomial_resampler_concentrates_on_heavy_particle(self):
     k = 1024
-    particles = jnp.arange(k, dtype=jnp.float64).reshape(k, 1)
     log_w = jnp.full((k,), -1e3)
     heavy = 500
     log_w = log_w.at[heavy].set(0.0)
-    p_out, _ = MultinomialResamplerFn()(
-        particles, log_w, rng=jax.random.PRNGKey(1),
-    )
-    frac_heavy = float(jnp.mean(p_out[:, 0] == heavy))
+    indices, _ = MultinomialResamplerFn()(log_w, rng=jax.random.PRNGKey(1))
+    frac_heavy = float(jnp.mean(indices == heavy))
     self.assertGreater(frac_heavy, 0.95)
 
   def test_ess_thresholded_triggers_below_threshold(self):
     k = 128
-    particles = jnp.arange(k, dtype=jnp.float64).reshape(k, 1)
     # One heavy particle => normalised ESS ≈ 1/k << 0.5.
     log_w = jnp.full((k,), -1e3).at[0].set(0.0)
     resampler = ESSThresholdedResamplerFn(
         base=SystematicResamplerFn(), threshold=0.5,
     )
-    p_out, _ = resampler(particles, log_w, rng=jax.random.PRNGKey(0))
-    self.assertTrue(bool(jnp.all(p_out == particles[:1])))
+    indices, _ = resampler(log_w, rng=jax.random.PRNGKey(0))
+    self.assertTrue(bool(jnp.all(indices == 0)))
 
   def test_ess_thresholded_skips_when_above_threshold(self):
     k = 64
-    particles = jnp.arange(k, dtype=jnp.float64).reshape(k, 1)
     log_w = jnp.zeros(k)  # uniform => normalised ESS = 1.0
     resampler = ESSThresholdedResamplerFn(
         base=SystematicResamplerFn(), threshold=0.5,
     )
-    p_out, w_out = resampler(particles, log_w, rng=jax.random.PRNGKey(0))
-    self.assertTrue(bool(jnp.all(p_out == particles)))
+    indices, w_out = resampler(log_w, rng=jax.random.PRNGKey(0))
+    self.assertTrue(bool(jnp.all(indices == jnp.arange(k))))
     self.assertTrue(bool(jnp.all(w_out == log_w)))
 
 

@@ -20,6 +20,17 @@ Six callable Protocols (``DenoiserFn``, ``ForwardFn``,
 :class:`ConditionalDiffusionSampler` to express Pi-GDM (Kalman), DPS,
 TDS, MCGDiff, CFG, classifier guidance, iterated Pi-GDM, and other
 posterior-sampling methods as configurations.
+
+Hard linear observations / clean-endpoint conditioning (inpainting,
+exact-projection super-resolution, any ``A x_0 = y`` constraint) are
+handled by the singular-Gaussian branch:
+:class:`PseudoInverseKalmanCorrectionFn` with ``observation_noise = 0``
+and :class:`PosteriorPredictiveGaussianTwistFn`.  Setting the posterior
+covariance to ``Cov = I`` -- via
+``IsotropicPosteriorCovarianceFn(scale_fn=unit_scale)`` -- collapses the
+update to the pure affine projection
+``x0 + A^T (A A^T)^+ (y - A x0)``, the elegant clean-endpoint form.
+See :mod:`docs.composable_guidance` for a worked inpainting recipe.
 """
 
 from hackable_diffusion.lib.guidance.corrections import (
@@ -64,6 +75,7 @@ from hackable_diffusion.lib.guidance.posterior_covariance import (
     ScaleFn,
     TweediePosteriorCovarianceFn,
     miyasawa_scale,
+    unit_scale,
 )
 from hackable_diffusion.lib.guidance.protocols import (
     CorrectionFn,
@@ -164,4 +176,5 @@ __all__ = [
     "scalar_alpha",
     "scalar_alpha_sigma",
     "singular_gaussian_logpdf",
+    "unit_scale",
 ]
