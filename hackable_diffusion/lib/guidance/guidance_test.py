@@ -49,8 +49,6 @@ from hackable_diffusion.lib.guidance.corrections import (
     GradientCorrectionFn,
     IteratedCorrectionFn,
     KalmanCorrectionFn,
-    dps_prefactor,
-    miyasawa_prefactor,
 )
 from hackable_diffusion.lib.guidance.denoisers import (
     LinearBlendDenoiserFn,
@@ -63,10 +61,6 @@ from hackable_diffusion.lib.guidance.forward_ops import (
     InpaintingForwardFn,
     LinearForwardFn,
     SubsampleForwardFn,
-)
-from hackable_diffusion.lib.guidance.gaussian_conditioning import (
-    PosteriorPredictiveGaussianTwistFn,
-    PseudoInverseKalmanCorrectionFn,
 )
 from hackable_diffusion.lib.guidance.linalg import (
     batch_inner,
@@ -95,6 +89,7 @@ from hackable_diffusion.lib.guidance.twists import (
     ClassifierTwistFn,
     EnergyTwistFn,
     GaussianLikelihoodTwistFn,
+    PosteriorPredictiveGaussianTwistFn,
 )
 from hackable_diffusion.lib.guidance.utils import (
     accepts_rng_kwarg,
@@ -273,33 +268,6 @@ class ResamplerTest(unittest.TestCase):
 
 
 ################################################################################
-# Prefactors
-################################################################################
-
-
-class PrefactorTest(unittest.TestCase):
-
-  def test_miyasawa_is_sigma_squared_over_alpha(self):
-    alpha = jnp.asarray(0.5)
-    sigma = jnp.asarray(2.0)
-    p = miyasawa_prefactor(alpha=alpha, sigma=sigma, xt=None, x0=None)
-    self.assertAlmostEqual(float(p), 4.0 / 0.5, places=12)
-
-  def test_dps_is_inverse_residual_norm(self):
-    alpha = jnp.asarray(1.0)
-    sigma = jnp.asarray(1.0)
-    # residual = x0 - xt/alpha = x0. Per-row norms: [5, 1].
-    xt = jnp.zeros((2, 4), dtype=jnp.float64)
-    x0 = jnp.asarray(
-        [[3.0, 4.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=jnp.float64,
-    )
-    p = dps_prefactor(alpha=alpha, sigma=sigma, xt=xt, x0=x0)
-    self.assertTrue(jnp.allclose(
-        p.squeeze(-1), jnp.asarray([1 / 5.0, 1.0]), atol=1e-6,
-    ))
-
-
-################################################################################
 # Gaussian twist
 ################################################################################
 
@@ -406,9 +374,7 @@ class GradientCorrectionTest(unittest.TestCase):
     twist = GaussianLikelihoodTwistFn(
         observation=y, forward_fn=fwd, observation_noise=1.0,
     )
-    correction = GradientCorrectionFn(
-        twist=twist, strength=1.0, prefactor_fn=miyasawa_prefactor,
-    )
+    correction = GradientCorrectionFn(twist=twist, strength=1.0)
 
     xt = jnp.zeros((batch, n), dtype=jnp.float64)
     time = jnp.asarray([0.5], dtype=jnp.float64)
@@ -1130,7 +1096,7 @@ class KalmanCorrectionTest(unittest.TestCase):
     res_new = jnp.abs(fwd.forward(x0_new) - y)
     self.assertTrue(bool(jnp.all(res_new < res_old)))
 
-  def test_full_tweedie_default_solver_auto_selects_minres(self):
+  def test_full_tweedie_with_minres_reduces_residual(self):
     # Same indefinite-Jacobian setup as the explicit-MINRES test, but
     # leaving ``solver`` unset.  KalmanCorrectionFn should auto-pick
     # MINRES because TweediePosteriorCovarianceFn doesn't enforce PSD,
@@ -1153,9 +1119,9 @@ class KalmanCorrectionTest(unittest.TestCase):
         observation=y, forward_fn=fwd,
         posterior_covariance_fn=TweediePosteriorCovarianceFn(symmetrize=True),
         observation_noise=0.5, cg_max_iter=80, cg_tol=1e-10,
-        # solver intentionally omitted -- exercise the auto-select path.
+        solver="minres",
     )
-    self.assertIsNone(correction.solver)
+    self.assertEqual(correction.solver, "minres")
     xt = jnp.full((y.shape[0], n), 0.3, dtype=jnp.float64)
     time = jnp.asarray([0.5], dtype=jnp.float64)
     denoiser_fn = make_denoiser_fn(inference_fn, corruption, time=time)
@@ -1198,7 +1164,13 @@ class KalmanCorrectionTest(unittest.TestCase):
     self.assertTrue(bool(jnp.all(res_new < res_old)))
 
 
-class PseudoInverseKalmanCorrectionTest(unittest.TestCase):
+class KalmanCorrectionPinvTest(unittest.TestCase):
+  """``KalmanCorrectionFn(solver="pinv")`` -- hard / row-space update.
+
+  The pinv path materialises ``A C A^T`` directly and uses the
+  pseudo-inverse to handle rank-deficient Gaussian systems (hard
+  observations).  This is the unique solver path for ``observation_noise = 0``.
+  """
 
   def test_hard_singular_update_matches_row_space_conditional_mean(self):
     schedule = schedules.CosineSchedule()
@@ -1210,11 +1182,12 @@ class PseudoInverseKalmanCorrectionTest(unittest.TestCase):
     y = jnp.asarray([[1.0, 1.0]], dtype=jnp.float64)
     time = jnp.asarray([0.5], dtype=jnp.float64)
 
-    correction = PseudoInverseKalmanCorrectionFn(
+    correction = KalmanCorrectionFn(
         observation=y,
         forward_fn=fwd,
         posterior_covariance_fn=_FixedPosteriorCovarianceFn(covariance=cov),
         observation_noise=0.0,
+        solver="pinv",
         pinv_rtol=1e-12,
         pinv_atol=1e-12,
     )

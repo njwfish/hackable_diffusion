@@ -84,8 +84,9 @@ def unit_scale(alpha: jax.Array, sigma: jax.Array) -> jax.Array:
   """Constant ``1.0`` scale -- yields ``Cov = I`` for any (alpha, sigma).
 
   Pair with :class:`IsotropicPosteriorCovarianceFn` to make
-  :class:`PseudoInverseKalmanCorrectionFn` (with ``observation_noise = 0``)
-  reduce to the exact affine projection ``x0 + A^T (A A^T)^+ (y - A x0)``
+  :class:`KalmanCorrectionFn` with ``solver="pinv"`` and
+  ``observation_noise = 0`` reduce to the exact affine projection
+  ``x0 + A^T (A A^T)^+ (y - A x0)``
   onto the constraint surface ``{x : A x = y}``.  This is the
   ``C_t = I`` limit -- a *clean-endpoint* / hard-observation recipe that
   does not depend on a learned posterior covariance.
@@ -103,8 +104,9 @@ class IsotropicPosteriorCovarianceFn(PosteriorCovarianceFn):
   Miyasawa identity.  Any callable ``(alpha, sigma) -> scalar`` can be
   plugged in -- e.g. a constant ``strength`` for the classic DPS
   projection, or :func:`unit_scale` (``= 1``) to make
-  :class:`PseudoInverseKalmanCorrectionFn` reduce to an exact affine
-  projection onto ``{x : A x = y}`` for clean-endpoint conditioning.
+  :class:`KalmanCorrectionFn` with ``solver="pinv"`` reduce to an
+  exact affine projection onto ``{x : A x = y}`` for clean-endpoint
+  conditioning.
   """
 
   scale_fn: ScaleFn = miyasawa_scale

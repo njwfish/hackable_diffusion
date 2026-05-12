@@ -17,18 +17,16 @@
 Six callable Protocols (``DenoiserFn``, ``ForwardFn``,
 ``PosteriorCovarianceFn``, ``CorrectionFn``, ``TwistFn``,
 ``ResamplerFn``) plus the step-level ``StepKernel`` compose inside
-:class:`ConditionalDiffusionSampler` to express Pi-GDM (Kalman), DPS,
-TDS, MCGDiff, CFG, classifier guidance, iterated Pi-GDM, and other
+:class:`ConditionalDiffusionSampler` to express Pi-GDM, DPS, TDS,
+MCGDiff, CFG, classifier guidance, iterated Pi-GDM, and other
 posterior-sampling methods as configurations.
 
 Hard linear observations / clean-endpoint conditioning (inpainting,
 exact-projection super-resolution, any ``A x_0 = y`` constraint) are
-handled by the singular-Gaussian branch:
-:class:`PseudoInverseKalmanCorrectionFn` with ``observation_noise = 0``
-and :class:`PosteriorPredictiveGaussianTwistFn`.  Setting the posterior
-covariance to ``Cov = I`` -- via
-``IsotropicPosteriorCovarianceFn(scale_fn=unit_scale)`` -- collapses the
-update to the pure affine projection
+handled by :class:`KalmanCorrectionFn` with ``observation_noise = 0``
+and ``solver="pinv"``.  Setting the posterior covariance to
+``Cov = I`` -- via ``IsotropicPosteriorCovarianceFn(scale_fn=unit_scale)``
+-- collapses the update to the pure affine projection
 ``x0 + A^T (A A^T)^+ (y - A x0)``, the elegant clean-endpoint form.
 See :mod:`docs.composable_guidance` for a worked inpainting recipe.
 """
@@ -38,9 +36,6 @@ from hackable_diffusion.lib.guidance.corrections import (
     GradientCorrectionFn,
     IteratedCorrectionFn,
     KalmanCorrectionFn,
-    PrefactorFn,
-    dps_prefactor,
-    miyasawa_prefactor,
 )
 from hackable_diffusion.lib.guidance.denoisers import (
     LinearBlendDenoiserFn,
@@ -56,8 +51,6 @@ from hackable_diffusion.lib.guidance.forward_ops import (
     SubsampleForwardFn,
 )
 from hackable_diffusion.lib.guidance.gaussian_conditioning import (
-    PosteriorPredictiveGaussianTwistFn,
-    PseudoInverseKalmanCorrectionFn,
     psd_pinv_solve,
     singular_gaussian_logpdf,
 )
@@ -102,6 +95,8 @@ from hackable_diffusion.lib.guidance.twists import (
     EnergyTwistFn,
     GaussianLikelihoodTwistFn,
     LogProbFn,
+    NormResidualTwistFn,
+    PosteriorPredictiveGaussianTwistFn,
 )
 from hackable_diffusion.lib.guidance.utils import (
     accepts_rng_kwarg,
@@ -145,11 +140,10 @@ __all__ = [
     "LowRankTweediePosteriorCovarianceFn",
     "MultinomialResamplerFn",
     "NoResamplerFn",
+    "NormResidualTwistFn",
     "PCAPosteriorCovarianceFn",
     "PosteriorCovarianceFn",
     "PosteriorPredictiveGaussianTwistFn",
-    "PrefactorFn",
-    "PseudoInverseKalmanCorrectionFn",
     "ResamplerFn",
     "ScaleFn",
     "SimplicialStepKernel",
@@ -164,11 +158,9 @@ __all__ = [
     "batched_minres",
     "call_inference_fn",
     "cfg_denoiser_fn",
-    "dps_prefactor",
     "linear_adjoint",
     "make_cfg_inference_fn",
     "make_denoiser_fn",
-    "miyasawa_prefactor",
     "miyasawa_scale",
     "normalised_weights",
     "proposal_log_ratio",
