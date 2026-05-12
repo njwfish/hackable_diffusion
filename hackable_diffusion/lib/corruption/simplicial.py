@@ -22,7 +22,7 @@ from typing import Protocol, Sequence
 
 from hackable_diffusion.lib import fast_random
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import base
 from hackable_diffusion.lib.corruption import schedules
 import jax
@@ -308,7 +308,7 @@ class SimplicialProcess(CorruptionProcess):
 
     # compute one-hot encoding of x0
     x0_oh = jax.nn.one_hot(x0[..., 0], self.process_num_categories)
-    time = utils.bcast_right(time, x0.ndim)
+    time = jax_helpers.bcast_right(time, x0.ndim)
 
     # compute Dirichlet parameters
     dirichlet_param = self.invariant_probs_vec + self.h(time) * x0_oh

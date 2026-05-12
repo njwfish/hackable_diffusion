@@ -100,7 +100,7 @@ def get_config():
       cond={"label": "batch.label[:,0]"},
       corruption_process=corruption_process,
       time_sampler=hd.training.time_sampling.UniformTimeSampler(
-          span=hd.utils.SafeSpan(safety_epsilon=1e-4)
+          span=hd.jax_helpers.SafeSpan(safety_epsilon=1e-4)
       ),
       network=hd.diffusion_network.DiffusionNetwork(
           prediction_type="velocity",

@@ -17,7 +17,7 @@
 from typing import Sequence
 import flax.linen as nn
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import arch_utils
 from hackable_diffusion.lib.architecture import normalization
@@ -340,5 +340,5 @@ class Unet(nn.Module, ConditionalBackbone):
         name="OutputBlock",
     )(x)
 
-    x = utils.optional_bf16_to_fp32(x)
+    x = jax_helpers.optional_bf16_to_fp32(x)
     return x

@@ -34,7 +34,7 @@ relevant representation, for instance score, velocity, etc.
 import dataclasses
 
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import gaussian
 from hackable_diffusion.lib.sampling import base
 from hackable_diffusion.lib.sampling import time_scheduling
@@ -102,8 +102,8 @@ class SdeStep(SamplerStep):
 
     time = current_step_info.time
     next_time = next_step_info.time
-    time = utils.bcast_right(time, xt.ndim)
-    next_time = utils.bcast_right(next_time, xt.ndim)
+    time = jax_helpers.bcast_right(time, xt.ndim)
+    next_time = jax_helpers.bcast_right(next_time, xt.ndim)
 
     f = self.corruption_process.schedule.f(time)
     g = self.corruption_process.schedule.g(time)
@@ -209,8 +209,8 @@ class AdjustedDDIMStep(SamplerStep):
 
     time = current_step_info.time
     next_time = next_step_info.time
-    time = utils.bcast_right(time, xt.ndim)
-    next_time = utils.bcast_right(next_time, xt.ndim)
+    time = jax_helpers.bcast_right(time, xt.ndim)
+    next_time = jax_helpers.bcast_right(next_time, xt.ndim)
 
     alpha = self.corruption_process.schedule.alpha(time)
     sigma = self.corruption_process.schedule.sigma(time)
@@ -303,8 +303,8 @@ class DDIMStep(SamplerStep):
 
     time = current_step_info.time
     next_time = next_step_info.time
-    time = utils.bcast_right(time, xt.ndim)
-    next_time = utils.bcast_right(next_time, xt.ndim)
+    time = jax_helpers.bcast_right(time, xt.ndim)
+    next_time = jax_helpers.bcast_right(next_time, xt.ndim)
 
     x0 = self.corruption_process.convert_predictions(
         prediction=prediction,
@@ -407,8 +407,8 @@ class VelocityStep(SamplerStep):
 
     time = current_step_info.time
     next_time = next_step_info.time
-    time = utils.bcast_right(time, xt.ndim)
-    next_time = utils.bcast_right(next_time, xt.ndim)
+    time = jax_helpers.bcast_right(time, xt.ndim)
+    next_time = jax_helpers.bcast_right(next_time, xt.ndim)
 
     g = self.corruption_process.schedule.g(time)
 
@@ -597,8 +597,8 @@ class HeunStep(SamplerStep):
 
     time = current_step_info.time
     next_next_time = next_next_step_info.time
-    time = utils.bcast_right(time, xt.ndim)
-    next_next_time = utils.bcast_right(next_next_time, xt.ndim)
+    time = jax_helpers.bcast_right(time, xt.ndim)
+    next_next_time = jax_helpers.bcast_right(next_next_time, xt.ndim)
 
     # Perform the intermediate step.
     dt = time - next_next_time
@@ -649,8 +649,8 @@ class HeunStep(SamplerStep):
     prev_update = current_step.aux["current_update"]
     old_time = prev_update.step_info.time
     next_time = next_step_info.time
-    old_time = utils.bcast_right(old_time, xt.ndim)
-    next_time = utils.bcast_right(next_time, xt.ndim)
+    old_time = jax_helpers.bcast_right(old_time, xt.ndim)
+    next_time = jax_helpers.bcast_right(next_time, xt.ndim)
 
     old_velocity = current_step.aux["current_velocity_step_one"]
     intermediate_velocity = self.corruption_process.convert_predictions(

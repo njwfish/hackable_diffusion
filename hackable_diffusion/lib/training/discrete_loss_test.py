@@ -15,7 +15,7 @@
 """Tests for Discrete loss functions."""
 
 import chex
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.training import discrete_loss
 import jax
@@ -42,7 +42,7 @@ class DiscreteLossTest(parameterized.TestCase):
     x0 = jax.random.randint(
         key_x0, (self.bsz, self.seq_len, 1), 0, self.vocab_size
     )
-    self.time = utils.bcast_right(time, x0.ndim)
+    self.time = jax_helpers.bcast_right(time, x0.ndim)
     self.preds = {'logits': logits}
     self.targets = {'x0': x0}
     self.schedule = schedules.LinearDiscreteSchedule()
@@ -77,7 +77,7 @@ class DiscreteLossTest(parameterized.TestCase):
         axis=-1,  # average over sequence length
     )
     if weight_fn:
-      coeff = utils.flatten_non_batch_dims(
+      coeff = jax_helpers.flatten_non_batch_dims(
           weight_fn(
               schedule=self.schedule,
               preds=self.preds,

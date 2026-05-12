@@ -106,7 +106,7 @@ import enum
 from typing import Protocol
 
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import discrete
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.sampling import base
@@ -647,8 +647,8 @@ class UnMaskingStep(SamplerStep):
 
     time = current_step_info.time
     next_time = next_step_info.time
-    time_bcast = utils.bcast_right(time, xt.ndim)
-    next_time_bcast = utils.bcast_right(next_time, xt.ndim)
+    time_bcast = jax_helpers.bcast_right(time, xt.ndim)
+    next_time_bcast = jax_helpers.bcast_right(next_time, xt.ndim)
     key = next_step_info.rng
 
     # Get model predictions and candidates
@@ -869,8 +869,8 @@ class DiscreteDDIMStep(SamplerStep):
 
     time = current_step_info.time
     next_time = next_step_info.time
-    time_bcast = utils.bcast_right(time, xt.ndim)
-    next_time_bcast = utils.bcast_right(next_time, xt.ndim)
+    time_bcast = jax_helpers.bcast_right(time, xt.ndim)
+    next_time_bcast = jax_helpers.bcast_right(next_time, xt.ndim)
     key = next_step_info.rng
 
     # Get model predictions and candidates
@@ -1017,8 +1017,8 @@ class DiscreteFlowMatchingStep(SamplerStep):
 
     time = current_step_info.time
     next_time = next_step_info.time
-    time_bcast = utils.bcast_right(time, xt.ndim)
-    next_time_bcast = utils.bcast_right(next_time, xt.ndim)
+    time_bcast = jax_helpers.bcast_right(time, xt.ndim)
+    next_time_bcast = jax_helpers.bcast_right(next_time, xt.ndim)
     key = next_step_info.rng
 
     # Get model predictions and candidates
@@ -1197,8 +1197,8 @@ class IntegratedDiscreteDDIMStep(SamplerStep):
     xt = current_step.xt
     unused_mask = xt == self.corruption_process.unused_token
 
-    time = utils.bcast_right(current_step.step_info.time, xt.ndim)
-    next_time = utils.bcast_right(next_step_info.time, xt.ndim)
+    time = jax_helpers.bcast_right(current_step.step_info.time, xt.ndim)
+    next_time = jax_helpers.bcast_right(next_step_info.time, xt.ndim)
     key = next_step_info.rng
 
     # Extract predictions.

@@ -27,7 +27,7 @@ import dataclasses
 from typing import Protocol
 
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.sampling import base as sampling_base
 import jax
 import jax.numpy as jnp
@@ -89,7 +89,7 @@ class TimeSchedule(Protocol):
 class UniformTimeSchedule(TimeSchedule):
   """Creates a schedule with uniformly spaced time steps in [ε, 1-ε]."""
 
-  span: utils.SafeSpan = utils.SafeSpan(
+  span: jax_helpers.SafeSpan = jax_helpers.SafeSpan(
       _minval=0.0, _maxval=1.0, safety_epsilon=1e-6
   )
 
@@ -100,7 +100,7 @@ class UniformTimeSchedule(TimeSchedule):
     bsz, *data_shape = data_spec.shape
     stop, start = self.span
     steps = jnp.linspace(start, stop, num_steps)
-    steps = utils.bcast_right(steps, data_spec.ndim + 1)
+    steps = jax_helpers.bcast_right(steps, data_spec.ndim + 1)
     steps = jnp.repeat(steps, bsz, axis=1)
 
     expected_steps_shape = (
@@ -140,7 +140,7 @@ class EDMTimeSchedule(TimeSchedule):
   uniform.
   """
 
-  span: utils.SafeSpan = utils.SafeSpan(
+  span: jax_helpers.SafeSpan = jax_helpers.SafeSpan(
       _minval=0.0, _maxval=1.0, safety_epsilon=1e-6
   )
   rho: float = 1.0
@@ -162,7 +162,7 @@ class EDMTimeSchedule(TimeSchedule):
     stop_inv_rho = stop ** (1.0 / self.rho)
     steps = jnp.linspace(start_inv_rho, stop_inv_rho, num_steps)
     steps = steps**self.rho
-    steps = utils.bcast_right(steps, data_spec.ndim + 1)
+    steps = jax_helpers.bcast_right(steps, data_spec.ndim + 1)
     steps = jnp.repeat(steps, bsz, axis=1)
 
     expected_steps_shape = (num_steps, bsz) + (1,) * len(data_shape)

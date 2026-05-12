@@ -20,7 +20,7 @@ import chex
 from flax import linen as nn
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import multimodal
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.corruption import discrete
 from hackable_diffusion.lib.corruption import gaussian
@@ -424,11 +424,11 @@ class NestedProjectionFnTest(parameterized.TestCase):
         },
     }
     nested_time = {
-        'data_continuous_1': utils.bcast_right(
+        'data_continuous_1': jax_helpers.bcast_right(
             jnp.array([0.5, 0.5]), nested_xt['data_continuous_1'].ndim
         ),
         'modality': {
-            'data_continuous_2': utils.bcast_right(
+            'data_continuous_2': jax_helpers.bcast_right(
                 jnp.array([0.5, 0.5]),
                 nested_xt['modality']['data_continuous_2'].ndim,
             )

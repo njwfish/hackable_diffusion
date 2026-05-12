@@ -21,7 +21,7 @@ from typing import Any, Protocol
 import chex
 from flax import linen as nn
 from flax.core import frozen_dict
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 import jax
 import jax.numpy as jnp
 from kauldron.ktyping import PyTree  # pylint: disable=g-multiple-import,g-importing-member
@@ -48,7 +48,7 @@ class UtilsTest(parameterized.TestCase):
       self, input_shape, expected_shape
   ):
     a = jnp.ones(input_shape)
-    flattened = utils.flatten_non_batch_dims(a)
+    flattened = jax_helpers.flatten_non_batch_dims(a)
     self.assertEqual(expected_shape, flattened.shape)
 
   ##############################################################################
@@ -68,7 +68,7 @@ class UtilsTest(parameterized.TestCase):
       received_keys.append(tuple(key.tolist()))
       return arr
 
-    mapped_tree = utils.tree_map_with_key(_record_key, key, tree)
+    mapped_tree = jax_helpers.tree_map_with_key(_record_key, key, tree)
 
     # check that all keys are unique
     self.assertEqual(len(received_keys), len(set(received_keys)))
@@ -77,53 +77,53 @@ class UtilsTest(parameterized.TestCase):
 
   def test_get_broadcastable_shape(self):
     # Test with empty shape and empty batch_axes
-    self.assertEqual(utils.get_broadcastable_shape((), ()), ())
+    self.assertEqual(jax_helpers.get_broadcastable_shape((), ()), ())
 
     # Test with a shape with one dimension
-    self.assertEqual(utils.get_broadcastable_shape((5,), (0,)), (5,))
+    self.assertEqual(jax_helpers.get_broadcastable_shape((5,), (0,)), (5,))
 
     # Test negative indexing
-    self.assertEqual(utils.get_broadcastable_shape((2, 3, 5), (-1,)), (1, 1, 5))
+    self.assertEqual(jax_helpers.get_broadcastable_shape((2, 3, 5), (-1,)), (1, 1, 5))
 
     # Test with a shape and empty batch_axes
-    self.assertEqual(utils.get_broadcastable_shape((2, 3, 4), ()), (1, 1, 1))
+    self.assertEqual(jax_helpers.get_broadcastable_shape((2, 3, 4), ()), (1, 1, 1))
 
     # Test with a shape and one batch_axis
-    self.assertEqual(utils.get_broadcastable_shape((2, 3, 4), (0,)), (2, 1, 1))
-    self.assertEqual(utils.get_broadcastable_shape((2, 3, 4), (1,)), (1, 3, 1))
-    self.assertEqual(utils.get_broadcastable_shape((2, 3, 4), (2,)), (1, 1, 4))
+    self.assertEqual(jax_helpers.get_broadcastable_shape((2, 3, 4), (0,)), (2, 1, 1))
+    self.assertEqual(jax_helpers.get_broadcastable_shape((2, 3, 4), (1,)), (1, 3, 1))
+    self.assertEqual(jax_helpers.get_broadcastable_shape((2, 3, 4), (2,)), (1, 1, 4))
 
     # Test with a shape and multiple batch_axes
     self.assertEqual(
-        utils.get_broadcastable_shape((2, 3, 4), (0, 1)), (2, 3, 1)
+        jax_helpers.get_broadcastable_shape((2, 3, 4), (0, 1)), (2, 3, 1)
     )
     self.assertEqual(
-        utils.get_broadcastable_shape((2, 3, 4), (0, 2)), (2, 1, 4)
+        jax_helpers.get_broadcastable_shape((2, 3, 4), (0, 2)), (2, 1, 4)
     )
     self.assertEqual(
-        utils.get_broadcastable_shape((2, 3, 4), (1, 2)), (1, 3, 4)
+        jax_helpers.get_broadcastable_shape((2, 3, 4), (1, 2)), (1, 3, 4)
     )
     self.assertEqual(
-        utils.get_broadcastable_shape((2, 3, 4), (0, 1, 2)), (2, 3, 4)
+        jax_helpers.get_broadcastable_shape((2, 3, 4), (0, 1, 2)), (2, 3, 4)
     )
 
   def test_get_broadcastable_shape_raises(self):
     # out of bounds axis
     with self.assertRaisesRegex(IndexError, 'out of bounds'):
-      utils.get_broadcastable_shape((2, 3, 4), axes=(124,))
+      jax_helpers.get_broadcastable_shape((2, 3, 4), axes=(124,))
 
     # empty array
     with self.assertRaisesRegex(IndexError, 'out of bounds'):
-      utils.get_broadcastable_shape((), axes=(0,))
+      jax_helpers.get_broadcastable_shape((), axes=(0,))
 
     # duplicate axes
     with self.assertRaisesRegex(ValueError, 'repeated axis'):
-      utils.get_broadcastable_shape((2, 3, 4), axes=(0, 0))
+      jax_helpers.get_broadcastable_shape((2, 3, 4), axes=(0, 0))
 
     # Raises error on effectively duplicate axes
     # (2 and -1 are the same for ndims=3)
     with self.assertRaisesRegex(ValueError, 'repeated axis'):
-      utils.get_broadcastable_shape((2, 3, 4), axes=(2, -1))
+      jax_helpers.get_broadcastable_shape((2, 3, 4), axes=(2, -1))
 
   ##############################################################################
   # MARK: Test for CustomGradient
@@ -131,7 +131,7 @@ class UtilsTest(parameterized.TestCase):
 
   def test_manual_gradient_definition(self):
 
-    @utils.CustomGradient
+    @jax_helpers.CustomGradient
     def value_fn(x):
       return jnp.square(x)
 
@@ -145,7 +145,7 @@ class UtilsTest(parameterized.TestCase):
 
   def test_egrad(self):
     f = lambda x: x**3
-    egrad_f = utils.egrad(f)
+    egrad_f = jax_helpers.egrad(f)
     grad_f = jax.grad(f)
 
     # scalar gradient behave the same.
@@ -176,7 +176,7 @@ class UtilsTest(parameterized.TestCase):
   def test_bcast_right_output_shape(self, input_shape, ndim, expected_shape):
     """Tests bcast_right output shape."""
     value = jnp.ones(input_shape)
-    output = utils.bcast_right(value, ndim)
+    output = jax_helpers.bcast_right(value, ndim)
     self.assertEqual(output.shape, expected_shape)
 
   @parameterized.named_parameters(
@@ -187,7 +187,7 @@ class UtilsTest(parameterized.TestCase):
   def test_bcast_right_raises_error(self, shape, ndim):
     """Tests that bcast_right raises an error for invalid ndim."""
     with self.assertRaises(ValueError):
-      utils.bcast_right(jnp.ones(shape), ndim)
+      jax_helpers.bcast_right(jnp.ones(shape), ndim)
 
   ##############################################################################
   # MARK: Test for conversion functions
@@ -200,7 +200,7 @@ class UtilsTest(parameterized.TestCase):
         'b': jnp.zeros((3, 3), dtype=jnp.int32),
         'c': (jnp.ones((1,), jnp.float32), jnp.ones((1,), jnp.float16)),
     }
-    converted_tree = utils.to_bf16_from_fp32(tree)
+    converted_tree = jax_helpers.to_bf16_from_fp32(tree)
     self.assertEqual(converted_tree['a'].dtype, jnp.bfloat16)
     self.assertEqual(converted_tree['b'].dtype, jnp.int32)
     self.assertEqual(converted_tree['c'][0].dtype, jnp.bfloat16)
@@ -213,7 +213,7 @@ class UtilsTest(parameterized.TestCase):
         'b': jnp.zeros((3, 3), dtype=jnp.int32),
         'c': (jnp.ones((1,), jnp.bfloat16), jnp.ones((1,), jnp.float16)),
     }
-    converted_tree = utils.optional_bf16_to_fp32(tree)
+    converted_tree = jax_helpers.optional_bf16_to_fp32(tree)
     self.assertEqual(converted_tree['a'].dtype, jnp.float32)
     self.assertEqual(converted_tree['b'].dtype, jnp.int32)
     self.assertEqual(converted_tree['c'][0].dtype, jnp.float32)
@@ -223,7 +223,7 @@ class UtilsTest(parameterized.TestCase):
     """Tests that to_bf16_from_fp32 raises an error for non-array inputs."""
     tree = {'a': jnp.ones((2, 2), dtype=jnp.float32), 'b': 'not_an_array'}
     with self.assertRaises(AttributeError):
-      utils.to_bf16_from_fp32(tree)
+      jax_helpers.to_bf16_from_fp32(tree)
 
   ##############################################################################
   # MARK: Test for lenient_map
@@ -266,7 +266,7 @@ class UtilsTest(parameterized.TestCase):
 
       @nn.compact
       def __call__(self, x):
-        return utils.lenient_map(
+        return jax_helpers.lenient_map(
             lambda x_leaf, a_leaf, b_leaf: x_leaf + a_leaf + b_leaf,
             x,
             self.a,
@@ -298,7 +298,7 @@ class UtilsTest(parameterized.TestCase):
 
       @nn.compact
       def __call__(self, x):
-        return utils.lenient_map(lambda x, module: module(x), x, self.embedders)
+        return jax_helpers.lenient_map(lambda x, module: module(x), x, self.embedders)
 
     embedders = {'a': DenseEmbedder(32), 'b': DenseEmbedder(64)}
     embedder = NestedEmbedder(embedders=embedders)
@@ -424,12 +424,12 @@ class UtilsTest(parameterized.TestCase):
       raise ValueError(f'Unsupported input type: {input_type}')
 
     if fixed_dtype:
-      output = utils.get_dummy_batch_fixed_dtype(
+      output = jax_helpers.get_dummy_batch_fixed_dtype(
           shape, dtype=dtype_fixed, only_first_axis=only_first_axis
       )
       expected_output = expected_output_fixed
     else:
-      output = utils.get_dummy_batch(
+      output = jax_helpers.get_dummy_batch(
           shape, dtype=dtype, only_first_axis=only_first_axis
       )
     chex.assert_trees_all_close(output, expected_output)
@@ -438,7 +438,7 @@ class UtilsTest(parameterized.TestCase):
     tree = {'a': 1.0, 'b': 2.0}
     other = {'a': 3.0, 'B': 4.0}  # Mismatched paths.
     with self.assertRaisesRegex(KeyError, 'Paths of the trees must match.'):
-      utils.lenient_map(lambda x, y: x + y, tree, other)
+      jax_helpers.lenient_map(lambda x, y: x + y, tree, other)
 
   @parameterized.named_parameters(
       ('empty_dict', {}),
@@ -447,30 +447,30 @@ class UtilsTest(parameterized.TestCase):
   )
   def test_lenient_map_empty_tree(self, empty_tree):
     """Tests that lenient_map returns an empty tree unchanged."""
-    result = utils.lenient_map(lambda x: x + 1, empty_tree)
+    result = jax_helpers.lenient_map(lambda x: x + 1, empty_tree)
     self.assertEqual(result, empty_tree)
 
 
 class SafeSpanTest(parameterized.TestCase):
 
   def test_default_span(self):
-    span = utils.SafeSpan()
+    span = jax_helpers.SafeSpan()
     self.assertEqual(span.minval, 0.0)
     self.assertEqual(span.maxval, 1.0)
 
   def test_with_epsilon_raw_values_unchanged(self):
-    span = utils.SafeSpan(safety_epsilon=0.1)
+    span = jax_helpers.SafeSpan(safety_epsilon=0.1)
     self.assertEqual(span._minval, 0.0)
     self.assertEqual(span._maxval, 1.0)
 
   def test_iter_unpacking_yields_adjusted(self):
-    span = utils.SafeSpan(safety_epsilon=0.1)
+    span = jax_helpers.SafeSpan(safety_epsilon=0.1)
     lo, hi = span
     self.assertAlmostEqual(lo, 0.1)
     self.assertAlmostEqual(hi, 0.9)
 
   def test_frozen(self):
-    span = utils.SafeSpan(safety_epsilon=0.1)
+    span = jax_helpers.SafeSpan(safety_epsilon=0.1)
     with self.assertRaises(dataclasses.FrozenInstanceError):
       span.minval = 0.5
 
@@ -478,21 +478,21 @@ class SafeSpanTest(parameterized.TestCase):
     with self.assertRaisesRegex(
         ValueError, 'safety_epsilon must be non-negative'
     ):
-      utils.SafeSpan(safety_epsilon=-0.1)
+      jax_helpers.SafeSpan(safety_epsilon=-0.1)
 
   def test_invalid_epsilon_too_large(self):
     with self.assertRaisesRegex(
         ValueError, 'minval must be smaller than maxval'
     ):
-      utils.SafeSpan(safety_epsilon=0.6)
+      jax_helpers.SafeSpan(safety_epsilon=0.6)
 
   def test_custom_range_with_epsilon(self):
-    lo, hi = utils.SafeSpan(_minval=0.2, _maxval=0.8, safety_epsilon=0.1)
+    lo, hi = jax_helpers.SafeSpan(_minval=0.2, _maxval=0.8, safety_epsilon=0.1)
     self.assertAlmostEqual(lo, 0.3)
     self.assertAlmostEqual(hi, 0.7)
 
   def test_no_epsilon_adjustment_when_zero(self):
-    lo, hi = utils.SafeSpan(_minval=0.2, _maxval=0.8)
+    lo, hi = jax_helpers.SafeSpan(_minval=0.2, _maxval=0.8)
     self.assertEqual(lo, 0.2)
     self.assertEqual(hi, 0.8)
 

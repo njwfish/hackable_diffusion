@@ -14,7 +14,7 @@
 
 """Tests for guidance functions."""
 
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.inference import guidance
 import jax.numpy as jnp
 
@@ -80,7 +80,7 @@ class GuidanceTest(parameterized.TestCase):
     upper = 0.25
     # First time is outside the interval, second is inside.
     time = jnp.array([0.1, 0.5])
-    time = utils.bcast_right(time, self.xt.ndim)
+    time = jax_helpers.bcast_right(time, self.xt.ndim)
     with self.assertRaisesRegex(
         ValueError,
         'Lower bound must be strictly smaller than the upper bound.',
@@ -110,7 +110,7 @@ class GuidanceTest(parameterized.TestCase):
     )
     # First time is outside the interval, second is inside.
     time = jnp.array([0.1, 0.5])
-    time = utils.bcast_right(time, self.xt.ndim)
+    time = jax_helpers.bcast_right(time, self.xt.ndim)
 
     result = guidance_fn(
         self.xt, self.conditioning, time, self.cond_outputs, self.uncond_outputs

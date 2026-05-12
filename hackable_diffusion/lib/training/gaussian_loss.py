@@ -22,7 +22,7 @@ import dataclasses
 from typing import Literal
 
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.training import base
 import immutabledict
@@ -133,7 +133,7 @@ def compute_continuous_diffusion_loss(
   l2 = jnp.square(pred - target)
 
   # Broadcast time to the same shape as pred
-  time = utils.bcast_right(time, pred.ndim)
+  time = jax_helpers.bcast_right(time, pred.ndim)
 
   # Compute the weight terms
   weight = jnp.ones_like(time)
@@ -152,7 +152,7 @@ def compute_continuous_diffusion_loss(
 
   # Maybe multiply by -dlogsnr/dt
   if schedule is not None and convert_to_logsnr_schedule:
-    logsnr_der = utils.egrad(schedule.logsnr)(time)
+    logsnr_der = jax_helpers.egrad(schedule.logsnr)(time)
     weight = -weight * logsnr_der
 
   # Maybe multiply by other weight terms
@@ -162,7 +162,7 @@ def compute_continuous_diffusion_loss(
     )
 
   weighted_loss = weight * l2
-  weighted_loss = utils.flatten_non_batch_dims(weighted_loss)
+  weighted_loss = jax_helpers.flatten_non_batch_dims(weighted_loss)
   # We use mean as opposed to sum to make the loss dimension-agnostic.
   weighted_loss = jnp.mean(weighted_loss, axis=-1)
 
@@ -284,8 +284,8 @@ def x0_to_score_scaling(schedule, time: TimeArray) -> TimeArray:
 def x0_to_velocity_scaling(schedule, time: TimeArray) -> TimeArray:
   alpha = schedule.alpha(time)
   sigma = schedule.sigma(time)
-  alpha_der = utils.egrad(schedule.alpha)(time)
-  sigma_der = utils.egrad(schedule.sigma)(time)
+  alpha_der = jax_helpers.egrad(schedule.alpha)(time)
+  sigma_der = jax_helpers.egrad(schedule.sigma)(time)
   return jnp.square(alpha_der - alpha * sigma_der / sigma)
 
 
@@ -312,8 +312,8 @@ def epsilon_to_score_scaling(schedule, time: TimeArray) -> TimeArray:
 def epsilon_to_velocity_scaling(schedule, time: TimeArray) -> TimeArray:
   alpha = schedule.alpha(time)
   sigma = schedule.sigma(time)
-  alpha_der = utils.egrad(schedule.alpha)(time)
-  sigma_der = utils.egrad(schedule.sigma)(time)
+  alpha_der = jax_helpers.egrad(schedule.alpha)(time)
+  sigma_der = jax_helpers.egrad(schedule.sigma)(time)
   return jnp.square(sigma * alpha_der / alpha - sigma_der)
 
 
@@ -339,8 +339,8 @@ def score_to_epsilon_scaling(schedule, time: TimeArray) -> TimeArray:
 def score_to_velocity_scaling(schedule, time: TimeArray) -> TimeArray:
   alpha = schedule.alpha(time)
   sigma = schedule.sigma(time)
-  alpha_der = utils.egrad(schedule.alpha)(time)
-  sigma_der = utils.egrad(schedule.sigma)(time)
+  alpha_der = jax_helpers.egrad(schedule.alpha)(time)
+  sigma_der = jax_helpers.egrad(schedule.sigma)(time)
   return jnp.square(jnp.square(sigma) * alpha_der / alpha - sigma * sigma_der)
 
 
@@ -370,8 +370,8 @@ def velocity_to_score_scaling(schedule, time: TimeArray) -> TimeArray:
 def velocity_to_v_scaling(schedule, time: TimeArray) -> TimeArray:
   alpha = schedule.alpha(time)
   sigma = schedule.sigma(time)
-  alpha_der = utils.egrad(schedule.alpha)(time)
-  sigma_der = utils.egrad(schedule.sigma)(time)
+  alpha_der = jax_helpers.egrad(schedule.alpha)(time)
+  sigma_der = jax_helpers.egrad(schedule.sigma)(time)
   return jnp.square(
       (jnp.square(alpha) + jnp.square(sigma))
       / (sigma * alpha_der - alpha * sigma_der)

@@ -16,7 +16,7 @@
 
 from flax import linen as nn
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import normalization
 import jax.numpy as jnp
@@ -136,5 +136,5 @@ class DiT(nn.Module, ConditionalBackbone):
       tokens_emb = self.decoder(tokens_emb, cond)
 
     if self.cast_to_float32:
-      tokens_emb = utils.optional_bf16_to_fp32(tokens_emb)
+      tokens_emb = jax_helpers.optional_bf16_to_fp32(tokens_emb)
     return tokens_emb

@@ -35,7 +35,7 @@ import dataclasses
 
 from hackable_diffusion.lib import fast_random
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.corruption import simplicial
 from hackable_diffusion.lib.sampling import base
@@ -154,8 +154,8 @@ class SimplicialDDIMStep(SamplerStep):
     next_time = next_step_info.time
 
     # Broadcast time to match batch dimensions
-    time = utils.bcast_right(time, log_xt.ndim)
-    next_time = utils.bcast_right(next_time, log_xt.ndim)
+    time = jax_helpers.bcast_right(time, log_xt.ndim)
+    next_time = jax_helpers.bcast_right(next_time, log_xt.ndim)
     key = next_step_info.rng
 
     # Get logits

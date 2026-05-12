@@ -16,7 +16,7 @@
 
 import itertools
 
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import gaussian as gaussian_corrupt
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.training import gaussian_loss
@@ -88,7 +88,7 @@ class GaussianLossTest(parameterized.TestCase):
     elif loss_class is gaussian_loss.SiD2Loss:
       bias = loss_kwargs.get('bias', 0.0)
       logsnr = self.schedule.logsnr(self.time)
-      logsnr_der = utils.egrad(self.schedule.logsnr)(self.time)
+      logsnr_der = jax_helpers.egrad(self.schedule.logsnr)(self.time)
       weight_from_fn = jax.nn.sigmoid(logsnr - bias) * jnp.exp(bias)
       # SiD2Loss has convert_to_logsnr_schedule=True and loss_type='x0'
       # Since we provide 'x0' preds, conversion term is 1.
@@ -147,8 +147,8 @@ class PredictionConverterTest(parameterized.TestCase):
 
     sigma = schedule.sigma(time)
     alpha = schedule.alpha(time)
-    alpha_der = utils.egrad(schedule.alpha)(time)
-    sigma_der = utils.egrad(schedule.sigma)(time)
+    alpha_der = jax_helpers.egrad(schedule.alpha)(time)
+    sigma_der = jax_helpers.egrad(schedule.sigma)(time)
 
     kwargs = {
         'xt': xt,

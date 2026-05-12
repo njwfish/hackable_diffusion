@@ -19,7 +19,7 @@ import math
 from typing import Protocol
 
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 import jax
 import jax.numpy as jnp
 import kauldron.ktyping as kt
@@ -69,11 +69,11 @@ class GaussianSchedule(Schedule, Protocol):
 
   @kt.typechecked
   def f(self, time: TimeArray) -> TimeArray:
-    return utils.egrad(self.alpha)(time) / self.alpha(time)
+    return jax_helpers.egrad(self.alpha)(time) / self.alpha(time)
 
   @kt.typechecked
   def g(self, time: TimeArray) -> TimeArray:
-    return self.sigma(time) * jnp.sqrt(-utils.egrad(self.logsnr)(time))
+    return self.sigma(time) * jnp.sqrt(-jax_helpers.egrad(self.logsnr)(time))
 
   @kt.typechecked
   def evaluate(self, time: TimeArray) -> dict[str, TimeArray]:
@@ -128,7 +128,7 @@ class RiemannianSchedule(Schedule, Protocol):
 
   def alpha_dot(self, time: TimeArray) -> TimeArray:
     """Time derivative of alpha. Defaults to autodiff."""
-    return utils.egrad(self.alpha)(time)
+    return jax_helpers.egrad(self.alpha)(time)
 
   @kt.typechecked
   def evaluate(self, time: TimeArray) -> dict[str, TimeArray]:
@@ -200,7 +200,7 @@ class CosineSchedule(GaussianSchedule):
 class InverseCosineSchedule(GaussianSchedule):
   """Inverse Cosine diffusion schedule from https://arxiv.org/abs/2311.17901."""
 
-  @utils.CustomGradient
+  @jax_helpers.CustomGradient
   @kt.typechecked
   def alpha(self, time: TimeArray) -> TimeArray:
     """Shift and scale the inverse cosine function."""
@@ -211,7 +211,7 @@ class InverseCosineSchedule(GaussianSchedule):
     v = self._v(time)
     return -1.0 / (2.0 * jnp.sqrt(jnp.pi * v) * self._sqrt_t_m_t2(time))
 
-  @utils.CustomGradient
+  @jax_helpers.CustomGradient
   @kt.typechecked
   def sigma(self, time: TimeArray) -> TimeArray:
     return jnp.sqrt(1.0 - jnp.square(self.alpha(time)))
@@ -262,7 +262,7 @@ class LinearDiffusionSchedule(GaussianSchedule):
   def beta_diff(self) -> float:
     return self.beta_max - self.beta_min
 
-  @utils.CustomGradient
+  @jax_helpers.CustomGradient
   @kt.typechecked
   def alpha(self, time: TimeArray) -> TimeArray:
     return jnp.exp(
@@ -274,7 +274,7 @@ class LinearDiffusionSchedule(GaussianSchedule):
     r = -0.5 * (time * self.beta_diff + self.beta_min)
     return self.alpha(time) * r
 
-  @utils.CustomGradient
+  @jax_helpers.CustomGradient
   @kt.typechecked
   def sigma(self, time: TimeArray) -> TimeArray:
     return jnp.sqrt(1.0 - jnp.square(self.alpha(time)))
@@ -329,7 +329,7 @@ class GeometricSchedule(GaussianSchedule):
   def alpha(self, time: TimeArray) -> TimeArray:
     return jnp.ones_like(time)
 
-  @utils.CustomGradient
+  @jax_helpers.CustomGradient
   @kt.typechecked
   def sigma(self, time: TimeArray) -> TimeArray:
     return self.sigma_min * jnp.exp(time * self.log_ratio)

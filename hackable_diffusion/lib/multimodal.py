@@ -22,7 +22,7 @@ arbitrary PyTrees of data — e.g. ``{"image": ..., "text": ...}``.
 
 Each `Nested*` class holds a PyTree of single-modal instances whose structure
 mirrors the data tree, and delegates calls leaf-wise using
-``utils.lenient_map``.  This means any combination of modalities and nesting
+``jax_helpers.lenient_map``.  This means any combination of modalities and nesting
 depths works out-of-the-box without modifying the underlying single-modal
 implementations.
 
@@ -54,7 +54,7 @@ from typing import cast
 
 import flax.linen as nn
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.architecture import conditioning_encoder
 from hackable_diffusion.lib.corruption import base as corruption_base
 from hackable_diffusion.lib.inference import guidance as guidance_lib
@@ -120,7 +120,7 @@ class NestedProcess(corruption_base.CorruptionProcess):
       data_spec: DataTree,
   ) -> DataTree:
     """Sample from the invariant distribution."""
-    return utils.tree_map_with_key(
+    return jax_helpers.tree_map_with_key(
         lambda k, process, data: process.sample_from_invariant(k, data),
         key,
         self.processes,
@@ -141,7 +141,7 @@ class NestedProcess(corruption_base.CorruptionProcess):
           f'x0 and time must have the same structure. Got: {x0_structure=} and'
           f' {time_structure=}'
       )
-    xt_and_targets = utils.tree_map_with_key(
+    xt_and_targets = jax_helpers.tree_map_with_key(
         lambda k, process, x, t: process.corrupt(k, x, t),
         key,
         self.processes,
@@ -302,7 +302,7 @@ class NestedTimeSchedule(time_scheduling.TimeSchedule):
     def _call_schedule(rng, time_schedule, data_spec):
       return time_schedule.all_step_infos(rng, num_steps, data_spec)
 
-    return utils.tree_map_with_key(
+    return jax_helpers.tree_map_with_key(
         _call_schedule, rng, self.time_schedules, data_spec
     )
 
@@ -388,7 +388,7 @@ class NestedTimeEmbedder(nn.Module, conditioning_encoder.BaseTimeEmbedder):
   @nn.compact
   @kt.typechecked
   def __call__(self, time: hd_typing.TimeTree) -> kt.Float['batch ...']:
-    t_emb_tree = utils.lenient_map(
+    t_emb_tree = jax_helpers.lenient_map(
         lambda x, time_embedder: cast(nn.Module, time_embedder).copy()(x),
         time,
         self.time_embedders,
@@ -531,7 +531,7 @@ class NestedTimeSampler(time_sampling.TimeSampler):
     def _call_sampler(key, sampler, data_spec):
       return sampler(key, data_spec)
 
-    return utils.tree_map_with_key(_call_sampler, key, self.samplers, data_spec)
+    return jax_helpers.tree_map_with_key(_call_sampler, key, self.samplers, data_spec)
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)

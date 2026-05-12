@@ -16,7 +16,7 @@
 
 import dataclasses
 import functools
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import schedules
 import jax
 import jax.numpy as jnp
@@ -188,7 +188,7 @@ class NumericalGaussianScheduleTest(parameterized.TestCase):
     # check that f is approximately correct.
     with self.subTest(func_name='f'):
       f = schedule.f(t)
-      f_expected = utils.egrad(schedule.alpha)(t) / schedule.alpha(t)
+      f_expected = jax_helpers.egrad(schedule.alpha)(t) / schedule.alpha(t)
       self.assertTrue(
           jnp.allclose(f, f_expected, atol=1e-6, rtol=1e-6),
           'f() check failed: Absolute difference:'
@@ -199,7 +199,7 @@ class NumericalGaussianScheduleTest(parameterized.TestCase):
     with self.subTest(func_name='g'):
       g = schedule.g(t)
       g_expected = schedule.sigma(t) * jnp.sqrt(
-          -utils.egrad(schedule.logsnr)(t)
+          -jax_helpers.egrad(schedule.logsnr)(t)
       )
       self.assertTrue(
           jnp.allclose(g, g_expected, atol=1e-6, rtol=1e-6),
@@ -219,15 +219,15 @@ class NumericalGaussianScheduleTest(parameterized.TestCase):
     for func_name in ('alpha', 'sigma', 'logsnr'):
       # Use __dict__ to avoid triggering descriptor
       custom_grad = schedule.__class__.__dict__.get(func_name, None)
-      if custom_grad and isinstance(custom_grad, utils.CustomGradient):
-        # This means the function has a @utils.CustomGradient
+      if custom_grad and isinstance(custom_grad, jax_helpers.CustomGradient):
+        # This means the function has a @jax_helpers.CustomGradient
         with self.subTest(func_name=func_name):
           fn = getattr(schedule, func_name)
           orig_fn = functools.partial(custom_grad.primal_fn, schedule)
           # This triggers the custom gradient implementation
-          custom_grad = utils.egrad(fn)(t)
+          custom_grad = jax_helpers.egrad(fn)(t)
           # This circumvents the custom gradient implementation
-          jax_grad = utils.egrad(orig_fn)(t)
+          jax_grad = jax_helpers.egrad(orig_fn)(t)
           self.assertTrue(
               jnp.allclose(custom_grad, jax_grad, atol=1e-6, rtol=1e-6),
               f'{func_name}() custom gradientcheck failed: Absolute difference:'
@@ -408,7 +408,7 @@ class LinearRiemannianScheduleTest(absltest.TestCase):
     schedule = schedules.LinearRiemannianSchedule()
     t = jnp.linspace(0.01, 0.99, 50)
     alpha_dot = schedule.alpha_dot(t)
-    alpha_dot_auto = utils.egrad(schedule.alpha)(t)
+    alpha_dot_auto = jax_helpers.egrad(schedule.alpha)(t)
     self.assertTrue(
         jnp.allclose(alpha_dot, alpha_dot_auto, atol=1e-6, rtol=1e-6),
         'alpha_dot() does not match autodiff: Absolute difference:'

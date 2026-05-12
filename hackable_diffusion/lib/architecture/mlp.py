@@ -20,7 +20,7 @@ We only recommend using this backbone for very simple datasets.
 from typing import Literal, Sequence
 from flax import linen as nn
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import mlp_blocks
 import jax.numpy as jnp
@@ -129,5 +129,5 @@ class ConditionalMLP(nn.Module, ConditionalBackbone):
     )(emb, is_training=is_training)
 
     output = jnp.reshape(output, shape=x.shape)
-    output = utils.optional_bf16_to_fp32(output)
+    output = jax_helpers.optional_bf16_to_fp32(output)
     return output

@@ -133,7 +133,7 @@ time_schedule = NestedTimeSchedule(
 
 ## How It Works
 
-Internally, Nested wrappers use `utils.lenient_map` to traverse the data and
+Internally, Nested wrappers use `jax_helpers.lenient_map` to traverse the data and
 component PyTrees in parallel, calling the corresponding method on each
 component with its matching data leaf. This means:
 

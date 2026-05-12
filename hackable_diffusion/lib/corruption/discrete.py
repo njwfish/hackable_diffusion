@@ -21,7 +21,7 @@ import enum
 from typing import Protocol, Sequence
 
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import base
 from hackable_diffusion.lib.corruption import schedules
 import jax
@@ -261,7 +261,7 @@ class CategoricalProcess(CorruptionProcess):
         `unused_token`, False otherwise. The shape of both masks is (*b, 1).
     """
     # Broadcast the time to a shape compatible with x0.
-    time = utils.bcast_right(time, x0.ndim)
+    time = jax_helpers.bcast_right(time, x0.ndim)
 
     # compute alpha
     alpha = self.schedule.alpha(time)

@@ -145,7 +145,7 @@ from __future__ import annotations
 import dataclasses
 
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import base
 from hackable_diffusion.lib.corruption import schedules
 import immutabledict
@@ -204,7 +204,7 @@ class GaussianProcess(CorruptionProcess):
   ) -> tuple[DataArray, TargetInfo]:
     epsilon = self.sample_from_invariant(key, data_spec=x0)
 
-    time = utils.bcast_right(time, x0.ndim)
+    time = jax_helpers.bcast_right(time, x0.ndim)
     alpha, sigma, alpha_der, sigma_der = self._get_alpha_sigma_and_der(time)
 
     xt = alpha * x0 + sigma * epsilon
@@ -233,7 +233,7 @@ class GaussianProcess(CorruptionProcess):
 
     source_type, source_value = next(iter(prediction.items()))
     converters = CONVERTERS[source_type]
-    time = utils.bcast_right(time, xt.ndim)
+    time = jax_helpers.bcast_right(time, xt.ndim)
     alpha, sigma, alpha_der, sigma_der = self._get_alpha_sigma_and_der(time)
 
     return {
@@ -260,8 +260,8 @@ class GaussianProcess(CorruptionProcess):
     """Get the alpha, sigma and their derivatives for the given time."""
     alpha = self.schedule.alpha(time)
     sigma = self.schedule.sigma(time)
-    alpha_der = utils.egrad(self.schedule.alpha)(time)
-    sigma_der = utils.egrad(self.schedule.sigma)(time)
+    alpha_der = jax_helpers.egrad(self.schedule.alpha)(time)
+    sigma_der = jax_helpers.egrad(self.schedule.sigma)(time)
     return alpha, sigma, alpha_der, sigma_der
 
 

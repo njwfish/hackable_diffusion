@@ -15,7 +15,7 @@
 """Tests for time scheduling."""
 
 import chex
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.sampling import time_scheduling
 import jax
 import jax.numpy as jnp
@@ -34,7 +34,7 @@ class UniformTimeScheduleTest(absltest.TestCase):
 
   def test_uniform_all_step_infos(self):
     time_schedule = time_scheduling.UniformTimeSchedule(
-        span=utils.SafeSpan(safety_epsilon=0.1)
+        span=jax_helpers.SafeSpan(safety_epsilon=0.1)
     )
     data_spec = jnp.zeros((2, 3))
     expected = jnp.array([
@@ -55,7 +55,7 @@ class UniformTimeScheduleTest(absltest.TestCase):
 
   def test_all_step_infos_with_starting_noise(self):
     time_schedule = time_scheduling.UniformTimeSchedule(
-        span=utils.SafeSpan(_minval=0.0, _maxval=0.6, safety_epsilon=0.1)
+        span=jax_helpers.SafeSpan(_minval=0.0, _maxval=0.6, safety_epsilon=0.1)
     )
     data_spec = jnp.zeros((2, 3))
     expected = jnp.array([
@@ -75,7 +75,7 @@ class UniformTimeScheduleTest(absltest.TestCase):
     )
 
   def test_all_step_infos_without_safety_epsilon(self):
-    time_schedule = time_scheduling.UniformTimeSchedule(span=utils.SafeSpan())
+    time_schedule = time_scheduling.UniformTimeSchedule(span=jax_helpers.SafeSpan())
     data_spec = jnp.zeros((2, 3))
     expected = jnp.array([
         [[1.0], [1.0]],
@@ -100,7 +100,7 @@ class EDMTimeScheduleTest(parameterized.TestCase):
 
   def test_all_step_infos(self):
     time_schedule = time_scheduling.EDMTimeSchedule(
-        span=utils.SafeSpan(), rho=2.0
+        span=jax_helpers.SafeSpan(), rho=2.0
     )
     data_spec = jnp.zeros((2, 3))
     expected = jnp.array([
@@ -121,10 +121,10 @@ class EDMTimeScheduleTest(parameterized.TestCase):
 
   def test_rho_one_is_uniform(self):
     uniform_time_schedule = time_scheduling.UniformTimeSchedule(
-        span=utils.SafeSpan(safety_epsilon=0.1)
+        span=jax_helpers.SafeSpan(safety_epsilon=0.1)
     )
     edm_time_schedule = time_scheduling.EDMTimeSchedule(
-        span=utils.SafeSpan(safety_epsilon=0.1), rho=1.0
+        span=jax_helpers.SafeSpan(safety_epsilon=0.1), rho=1.0
     )
     data_spec = jnp.zeros((2, 3))
     num_steps = 5
@@ -143,7 +143,7 @@ class EDMTimeScheduleTest(parameterized.TestCase):
   @parameterized.parameters(0.0, -1.0)
   def test_edm_invalid_rho(self, rho):
     with self.assertRaisesRegex(ValueError, "rho must be positive"):
-      time_scheduling.EDMTimeSchedule(span=utils.SafeSpan(), rho=rho)
+      time_scheduling.EDMTimeSchedule(span=jax_helpers.SafeSpan(), rho=rho)
 
 
 if __name__ == "__main__":

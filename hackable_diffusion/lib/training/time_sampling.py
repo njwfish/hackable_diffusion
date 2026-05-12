@@ -38,7 +38,7 @@ import math
 from typing import Protocol
 
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 import jax
 import jax.numpy as jnp
 import kauldron.ktyping as kt
@@ -108,7 +108,7 @@ class UniformTimeSampler(TimeSampler):
   """
 
   axes: tuple[int, ...] = (0,)
-  span: utils.SafeSpan = utils.SafeSpan(
+  span: jax_helpers.SafeSpan = jax_helpers.SafeSpan(
       _minval=0.0, _maxval=1.0, safety_epsilon=0.0
   )
 
@@ -120,7 +120,7 @@ class UniformTimeSampler(TimeSampler):
 
   @kt.typechecked
   def __call__(self, key: PRNGKey, data_spec: DataArray) -> TimeArray:
-    shape = utils.get_broadcastable_shape(data_spec.shape, self.axes)
+    shape = jax_helpers.get_broadcastable_shape(data_spec.shape, self.axes)
     minval, maxval = self.span
     return jax.random.uniform(key, shape=shape, minval=minval, maxval=maxval)
 
@@ -152,7 +152,7 @@ class LogitNormalTimeSampler(TimeSampler):
   axes: tuple[int, ...] = (0,)
   mean: float = 0.0
   scale: float = 1.0
-  span: utils.SafeSpan = utils.SafeSpan(
+  span: jax_helpers.SafeSpan = jax_helpers.SafeSpan(
       _minval=0.0, _maxval=1.0, safety_epsilon=0.0
   )
 
@@ -164,7 +164,7 @@ class LogitNormalTimeSampler(TimeSampler):
 
   @kt.typechecked
   def __call__(self, key: PRNGKey, data_spec: DataArray) -> TimeArray:
-    shape = utils.get_broadcastable_shape(data_spec.shape, self.axes)
+    shape = jax_helpers.get_broadcastable_shape(data_spec.shape, self.axes)
     minval, maxval = self.span
     out = self.mean + self.scale * jax.random.normal(key, shape=shape)
     return jax.nn.sigmoid(out) * (maxval - minval) + minval
@@ -188,7 +188,7 @@ class UniformStratifiedTimeSampler(TimeSampler):
   """
 
   axes: tuple[int, ...] = (0,)
-  span: utils.SafeSpan = utils.SafeSpan(
+  span: jax_helpers.SafeSpan = jax_helpers.SafeSpan(
       _minval=0.0, _maxval=1.0, safety_epsilon=0.0
   )
 
@@ -200,7 +200,7 @@ class UniformStratifiedTimeSampler(TimeSampler):
 
   @kt.typechecked
   def __call__(self, key: PRNGKey, data_spec: DataArray) -> TimeArray:
-    shape = utils.get_broadcastable_shape(data_spec.shape, self.axes)
+    shape = jax_helpers.get_broadcastable_shape(data_spec.shape, self.axes)
     tensor_dim = math.prod(shape)
 
     uniform_key, permute_key = jax.random.split(key)
@@ -243,8 +243,8 @@ class UnbalancedTimestepSampler(TimeSampler):
           f" sampler {self.key1=} and {self.key2=}."
       )
 
-    shape1 = utils.get_broadcastable_shape(data_spec[self.key1].shape, (0,))
-    shape2 = utils.get_broadcastable_shape(data_spec[self.key2].shape, (0,))
+    shape1 = jax_helpers.get_broadcastable_shape(data_spec[self.key1].shape, (0,))
+    shape2 = jax_helpers.get_broadcastable_shape(data_spec[self.key2].shape, (0,))
 
     random_key1, random_key2, switch_key = jax.random.split(key, 3)
 
@@ -261,7 +261,7 @@ class UnbalancedTimestepSampler(TimeSampler):
     equal_mask = jax.random.bernoulli(
         switch_key, p=self.p_equal, shape=batch_shape
     )
-    equal_mask = utils.bcast_right(equal_mask, len(shape2))
-    f_for_g = utils.bcast_right(f.reshape(batch_shape), len(shape2))
+    equal_mask = jax_helpers.bcast_right(equal_mask, len(shape2))
+    f_for_g = jax_helpers.bcast_right(f.reshape(batch_shape), len(shape2))
     g = jax.lax.select(equal_mask, 1 - f_for_g, g)
     return {self.key1: f, self.key2: g}

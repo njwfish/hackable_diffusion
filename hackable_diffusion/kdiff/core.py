@@ -96,7 +96,7 @@ class Diffusion(nn.Module, kw_only=True):
       the input data.
     time_sampler: The time sampler to use for sampling timesteps. In the
       simplest case this can just be a
-      `UniformTimeSampler(span=hd.utils.SafeSpan(safety_epsilon=1e-4))`.
+      `UniformTimeSampler(span=hd.jax_helpers.SafeSpan(safety_epsilon=1e-4))`.
   """
 
   network: nn.Module

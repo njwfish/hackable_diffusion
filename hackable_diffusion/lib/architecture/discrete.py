@@ -18,7 +18,7 @@ from typing import Protocol
 import einops
 from flax import linen as nn
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.architecture import arch_typing
 import jax.numpy as jnp
 import kauldron.ktyping as kt
@@ -229,5 +229,5 @@ class ConditionalDiscreteBackbone(nn.Module, ConditionalBackbone):
 
     output = self.token_projector(backbone_outputs, is_training=is_training)
 
-    output = utils.optional_bf16_to_fp32(output)
+    output = jax_helpers.optional_bf16_to_fp32(output)
     return output

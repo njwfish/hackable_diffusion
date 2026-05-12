@@ -17,7 +17,7 @@
 import dataclasses
 from typing import Protocol
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 import jax
 import jax.numpy as jnp
 import kauldron.ktyping as kt
@@ -112,7 +112,7 @@ class LimitedIntervalGuidanceFn(GuidanceFn):
   ) -> TargetInfoTree:
     """Limited interval guidance function."""
     del conditioning  # unused
-    time = utils.bcast_right(time, xt.ndim)
+    time = jax_helpers.bcast_right(time, xt.ndim)
 
     is_in_interval = jnp.logical_and(time >= self.lower, time <= self.upper)
     local_guidance = jnp.where(

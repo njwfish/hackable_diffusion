@@ -14,7 +14,7 @@
 
 """Test for time sampling."""
 
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.training import time_sampling
 import jax
 import jax.numpy as jnp
@@ -58,7 +58,7 @@ class TimeSamplersTest(parameterized.TestCase):
 
     # Test with different time_range
     sampler = sampler_cls(
-        span=utils.SafeSpan(_minval=0.2, _maxval=0.8, safety_epsilon=1e-6)
+        span=jax_helpers.SafeSpan(_minval=0.2, _maxval=0.8, safety_epsilon=1e-6)
     )
     time = sampler(key, data_shape)
     self.assertEqual(time.shape, (2, 1, 1))
@@ -80,7 +80,7 @@ class TimeSamplersTest(parameterized.TestCase):
       ),
   )
   def test_from_safety_epsilon(self, sampler_cls):
-    sampler = sampler_cls(span=utils.SafeSpan(safety_epsilon=0.4))
+    sampler = sampler_cls(span=jax_helpers.SafeSpan(safety_epsilon=0.4))
     data_shape = jnp.zeros((100, 2, 3))
     key = jax.random.PRNGKey(0)
     time = sampler(key, data_shape)

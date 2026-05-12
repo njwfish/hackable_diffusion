@@ -19,7 +19,7 @@ from typing import Any
 
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import manifolds
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import base
 from hackable_diffusion.lib.corruption import schedules
 import kauldron.ktyping as kt
@@ -63,8 +63,8 @@ class RiemannianProcess(base.CorruptionProcess):
     x1 = self.sample_from_invariant(key, data_spec=x0)
 
     # Evaluate schedule: alpha(t) is the geodesic interpolation parameter.
-    alpha_t = utils.bcast_right(self.schedule.alpha(time), x0.ndim)
-    alpha_dot_t = utils.bcast_right(self.schedule.alpha_dot(time), x0.ndim)
+    alpha_t = jax_helpers.bcast_right(self.schedule.alpha(time), x0.ndim)
+    alpha_dot_t = jax_helpers.bcast_right(self.schedule.alpha_dot(time), x0.ndim)
 
     # x_t = geodesic(x1, x0, alpha(t)).
     xt = manifolds.geodesic(self.manifold, x=x1, y=x0, t=alpha_t)

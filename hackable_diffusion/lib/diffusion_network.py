@@ -18,7 +18,7 @@ import dataclasses
 from typing import Callable, Protocol, cast
 import flax.linen as nn
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import conditioning_encoder
 from hackable_diffusion.lib.corruption import discrete
@@ -132,13 +132,13 @@ class DiffusionNetwork(nn.Module, BaseDiffusionNetwork):
       is_training: bool = False,
   ) -> PyTree:
     """Initializes the variables of the model from shapes."""
-    dummy_xt = utils.get_dummy_batch_fixed_dtype(
+    dummy_xt = jax_helpers.get_dummy_batch_fixed_dtype(
         input_shape, dtype=self.data_dtype
     )
-    dummy_conditioning = utils.get_dummy_batch_fixed_dtype(
+    dummy_conditioning = jax_helpers.get_dummy_batch_fixed_dtype(
         conditioning_shape, dtype=jnp.float32
     )
-    dummy_time = utils.get_dummy_batch_fixed_dtype(
+    dummy_time = jax_helpers.get_dummy_batch_fixed_dtype(
         input_shape, only_first_axis=True, dtype=jnp.float32
     )
 
@@ -262,13 +262,13 @@ class SelfConditioningDiffusionNetwork(nn.Module, BaseDiffusionNetwork):
       is_training: bool = False,
   ) -> PyTree:
     """Initializes the variables of the model from shapes."""
-    dummy_xt = utils.get_dummy_batch_fixed_dtype(
+    dummy_xt = jax_helpers.get_dummy_batch_fixed_dtype(
         input_shape, dtype=self.data_dtype
     )
-    dummy_conditioning = utils.get_dummy_batch_fixed_dtype(
+    dummy_conditioning = jax_helpers.get_dummy_batch_fixed_dtype(
         conditioning_shape, dtype=jnp.float32
     )
-    dummy_time = utils.get_dummy_batch_fixed_dtype(
+    dummy_time = jax_helpers.get_dummy_batch_fixed_dtype(
         input_shape, only_first_axis=True, dtype=jnp.float32
     )
 
@@ -404,11 +404,11 @@ class MultiModalDiffusionNetwork(nn.Module, BaseDiffusionNetwork):
       key: PRNGKey,
       is_training: bool = False,
   ) -> PyTree:
-    dummy_xt = utils.get_dummy_batch(input_shape, dtype=self.data_dtype)
-    dummy_conditioning = utils.get_dummy_batch_fixed_dtype(
+    dummy_xt = jax_helpers.get_dummy_batch(input_shape, dtype=self.data_dtype)
+    dummy_conditioning = jax_helpers.get_dummy_batch_fixed_dtype(
         conditioning_shape, dtype=jnp.float32
     )
-    dummy_time = utils.get_dummy_batch_fixed_dtype(
+    dummy_time = jax_helpers.get_dummy_batch_fixed_dtype(
         input_shape, only_first_axis=True, dtype=jnp.float32
     )
 
@@ -431,7 +431,7 @@ class MultiModalDiffusionNetwork(nn.Module, BaseDiffusionNetwork):
       is_training: bool,
   ) -> TargetInfoTree:
     if self.time_rescaler is not None:
-      time_rescaled = utils.lenient_map(
+      time_rescaled = jax_helpers.lenient_map(
           lambda time, time_rescaler: time_rescaler(time)
           if time_rescaler is not None
           else time,
@@ -442,7 +442,7 @@ class MultiModalDiffusionNetwork(nn.Module, BaseDiffusionNetwork):
       time_rescaled = time
 
     if self.input_rescaler is not None:
-      xt_rescaled = utils.lenient_map(
+      xt_rescaled = jax_helpers.lenient_map(
           lambda time, xt, input_rescaler: input_rescaler(time, xt)
           if input_rescaler is not None
           else xt,
@@ -469,7 +469,7 @@ class MultiModalDiffusionNetwork(nn.Module, BaseDiffusionNetwork):
         is_training=is_training,
     )
 
-    outputs = utils.lenient_map(
+    outputs = jax_helpers.lenient_map(
         lambda backbone_output, prediction_type: {
             prediction_type: backbone_output
         },
@@ -517,7 +517,7 @@ class MagnitudeScheduleInputRescaler(InputRescaler):
     """Returns the inputs rescaled by the magnitude of the schedule."""
     alpha_t = self.schedule.alpha(time)
     sigma_t = self.schedule.sigma(time)
-    alpha_t = utils.bcast_right(alpha_t, inputs.ndim)
-    sigma_t = utils.bcast_right(sigma_t, inputs.ndim)
+    alpha_t = jax_helpers.bcast_right(alpha_t, inputs.ndim)
+    sigma_t = jax_helpers.bcast_right(sigma_t, inputs.ndim)
     magnitude = jnp.sqrt(jnp.square(alpha_t) + jnp.square(sigma_t))
     return inputs / magnitude

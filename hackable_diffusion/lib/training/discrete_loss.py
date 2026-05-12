@@ -16,7 +16,7 @@
 
 import dataclasses
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.training import base
 import jax.numpy as jnp
@@ -53,7 +53,7 @@ def compute_discrete_diffusion_loss(
   """Compute the discrete diffusion loss."""
 
   # The last dimension of preds and targets is a vocabulary dimension.
-  time = utils.bcast_right(time, targets['x0'].ndim)
+  time = jax_helpers.bcast_right(time, targets['x0'].ndim)
 
   bsz = time.shape[0]
 
@@ -93,7 +93,7 @@ def compute_discrete_diffusion_loss(
     )
   neg_xentropy = jnp.sum(neg_xentropy, axis=reduce_axes, keepdims=True)
   neg_xentropy = neg_xentropy / jnp.clip(denominator, min=1e-8)
-  neg_xentropy = utils.flatten_non_batch_dims(neg_xentropy)
+  neg_xentropy = jax_helpers.flatten_non_batch_dims(neg_xentropy)
 
   if neg_xentropy.shape != (bsz, 1):
     raise ValueError(
@@ -107,7 +107,7 @@ def compute_discrete_diffusion_loss(
         targets=targets,
         time=time,
     )
-    weight = utils.flatten_non_batch_dims(weight)
+    weight = jax_helpers.flatten_non_batch_dims(weight)
   else:
     # No weighting is applied.
     weight = 1.0
@@ -179,11 +179,11 @@ class MD4Loss(base.DiffusionLoss):
     ) -> TimeArray:
       """Weight function for the MD4 loss."""
       del preds  # Unused.
-      time = utils.bcast_right(time, targets['x0'].ndim)
+      time = jax_helpers.bcast_right(time, targets['x0'].ndim)
       alpha = schedule.alpha(time)
-      alpha_der = utils.egrad(schedule.alpha)(time)
-      alpha = utils.flatten_non_batch_dims(alpha)
-      alpha_der = utils.flatten_non_batch_dims(alpha_der)
+      alpha_der = jax_helpers.egrad(schedule.alpha)(time)
+      alpha = jax_helpers.flatten_non_batch_dims(alpha)
+      alpha_der = jax_helpers.flatten_non_batch_dims(alpha_der)
       weight = -1.0 * alpha_der / jnp.clip(1.0 - alpha, min=1e-12)
       return weight
 

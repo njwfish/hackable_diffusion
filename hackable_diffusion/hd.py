@@ -32,6 +32,6 @@ from hackable_diffusion.lib import manifolds
 from hackable_diffusion.lib import multimodal
 from hackable_diffusion.lib import sampling
 from hackable_diffusion.lib import training
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 
 # pylint: enable=g-importing-member, unused-import
