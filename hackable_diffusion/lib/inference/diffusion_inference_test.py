@@ -62,9 +62,9 @@ CONDITIONING_ENCODER = {
     ),
 }
 CONDITIONING_RULES = {
-    'time': arch_typing.ConditioningMechanism.ADAPTIVE_NORM,
-    'label_foo': arch_typing.ConditioningMechanism.ADAPTIVE_NORM,
-    'label_bar': arch_typing.ConditioningMechanism.CROSS_ATTENTION,
+    'time': 'adaptive_norm',
+    'label_foo': 'adaptive_norm',
+    'label_bar': 'cross_attention',
 }
 
 UNET_CONFIG = {

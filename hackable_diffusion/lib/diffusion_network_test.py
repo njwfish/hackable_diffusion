@@ -14,8 +14,6 @@
 
 """Tests for diffusion_network and its components."""
 
-from collections.abc import Mapping
-
 import chex
 from flax import linen as nn
 from hackable_diffusion.lib import diffusion_network
@@ -131,9 +129,9 @@ class DiffusionNetworkTest(parameterized.TestCase):
         },
         embedding_merging_method=arch_typing.EmbeddingMergeMethod.CONCAT,
         conditioning_rules={
-            'time': arch_typing.ConditioningMechanism.ADAPTIVE_NORM,
-            'label_foo': arch_typing.ConditioningMechanism.ADAPTIVE_NORM,
-            'label_bar': arch_typing.ConditioningMechanism.CROSS_ATTENTION,
+            'time': 'adaptive_norm',
+            'label_foo': 'adaptive_norm',
+            'label_bar': 'cross_attention',
         },
     )
     self.backbone = unet.Unet(**UNET_CONFIG)
@@ -273,9 +271,7 @@ class SelfConditioningBackbone(nn.Module, arch_typing.ConditionalBackbone):
   def __call__(
       self,
       x: arch_typing.DataTree,
-      conditioning_embeddings: Mapping[
-          arch_typing.ConditioningMechanism, Float['batch ...']
-      ],
+      conditioning_embeddings: arch_typing.ConditioningEmbeddings,
       is_training: bool,
   ) -> arch_typing.DataTree:
     return nn.Dense(features=self.num_classes)(x)
@@ -334,8 +330,8 @@ class SelfConditioningDiffusionNetworkTest(parameterized.TestCase):
         },
         embedding_merging_method=arch_typing.EmbeddingMergeMethod.CONCAT,
         conditioning_rules={
-            'time': arch_typing.ConditioningMechanism.ADAPTIVE_NORM,
-            'label': arch_typing.ConditioningMechanism.ADAPTIVE_NORM,
+            'time': 'adaptive_norm',
+            'label': 'adaptive_norm',
         },
     )
     self.backbone = SelfConditioningBackbone(
@@ -619,9 +615,9 @@ class MultiModalDiffusionNetworkTest(parameterized.TestCase):
         },
         embedding_merging_method=arch_typing.EmbeddingMergeMethod.CONCAT,
         conditioning_rules={
-            'time': arch_typing.ConditioningMechanism.ADAPTIVE_NORM,
-            'label_foo': arch_typing.ConditioningMechanism.ADAPTIVE_NORM,
-            'label_bar': arch_typing.ConditioningMechanism.CROSS_ATTENTION,
+            'time': 'adaptive_norm',
+            'label_foo': 'adaptive_norm',
+            'label_bar': 'cross_attention',
         },
     )
 
@@ -702,9 +698,9 @@ class NestedDiffusionInferenceTest(parameterized.TestCase):
         },
         embedding_merging_method=arch_typing.EmbeddingMergeMethod.CONCAT,
         conditioning_rules={
-            'time': arch_typing.ConditioningMechanism.ADAPTIVE_NORM,
-            'label_foo': arch_typing.ConditioningMechanism.ADAPTIVE_NORM,
-            'label_bar': arch_typing.ConditioningMechanism.CROSS_ATTENTION,
+            'time': 'adaptive_norm',
+            'label_foo': 'adaptive_norm',
+            'label_bar': 'cross_attention',
         },
     )
 

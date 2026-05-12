@@ -32,7 +32,7 @@ Float = hd_typing.Float
 Int = hd_typing.Int
 
 ConditionalBackbone = arch_typing.ConditionalBackbone
-ConditioningMechanism = arch_typing.ConditioningMechanism
+
 
 ################################################################################
 # MARK: Token Embedder
@@ -213,7 +213,7 @@ class ConditionalDiscreteBackbone(nn.Module, ConditionalBackbone):
   def __call__(
       self,
       x: Int['batch *other 1'],
-      conditioning_embeddings: dict[ConditioningMechanism, Float['batch ...']],
+      conditioning_embeddings: arch_typing.ConditioningEmbeddings,
       is_training: bool,
   ) -> Float['batch *other V']:
 

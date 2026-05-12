@@ -56,7 +56,7 @@ Float = hd_typing.Float
 Int = hd_typing.Int
 
 ConditionalBackbone = arch_typing.ConditionalBackbone
-ConditioningMechanism = arch_typing.ConditioningMechanism
+
 
 BaseProjector = discrete.BaseProjector
 
@@ -162,7 +162,7 @@ class ConditionalSimplicialBackbone(nn.Module, ConditionalBackbone):
   def __call__(
       self,
       x: Float['batch *other V'],
-      conditioning_embeddings: dict[ConditioningMechanism, Float['batch ...']],
+      conditioning_embeddings: arch_typing.ConditioningEmbeddings,
       is_training: bool,
   ) -> Float['batch *other V']:
 

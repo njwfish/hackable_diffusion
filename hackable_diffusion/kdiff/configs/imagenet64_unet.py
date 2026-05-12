@@ -65,8 +65,8 @@ def get_config():
       },
       embedding_merging_method=hd.architecture.EmbeddingMergeMethod.SUM,
       conditioning_rules={
-          "label": hd.architecture.ConditioningMechanism.ADAPTIVE_NORM,
-          "time": hd.architecture.ConditioningMechanism.ADAPTIVE_NORM,
+          "label": 'adaptive_norm',
+          "time": 'adaptive_norm',
       },
       conditioning_dropout_rate=0.1,
   )

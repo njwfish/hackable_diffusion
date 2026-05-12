@@ -40,7 +40,7 @@ Float = hd_typing.Float
 Num = hd_typing.Num
 
 
-ConditioningMechanism = arch_typing.ConditioningMechanism
+
 EmbeddingMergeMethod = arch_typing.EmbeddingMergeMethod
 
 ################################################################################
@@ -76,7 +76,7 @@ class BaseConditioningEncoder(Protocol):
       time: hd_typing.TimeArray,
       conditioning: hd_typing.Conditioning | None,
       is_training: bool,
-  ) -> dict[ConditioningMechanism, Float['batch ...']]:
+  ) -> arch_typing.ConditioningEmbeddings:
     ...
 
 
@@ -365,9 +365,9 @@ class ConditioningEncoder(nn.Module, BaseConditioningEncoder):
         ),
         embedding_merging_method=EmbeddingMergeMethod.SUM,
         conditioning_rules=dict(
-            label_foo =ConditioningMechanism.ADAPTIVE_NORM,
-            label_bar=ConditioningMechanism.CROSS_ATTENTION,
-            time=ConditioningMechanism.ADAPTIVE_NORM,
+            label_foo ='adaptive_norm',
+            label_bar='cross_attention',
+            time='adaptive_norm',
         ),
     )
     ```
@@ -392,7 +392,7 @@ class ConditioningEncoder(nn.Module, BaseConditioningEncoder):
   time_embedder: BaseTimeEmbedder
   conditioning_embedders: dict[str, BaseEmbedder]
   embedding_merging_method: EmbeddingMergeMethod
-  conditioning_rules: dict[str, ConditioningMechanism]
+  conditioning_rules: arch_typing.ConditioningEmbeddings
   conditioning_dropout_rate: float = 0.0
 
   def setup(self):
@@ -427,7 +427,7 @@ class ConditioningEncoder(nn.Module, BaseConditioningEncoder):
       time: hd_typing.TimeTree,
       conditioning: hd_typing.Conditioning | None,
       is_training: bool,
-  ) -> dict[ConditioningMechanism, Num['batch ...']]:
+  ) -> arch_typing.ConditioningEmbeddings:
     """Encodes and combines time and conditioning signals.
 
     The output is a dictionary where keys are the embedding mechanisms specified

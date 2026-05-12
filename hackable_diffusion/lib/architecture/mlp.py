@@ -37,7 +37,7 @@ Float = hd_typing.Float
 DataArray = hd_typing.DataArray
 
 ConditionalBackbone = arch_typing.ConditionalBackbone
-ConditioningMechanism = arch_typing.ConditioningMechanism
+
 
 ################################################################################
 # MARK: ConditionalMLP
@@ -68,7 +68,7 @@ class ConditionalMLP(nn.Module, ConditionalBackbone):
   zero_init_output: bool
   dropout_rate: float
   conditioning_mechanism: Literal[
-      ConditioningMechanism.SUM, ConditioningMechanism.CONCATENATE
+      'sum', 'concatenate'
   ]
   dtype: DType = jnp.float32
 
@@ -77,7 +77,7 @@ class ConditionalMLP(nn.Module, ConditionalBackbone):
   def __call__(
       self,
       x: DataArray,
-      conditioning_embeddings: dict[ConditioningMechanism, Float['batch ...']],
+      conditioning_embeddings: arch_typing.ConditioningEmbeddings,
       *,
       is_training: bool,
   ) -> DataArray:
@@ -100,7 +100,7 @@ class ConditionalMLP(nn.Module, ConditionalBackbone):
     c_emb = conditioning_embeddings.get(self.conditioning_mechanism)
     if c_emb is None:
       raise ValueError('Conditioning embeddings are not provided.')
-    if self.conditioning_mechanism == ConditioningMechanism.SUM:
+    if self.conditioning_mechanism == 'sum':
       # Since the conditioning embedding may not have the same dimension as
       # `x_emb`, we project it to the same size as `x_emb`.
       c_emb = nn.Dense(
@@ -109,7 +109,7 @@ class ConditionalMLP(nn.Module, ConditionalBackbone):
           name='Dense_Projection_Conditioning',
       )(c_emb)
       emb = c_emb + x_emb
-    elif self.conditioning_mechanism == ConditioningMechanism.CONCATENATE:
+    elif self.conditioning_mechanism == 'concatenate':
       emb = jnp.concatenate((c_emb, x_emb), axis=-1)
     else:
       raise ValueError(

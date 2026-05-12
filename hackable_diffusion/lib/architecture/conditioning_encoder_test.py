@@ -26,7 +26,7 @@ from absl.testing import parameterized
 ################################################################################
 
 EmbeddingMergeMethod = arch_typing.EmbeddingMergeMethod
-ConditioningMechanism = arch_typing.ConditioningMechanism
+
 
 ################################################################################
 # MARK: Tests
@@ -39,13 +39,13 @@ class EncodeConditioningTest(parameterized.TestCase):
       (
           'test1',
           EmbeddingMergeMethod.SUM,
-          ConditioningMechanism.ADAPTIVE_NORM,
+          'adaptive_norm',
           True,
       ),
       (
           'test2',
           EmbeddingMergeMethod.CONCAT,
-          ConditioningMechanism.CROSS_ATTENTION,
+          'cross_attention',
           False,
       ),
   )
@@ -110,13 +110,13 @@ class EncodeConditioningTest(parameterized.TestCase):
       (
           'test1',
           EmbeddingMergeMethod.SUM,
-          ConditioningMechanism.ADAPTIVE_NORM,
+          'adaptive_norm',
           True,
       ),
       (
           'test2',
           EmbeddingMergeMethod.CONCAT,
-          ConditioningMechanism.CROSS_ATTENTION,
+          'cross_attention',
           False,
       ),
   )
@@ -182,13 +182,13 @@ class EncodeConditioningTest(parameterized.TestCase):
       (
           'test1',
           EmbeddingMergeMethod.SUM,
-          ConditioningMechanism.ADAPTIVE_NORM,
+          'adaptive_norm',
           True,
       ),
       (
           'test2',
           EmbeddingMergeMethod.CONCAT,
-          ConditioningMechanism.CROSS_ATTENTION,
+          'cross_attention',
           False,
       ),
   )
@@ -257,13 +257,13 @@ class EncodeConditioningTest(parameterized.TestCase):
       (
           'test1',
           EmbeddingMergeMethod.SUM,
-          ConditioningMechanism.ADAPTIVE_NORM,
+          'adaptive_norm',
           True,
       ),
       (
           'test2',
           EmbeddingMergeMethod.CONCAT,
-          ConditioningMechanism.CROSS_ATTENTION,
+          'cross_attention',
           False,
       ),
   )
@@ -330,8 +330,8 @@ class EncodeConditioningTest(parameterized.TestCase):
     )
     conditioning_encoders = {'image': image_selector}
     conditioning_rules = {
-        'time': ConditioningMechanism.ADAPTIVE_NORM,
-        'image': ConditioningMechanism.CROSS_ATTENTION,
+        'time': 'adaptive_norm',
+        'image': 'cross_attention',
     }
     embedding_merging_method = EmbeddingMergeMethod.CONCAT
 
@@ -353,18 +353,18 @@ class EncodeConditioningTest(parameterized.TestCase):
         {'params': params}, t, c, is_training=False, rngs={'dropout': rng}
     )
 
-    self.assertIn(ConditioningMechanism.CROSS_ATTENTION, output)
+    self.assertIn('cross_attention', output)
     self.assertEqual(
-        output[ConditioningMechanism.CROSS_ATTENTION].shape,
+        output['cross_attention'].shape,
         (batch_size,) + image_shape,
     )
     self.assertTrue(
-        jnp.all(output[ConditioningMechanism.CROSS_ATTENTION] == c['image'])
+        jnp.all(output['cross_attention'] == c['image'])
     )
 
-    self.assertIn(ConditioningMechanism.ADAPTIVE_NORM, output)
+    self.assertIn('adaptive_norm', output)
     self.assertEqual(
-        output[ConditioningMechanism.ADAPTIVE_NORM].shape,
+        output['adaptive_norm'].shape,
         (batch_size, num_features),
     )
 
@@ -384,8 +384,8 @@ class EncodeConditioningTest(parameterized.TestCase):
     )
     conditioning_encoders = {'image': image_selector}
     conditioning_rules = {
-        'time': ConditioningMechanism.ADAPTIVE_NORM,
-        'image': ConditioningMechanism.CROSS_ATTENTION,
+        'time': 'adaptive_norm',
+        'image': 'cross_attention',
     }
     embedding_merging_method = EmbeddingMergeMethod.CONCAT
 
@@ -411,7 +411,7 @@ class EncodeConditioningTest(parameterized.TestCase):
       (
           'test1',
           EmbeddingMergeMethod.CONCAT,
-          ConditioningMechanism.CROSS_ATTENTION,
+          'cross_attention',
           8,
           16,
           False,
@@ -475,7 +475,7 @@ class EncodeConditioningTest(parameterized.TestCase):
       (
           'test1',
           EmbeddingMergeMethod.CONCAT,
-          ConditioningMechanism.CROSS_ATTENTION,
+          'cross_attention',
           8,
           9,
           10,
@@ -484,7 +484,7 @@ class EncodeConditioningTest(parameterized.TestCase):
       (
           'test2',
           EmbeddingMergeMethod.CONCAT,
-          ConditioningMechanism.CROSS_ATTENTION,
+          'cross_attention',
           8,
           9,
           10,
@@ -567,7 +567,7 @@ class EncodeConditioningTest(parameterized.TestCase):
       (
           'test1',
           EmbeddingMergeMethod.CONCAT,
-          ConditioningMechanism.CROSS_ATTENTION,
+          'cross_attention',
           8,
           9,
           10,
@@ -576,7 +576,7 @@ class EncodeConditioningTest(parameterized.TestCase):
       (
           'test2',
           EmbeddingMergeMethod.CONCAT,
-          ConditioningMechanism.CROSS_ATTENTION,
+          'cross_attention',
           8,
           9,
           10,
@@ -668,8 +668,8 @@ class EncodeConditioningTest(parameterized.TestCase):
         conditioning_embedders=conditioning_encoders,
         embedding_merging_method=EmbeddingMergeMethod.SUM,
         conditioning_rules={
-            'time': ConditioningMechanism.ADAPTIVE_NORM,
-            'label': ConditioningMechanism.ADAPTIVE_NORM,
+            'time': 'adaptive_norm',
+            'label': 'adaptive_norm',
         },
         conditioning_dropout_rate=1.0,  # Drop all conditioning
     )

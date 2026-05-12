@@ -31,7 +31,7 @@ from absl.testing import parameterized
 # MARK: Type Aliases
 ################################################################################
 
-ConditioningMechanism = arch_typing.ConditioningMechanism
+
 
 ################################################################################
 # MARK: Tests
@@ -50,15 +50,15 @@ class ConditionalDiscreteBackboneTest(parameterized.TestCase):
     self.cond_dim = 16
     self.discrete_x = jnp.ones((self.batch_size, *self.shape), dtype=jnp.int32)
     self.concatenate_emb = {
-        ConditioningMechanism.CONCATENATE: jnp.ones(
+        'concatenate': jnp.ones(
             (self.batch_size, self.cond_dim)
         ),
     }
     self.sum_emb = {
-        ConditioningMechanism.SUM: jnp.ones((self.batch_size, self.cond_dim)),
+        'sum': jnp.ones((self.batch_size, self.cond_dim)),
     }
     self.adaptive_norm_emb = {
-        ConditioningMechanism.ADAPTIVE_NORM: jnp.ones(
+        'adaptive_norm': jnp.ones(
             (self.batch_size, self.cond_dim)
         ),
     }
@@ -68,7 +68,7 @@ class ConditionalDiscreteBackboneTest(parameterized.TestCase):
         activation='relu',
         dropout_rate=0.0,
         zero_init_output=False,
-        conditioning_mechanism=ConditioningMechanism.CONCATENATE,
+        conditioning_mechanism='concatenate',
     )
     self.unet_module = unet.Unet(
         base_channels=8,

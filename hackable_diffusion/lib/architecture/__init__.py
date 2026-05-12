@@ -16,7 +16,6 @@
 
 # pylint: disable=g-importing-member
 from hackable_diffusion.lib.architecture.arch_typing import ConditionalBackbone
-from hackable_diffusion.lib.architecture.arch_typing import ConditioningMechanism
 from hackable_diffusion.lib.architecture.arch_typing import DownsampleType
 from hackable_diffusion.lib.architecture.arch_typing import EmbeddingMergeMethod
 from hackable_diffusion.lib.architecture.arch_typing import NormalizationType

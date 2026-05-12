@@ -38,7 +38,7 @@ UpsampleType = arch_typing.UpsampleType
 RoPEPositionType = arch_typing.RoPEPositionType
 SkipConnectionMethod = arch_typing.SkipConnectionMethod
 ConditionalBackbone = arch_typing.ConditionalBackbone
-ConditioningMechanism = arch_typing.ConditioningMechanism
+
 
 ################################################################################
 # MARK: Unet
@@ -163,21 +163,21 @@ class Unet(nn.Module, ConditionalBackbone):
   def __call__(
       self,
       x: Float["batch height width channels"],
-      conditioning_embeddings: dict[ConditioningMechanism, Float["batch ..."]],
+      conditioning_embeddings: arch_typing.ConditioningEmbeddings,
       *,
       is_training: bool,
   ) -> Float["batch height width output_channels"]:
 
     # Extract conditioning embeddings to use with adaptive normalization.
     adaptive_norm_emb = conditioning_embeddings.get(
-        ConditioningMechanism.ADAPTIVE_NORM
+        'adaptive_norm'
     )
     if adaptive_norm_emb is None:
       raise ValueError("adaptive_norm_emb must be provided.")
 
     # Extract conditioning embeddings to use with cross attention.
     cross_attention_emb = conditioning_embeddings.get(
-        ConditioningMechanism.CROSS_ATTENTION
+        'cross_attention'
     )
     if any(self.cross_attention_bool) and cross_attention_emb is None:
       raise ValueError(
