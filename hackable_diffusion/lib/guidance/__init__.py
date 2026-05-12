@@ -17,19 +17,27 @@
 Seven callable Protocols (``DenoiserFn``, ``PosteriorCloudFn``,
 ``ForwardFn``, ``PosteriorCovarianceFn``, ``CorrectionFn``,
 ``TwistFn``, ``ResamplerFn``) plus the step-level ``StepKernel``
-compose inside :class:`ConditionalDiffusionSampler` to express Pi-GDM
-(Kalman), DPS, TDS, MCGDiff, CFG, classifier guidance, iterated
-Pi-GDM, posterior-sample SMC, projection guidance, and other
-posterior-sampling methods as configurations.
+compose inside :class:`ConditionalDiffusionSampler` to express Pi-GDM,
+DPS, TDS, MCGDiff, CFG, classifier guidance, iterated Pi-GDM,
+posterior-sample SMC, projection guidance, and other posterior-
+sampling methods as configurations.
 
 ``DenoiserFn`` and ``PosteriorCloudFn`` are the two interfaces a
 twist or correction can read from: ``DenoiserFn`` is one prediction
 ``xt -> xhat_0(xt)`` (R=1); ``PosteriorCloudFn`` is the cloud-valued
 analogue ``xt -> [B, R, *x0_shape]`` built by
 :func:`make_posterior_cloud_fn`.  Cloud-aware twists (e.g. the SMC
-potential estimator ``\\hat h_k^R = (1/R) \\sum L_y(x_0^r)``)
-consume the cloud; the existing single-sample twists consume the
-denoiser.
+potential estimator ``\\hat h_k^R = (1/R) \\sum L_y(x_0^r)``) consume
+the cloud; the existing single-sample twists consume the denoiser.
+
+Hard linear observations / clean-endpoint conditioning (inpainting,
+exact-projection super-resolution, any ``A x_0 = y`` constraint) are
+handled by :class:`KalmanCorrectionFn` with ``observation_noise = 0``
+and ``solver="pinv"``.  Setting the posterior covariance to
+``Cov = I`` -- via ``IsotropicPosteriorCovarianceFn(scale_fn=unit_scale)``
+-- collapses the update to the pure affine projection
+``x0 + A^T (A A^T)^+ (y - A x0)``, the elegant clean-endpoint form.
+See :mod:`docs.composable_guidance` for a worked inpainting recipe.
 """
 
 from hackable_diffusion.lib.guidance.corrections import (
@@ -38,11 +46,8 @@ from hackable_diffusion.lib.guidance.corrections import (
     IteratedCorrectionFn,
     KalmanCorrectionFn,
     LogImportanceFn,
-    PrefactorFn,
     ProjectionCloudCorrectionFn,
     ProjectionFn,
-    dps_prefactor,
-    miyasawa_prefactor,
 )
 from hackable_diffusion.lib.guidance.denoisers import (
     LinearBlendDenoiserFn,
@@ -59,8 +64,6 @@ from hackable_diffusion.lib.guidance.forward_ops import (
     SubsampleForwardFn,
 )
 from hackable_diffusion.lib.guidance.gaussian_conditioning import (
-    PosteriorPredictiveGaussianTwistFn,
-    PseudoInverseKalmanCorrectionFn,
     psd_pinv_solve,
     singular_gaussian_logpdf,
 )
@@ -78,6 +81,7 @@ from hackable_diffusion.lib.guidance.posterior_covariance import (
     ScaleFn,
     TweediePosteriorCovarianceFn,
     miyasawa_scale,
+    unit_scale,
 )
 from hackable_diffusion.lib.guidance.protocols import (
     CorrectionFn,
@@ -106,6 +110,8 @@ from hackable_diffusion.lib.guidance.twists import (
     EnergyTwistFn,
     GaussianLikelihoodTwistFn,
     LogProbFn,
+    NormResidualTwistFn,
+    PosteriorPredictiveGaussianTwistFn,
     self_normalized_posterior_expectation,
 )
 from hackable_diffusion.lib.guidance.utils import (
@@ -152,14 +158,13 @@ __all__ = [
     "LowRankTweediePosteriorCovarianceFn",
     "MultinomialResamplerFn",
     "NoResamplerFn",
+    "NormResidualTwistFn",
     "PCAPosteriorCovarianceFn",
     "PosteriorCloudFn",
     "PosteriorCovarianceFn",
     "PosteriorPredictiveGaussianTwistFn",
-    "PrefactorFn",
     "ProjectionCloudCorrectionFn",
     "ProjectionFn",
-    "PseudoInverseKalmanCorrectionFn",
     "ResamplerFn",
     "ScaleFn",
     "SimplicialStepKernel",
@@ -174,18 +179,17 @@ __all__ = [
     "batched_minres",
     "call_inference_fn",
     "cfg_denoiser_fn",
-    "dps_prefactor",
     "linear_adjoint",
     "make_cfg_inference_fn",
     "make_denoiser_fn",
     "make_posterior_cloud_fn",
-    "miyasawa_prefactor",
     "miyasawa_scale",
     "normalised_weights",
     "proposal_log_ratio",
     "psd_pinv_solve",
-    "self_normalized_posterior_expectation",
     "scalar_alpha",
     "scalar_alpha_sigma",
+    "self_normalized_posterior_expectation",
     "singular_gaussian_logpdf",
+    "unit_scale",
 ]

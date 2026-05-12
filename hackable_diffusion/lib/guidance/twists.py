@@ -19,33 +19,46 @@ log-density at ``xhat_0(xt) = denoiser_fn(xt)``.  No raw
 ``inference_fn``, ``corruption_process``, ``rng``, or ``conditioning``
 plumbing -- the closure lives inside ``denoiser_fn``.
 
-- :class:`GaussianLikelihoodTwistFn`: linear-Gaussian observations
-  ``y = A x_0 + N(0, sigma_y^2 I)``.
-- :class:`DiscreteCompositionTwistFn` / its multi-head variant:
-  multinomial observations on a simplex.
+Gaussian-likelihood family (Euclidean ``x_0``, linear observation):
+
+- :class:`GaussianLikelihoodTwistFn`: ``log N(y; A xhat_0, sigma_y^2 I)``
+  -- the noise-magnitude is fixed at ``sigma_y``.
+- :class:`PosteriorPredictiveGaussianTwistFn`: integrates over the
+  approximate clean posterior ``X_0 | X_t`` -- the noise-magnitude
+  is ``A Cov(x_0|xt) A^T + sigma_y^2 I``.  Right twist to pair with
+  :class:`KalmanCorrectionFn` for a posterior-predictive Pi-GDM step.
+- :class:`NormResidualTwistFn`: ``-||y - A xhat_0||`` (smoothed L2).
+  Gradient through this gives the canonical Chung et al. 2023 DPS
+  direction -- pair with :class:`GradientCorrectionFn` for the
+  Tweedie-scaled DPS update.
+
+Discrete / simplicial:
+
+- :class:`DiscreteCompositionTwistFn` / its multi-head variant.
+
+Generic (any modality, user-supplied callable):
+
 - :class:`ClassifierTwistFn`: arbitrary ``log p(y | x_0)``.
 - :class:`EnergyTwistFn`: arbitrary scalar energy ``E(x_0)`` at
   inverse temperature ``1/T``.
-
-Modality compatibility
-----------------------
-- ``GaussianLikelihoodTwistFn``: Euclidean-x0 (Gaussian ODE/SDE,
-  posterior-sampler).  Not meaningful on a simplex.
-- ``DiscreteCompositionTwistFn`` / multi-head: simplicial only.
-- ``ClassifierTwistFn`` / ``EnergyTwistFn``: universal -- the caller
-  decides what ``log_prob_fn`` / ``energy_fn`` accepts as input.
 """
 
 from __future__ import annotations
 
 import dataclasses
-from typing import Callable
+from typing import Any, Callable
 
 import jax
 import jax.numpy as jnp
 
+from hackable_diffusion.lib.guidance.gaussian_conditioning import (
+    _broadcast_observation,
+    _flatten_observation,
+    _materialize_observation_covariance,
+    singular_gaussian_logpdf,
+)
 from hackable_diffusion.lib.guidance.protocols import (
-    DenoiserFn, ForwardFn, PosteriorCloudFn, TwistFn,
+    DenoiserFn, ForwardFn, PosteriorCloudFn, PosteriorCovarianceFn, TwistFn,
 )
 
 
@@ -71,19 +84,101 @@ class GaussianLikelihoodTwistFn(TwistFn):
   observation_noise: float = 0.1
 
   def __call__(
-      self,
-      xt: jax.Array,
-      time: jax.Array,
-      *,
-      denoiser_fn: DenoiserFn,
+      self, xt: jax.Array, time: jax.Array, *, denoiser_fn: DenoiserFn,
       cloud_fn: PosteriorCloudFn | None = None,
   ) -> jax.Array:
-    del time, cloud_fn
+    del time
     x0 = denoiser_fn(xt)
     residual = self.observation - self.forward_fn.forward(x0)
     flat = residual.reshape(residual.shape[0], -1)
     sigma2 = jnp.maximum(float(self.observation_noise) ** 2, 1e-30)
     return -0.5 * jnp.sum(flat ** 2, axis=-1) / sigma2
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class PosteriorPredictiveGaussianTwistFn(TwistFn):
+  """Posterior-predictive Gaussian twist ``log p(y | x_t)``.
+
+  Unlike :class:`GaussianLikelihoodTwistFn`, this twist integrates over
+  the approximate clean posterior ``X_0 | X_t``.  For
+  ``observation_noise = 0`` it evaluates the singular Gaussian density
+  on the row-space of ``A C_t A^T``.  For ``observation_noise > 0`` it
+  evaluates the noisy predictive model ``Y = A X_0 + eps``.
+  """
+
+  observation: jax.Array
+  forward_fn: ForwardFn
+  posterior_covariance_fn: PosteriorCovarianceFn
+  schedule: Any
+  observation_noise: float = 0.0
+  pinv_rtol: float = 1e-5
+  pinv_atol: float = 1e-8
+  enforce_support: bool = True
+  support_atol: float = 1e-5
+  support_rtol: float = 1e-4
+
+  def __call__(
+      self, xt: jax.Array, time: jax.Array, *, denoiser_fn: DenoiserFn,
+      cloud_fn: PosteriorCloudFn | None = None,
+  ) -> jax.Array:
+    x0 = denoiser_fn(xt)
+    cov_matvec = self.posterior_covariance_fn(
+        xt=xt, time=time, schedule=self.schedule, denoiser_fn=denoiser_fn,
+    )
+    predicted = self.forward_fn.forward(x0)
+    target = _broadcast_observation(self.observation, predicted)
+    residual = _flatten_observation(target - predicted)
+    system, _, _ = _materialize_observation_covariance(
+        forward_fn=self.forward_fn,
+        cov_matvec=cov_matvec,
+        x0=x0,
+    )
+    sigma_y2 = float(self.observation_noise) ** 2
+    if sigma_y2 > 0.0:
+      eye = jnp.eye(system.shape[-1], dtype=system.dtype)
+      system = system + sigma_y2 * eye[None, :, :]
+    return singular_gaussian_logpdf(
+        residual,
+        system,
+        rtol=float(self.pinv_rtol),
+        atol=float(self.pinv_atol),
+        enforce_support=bool(self.enforce_support) and sigma_y2 == 0.0,
+        support_atol=float(self.support_atol),
+        support_rtol=float(self.support_rtol),
+    )
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class NormResidualTwistFn(TwistFn):
+  """Smoothed L2 residual: ``log psi(xt) = -sqrt(||y - A xhat_0||^2 + eps^2)``.
+
+  The (negative) smoothed residual norm.  Gradient ``grad_{xt} log psi``
+  is the unit residual direction pulled back through the denoiser
+  Jacobian -- the direction the canonical DPS update of Chung et al.
+  (2023) descends.  Pair with :class:`GradientCorrectionFn` for the
+  Tweedie-scaled DPS step.
+
+  The ``eps`` smoothing keeps the gradient finite at the constraint
+  surface itself (``||r|| = 0``, where the bare norm is non-
+  differentiable) -- without it the gradient flips sign every time the
+  trajectory crosses the surface and produces NaNs.
+  """
+
+  observation: jax.Array
+  forward_fn: ForwardFn
+  eps: float = 1e-8
+
+  def __call__(
+      self, xt: jax.Array, time: jax.Array, *, denoiser_fn: DenoiserFn,
+      cloud_fn: PosteriorCloudFn | None = None,
+  ) -> jax.Array:
+    del time
+    x0 = denoiser_fn(xt)
+    predicted = self.forward_fn.forward(x0)
+    target = _broadcast_observation(self.observation, predicted)
+    flat = _flatten_observation(target - predicted)
+    sq = jnp.sum(flat ** 2, axis=-1)
+    return -jnp.sqrt(sq + float(self.eps) ** 2)
 
 
 ################################################################################
@@ -128,14 +223,10 @@ class DiscreteCompositionTwistFn(TwistFn):
   softness: float = 1.0
 
   def __call__(
-      self,
-      xt: jax.Array,
-      time: jax.Array,
-      *,
-      denoiser_fn: DenoiserFn,
+      self, xt: jax.Array, time: jax.Array, *, denoiser_fn: DenoiserFn,
       cloud_fn: PosteriorCloudFn | None = None,
   ) -> jax.Array:
-    del time, cloud_fn
+    del time
     probs = denoiser_fn(xt)
     return _categorical_block_log_likelihood(
         probs, self.forward_fn, self.observation,
@@ -162,14 +253,10 @@ class DiscreteMultiHeadCompositionTwistFn(TwistFn):
       )
 
   def __call__(
-      self,
-      xt: jax.Array,
-      time: jax.Array,
-      *,
-      denoiser_fn: DenoiserFn,
+      self, xt: jax.Array, time: jax.Array, *, denoiser_fn: DenoiserFn,
       cloud_fn: PosteriorCloudFn | None = None,
   ) -> jax.Array:
-    del time, cloud_fn
+    del time
     probs = denoiser_fn(xt)
     total = jnp.zeros(probs.shape[0], dtype=probs.dtype)
     for obs, fwd in zip(self.observations, self.forward_fns):
@@ -203,14 +290,10 @@ class ClassifierTwistFn(TwistFn):
   log_prob_fn: LogProbFn
 
   def __call__(
-      self,
-      xt: jax.Array,
-      time: jax.Array,
-      *,
-      denoiser_fn: DenoiserFn,
+      self, xt: jax.Array, time: jax.Array, *, denoiser_fn: DenoiserFn,
       cloud_fn: PosteriorCloudFn | None = None,
   ) -> jax.Array:
-    del time, cloud_fn
+    del time
     return self.log_prob_fn(denoiser_fn(xt))
 
 
@@ -226,14 +309,10 @@ class EnergyTwistFn(TwistFn):
   temperature: float = 1.0
 
   def __call__(
-      self,
-      xt: jax.Array,
-      time: jax.Array,
-      *,
-      denoiser_fn: DenoiserFn,
+      self, xt: jax.Array, time: jax.Array, *, denoiser_fn: DenoiserFn,
       cloud_fn: PosteriorCloudFn | None = None,
   ) -> jax.Array:
-    del time, cloud_fn
+    del time
     return -self.energy_fn(denoiser_fn(xt)) / float(self.temperature)
 
 
@@ -332,7 +411,6 @@ def self_normalized_posterior_expectation(
   f_values = jax.vmap(f, in_axes=1, out_axes=1)(cloud)        # [B, R, ...]
   log_L_values = jax.vmap(log_L, in_axes=1, out_axes=1)(cloud)  # [B, R]
   weights = jax.nn.softmax(log_L_values, axis=-1)             # [B, R]
-  # Broadcast weights over f's trailing axes.
   weight_shape = weights.shape + (1,) * (f_values.ndim - weights.ndim)
   weights_b = weights.reshape(weight_shape)
   return jnp.sum(weights_b * f_values, axis=1)                # [B, ...]

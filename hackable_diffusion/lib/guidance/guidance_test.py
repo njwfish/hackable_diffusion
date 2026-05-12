@@ -49,8 +49,6 @@ from hackable_diffusion.lib.guidance.corrections import (
     GradientCorrectionFn,
     IteratedCorrectionFn,
     KalmanCorrectionFn,
-    dps_prefactor,
-    miyasawa_prefactor,
 )
 from hackable_diffusion.lib.guidance.denoisers import (
     LinearBlendDenoiserFn,
@@ -64,10 +62,6 @@ from hackable_diffusion.lib.guidance.forward_ops import (
     InpaintingForwardFn,
     LinearForwardFn,
     SubsampleForwardFn,
-)
-from hackable_diffusion.lib.guidance.gaussian_conditioning import (
-    PosteriorPredictiveGaussianTwistFn,
-    PseudoInverseKalmanCorrectionFn,
 )
 from hackable_diffusion.lib.guidance.linalg import (
     batch_inner,
@@ -96,6 +90,7 @@ from hackable_diffusion.lib.guidance.twists import (
     ClassifierTwistFn,
     EnergyTwistFn,
     GaussianLikelihoodTwistFn,
+    PosteriorPredictiveGaussianTwistFn,
 )
 from hackable_diffusion.lib.guidance.utils import (
     accepts_rng_kwarg,
@@ -229,84 +224,48 @@ class UtilsTest(unittest.TestCase):
 class ResamplerTest(unittest.TestCase):
 
   def test_no_resampler_is_identity(self):
-    particles = jnp.arange(5, dtype=jnp.float64).reshape(5, 1)
     log_w = jnp.zeros(5)
-    p_out, w_out = NoResamplerFn()(
-        particles, log_w, rng=jax.random.PRNGKey(0),
-    )
-    self.assertTrue(bool(jnp.all(p_out == particles)))
+    indices, w_out = NoResamplerFn()(log_w, rng=jax.random.PRNGKey(0))
+    self.assertTrue(bool(jnp.all(indices == jnp.arange(5))))
     self.assertTrue(bool(jnp.all(w_out == log_w)))
 
   def test_systematic_resampler_preserves_count_and_equalises_weights(self):
     k = 32
-    particles = jnp.arange(k, dtype=jnp.float64).reshape(k, 1)
     log_w = jnp.zeros(k)
-    p_out, w_out = SystematicResamplerFn()(
-        particles, log_w, rng=jax.random.PRNGKey(0),
+    indices, w_out = SystematicResamplerFn()(
+        log_w, rng=jax.random.PRNGKey(0),
     )
-    self.assertEqual(p_out.shape, particles.shape)
+    self.assertEqual(indices.shape, (k,))
     self.assertTrue(jnp.allclose(w_out, w_out[0]))
 
   def test_multinomial_resampler_concentrates_on_heavy_particle(self):
     k = 1024
-    particles = jnp.arange(k, dtype=jnp.float64).reshape(k, 1)
     log_w = jnp.full((k,), -1e3)
     heavy = 500
     log_w = log_w.at[heavy].set(0.0)
-    p_out, _ = MultinomialResamplerFn()(
-        particles, log_w, rng=jax.random.PRNGKey(1),
-    )
-    frac_heavy = float(jnp.mean(p_out[:, 0] == heavy))
+    indices, _ = MultinomialResamplerFn()(log_w, rng=jax.random.PRNGKey(1))
+    frac_heavy = float(jnp.mean(indices == heavy))
     self.assertGreater(frac_heavy, 0.95)
 
   def test_ess_thresholded_triggers_below_threshold(self):
     k = 128
-    particles = jnp.arange(k, dtype=jnp.float64).reshape(k, 1)
     # One heavy particle => normalised ESS ≈ 1/k << 0.5.
     log_w = jnp.full((k,), -1e3).at[0].set(0.0)
     resampler = ESSThresholdedResamplerFn(
         base=SystematicResamplerFn(), threshold=0.5,
     )
-    p_out, _ = resampler(particles, log_w, rng=jax.random.PRNGKey(0))
-    self.assertTrue(bool(jnp.all(p_out == particles[:1])))
+    indices, _ = resampler(log_w, rng=jax.random.PRNGKey(0))
+    self.assertTrue(bool(jnp.all(indices == 0)))
 
   def test_ess_thresholded_skips_when_above_threshold(self):
     k = 64
-    particles = jnp.arange(k, dtype=jnp.float64).reshape(k, 1)
     log_w = jnp.zeros(k)  # uniform => normalised ESS = 1.0
     resampler = ESSThresholdedResamplerFn(
         base=SystematicResamplerFn(), threshold=0.5,
     )
-    p_out, w_out = resampler(particles, log_w, rng=jax.random.PRNGKey(0))
-    self.assertTrue(bool(jnp.all(p_out == particles)))
+    indices, w_out = resampler(log_w, rng=jax.random.PRNGKey(0))
+    self.assertTrue(bool(jnp.all(indices == jnp.arange(k))))
     self.assertTrue(bool(jnp.all(w_out == log_w)))
-
-
-################################################################################
-# Prefactors
-################################################################################
-
-
-class PrefactorTest(unittest.TestCase):
-
-  def test_miyasawa_is_sigma_squared_over_alpha(self):
-    alpha = jnp.asarray(0.5)
-    sigma = jnp.asarray(2.0)
-    p = miyasawa_prefactor(alpha=alpha, sigma=sigma, xt=None, x0=None)
-    self.assertAlmostEqual(float(p), 4.0 / 0.5, places=12)
-
-  def test_dps_is_inverse_residual_norm(self):
-    alpha = jnp.asarray(1.0)
-    sigma = jnp.asarray(1.0)
-    # residual = x0 - xt/alpha = x0. Per-row norms: [5, 1].
-    xt = jnp.zeros((2, 4), dtype=jnp.float64)
-    x0 = jnp.asarray(
-        [[3.0, 4.0, 0.0, 0.0], [1.0, 0.0, 0.0, 0.0]], dtype=jnp.float64,
-    )
-    p = dps_prefactor(alpha=alpha, sigma=sigma, xt=xt, x0=x0)
-    self.assertTrue(jnp.allclose(
-        p.squeeze(-1), jnp.asarray([1 / 5.0, 1.0]), atol=1e-6,
-    ))
 
 
 ################################################################################
@@ -416,9 +375,7 @@ class GradientCorrectionTest(unittest.TestCase):
     twist = GaussianLikelihoodTwistFn(
         observation=y, forward_fn=fwd, observation_noise=1.0,
     )
-    correction = GradientCorrectionFn(
-        twist=twist, strength=1.0, prefactor_fn=miyasawa_prefactor,
-    )
+    correction = GradientCorrectionFn(twist=twist, strength=1.0)
 
     xt = jnp.zeros((batch, n), dtype=jnp.float64)
     time = jnp.asarray([0.5], dtype=jnp.float64)
@@ -1140,7 +1097,7 @@ class KalmanCorrectionTest(unittest.TestCase):
     res_new = jnp.abs(fwd.forward(x0_new) - y)
     self.assertTrue(bool(jnp.all(res_new < res_old)))
 
-  def test_full_tweedie_default_solver_auto_selects_minres(self):
+  def test_full_tweedie_with_minres_reduces_residual(self):
     # Same indefinite-Jacobian setup as the explicit-MINRES test, but
     # leaving ``solver`` unset.  KalmanCorrectionFn should auto-pick
     # MINRES because TweediePosteriorCovarianceFn doesn't enforce PSD,
@@ -1163,9 +1120,9 @@ class KalmanCorrectionTest(unittest.TestCase):
         observation=y, forward_fn=fwd,
         posterior_covariance_fn=TweediePosteriorCovarianceFn(symmetrize=True),
         observation_noise=0.5, cg_max_iter=80, cg_tol=1e-10,
-        # solver intentionally omitted -- exercise the auto-select path.
+        solver="minres",
     )
-    self.assertIsNone(correction.solver)
+    self.assertEqual(correction.solver, "minres")
     xt = jnp.full((y.shape[0], n), 0.3, dtype=jnp.float64)
     time = jnp.asarray([0.5], dtype=jnp.float64)
     denoiser_fn = make_denoiser_fn(inference_fn, corruption, time=time)
@@ -1208,7 +1165,13 @@ class KalmanCorrectionTest(unittest.TestCase):
     self.assertTrue(bool(jnp.all(res_new < res_old)))
 
 
-class PseudoInverseKalmanCorrectionTest(unittest.TestCase):
+class KalmanCorrectionPinvTest(unittest.TestCase):
+  """``KalmanCorrectionFn(solver="pinv")`` -- hard / row-space update.
+
+  The pinv path materialises ``A C A^T`` directly and uses the
+  pseudo-inverse to handle rank-deficient Gaussian systems (hard
+  observations).  This is the unique solver path for ``observation_noise = 0``.
+  """
 
   def test_hard_singular_update_matches_row_space_conditional_mean(self):
     schedule = schedules.CosineSchedule()
@@ -1220,11 +1183,12 @@ class PseudoInverseKalmanCorrectionTest(unittest.TestCase):
     y = jnp.asarray([[1.0, 1.0]], dtype=jnp.float64)
     time = jnp.asarray([0.5], dtype=jnp.float64)
 
-    correction = PseudoInverseKalmanCorrectionFn(
+    correction = KalmanCorrectionFn(
         observation=y,
         forward_fn=fwd,
         posterior_covariance_fn=_FixedPosteriorCovarianceFn(covariance=cov),
         observation_noise=0.0,
+        solver="pinv",
         pinv_rtol=1e-12,
         pinv_atol=1e-12,
     )

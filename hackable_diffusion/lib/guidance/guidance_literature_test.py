@@ -70,8 +70,6 @@ from hackable_diffusion.lib.sampling.time_scheduling import UniformTimeSchedule
 from hackable_diffusion.lib.guidance.corrections import (
     GradientCorrectionFn,
     KalmanCorrectionFn,
-    dps_prefactor,
-    miyasawa_prefactor,
 )
 from hackable_diffusion.lib.guidance.forward_ops import (
     InpaintingForwardFn,
@@ -82,6 +80,7 @@ from hackable_diffusion.lib.guidance.posterior_covariance import (
     FixedPriorPosteriorCovarianceFn,
     IsotropicPosteriorCovarianceFn,
     TweediePosteriorCovarianceFn,
+    unit_scale,
 )
 from hackable_diffusion.lib.guidance.resamplers import (
     ESSThresholdedResamplerFn,
@@ -89,7 +88,10 @@ from hackable_diffusion.lib.guidance.resamplers import (
     SystematicResamplerFn,
 )
 from hackable_diffusion.lib.guidance.sampler import ConditionalDiffusionSampler
-from hackable_diffusion.lib.guidance.twists import GaussianLikelihoodTwistFn
+from hackable_diffusion.lib.guidance.twists import (
+    GaussianLikelihoodTwistFn,
+    NormResidualTwistFn,
+)
 
 
 ################################################################################
@@ -282,21 +284,18 @@ class AnalyticGaussianPosteriorTest(unittest.TestCase):
     self._assert_recovers_posterior(samples, mu_post, "PiGDM+Isotropic")
 
   def test_dps_canonical_runs_without_blowup(self):
-    """Canonical DPS (``dps_prefactor = 1/||residual||``) is known to be
-    numerically fragile in the small-batch / tight-``sigma_y`` regime we
-    can afford inside a unit test (B=16, n=8, 30 steps).  We check that
-    the method runs end-to-end and produces finite samples, not that it
-    concentrates near the posterior mean -- DPS quality on realistic
-    problems is established in the papers, and Pi-GDM (covered in the
-    preceding tests) is the correct comparison point for posterior
-    accuracy.
+    """Canonical Chung 2023 DPS via ``GradientCorrectionFn`` over
+    :class:`NormResidualTwistFn`.  Known to be numerically fragile in
+    the small-batch / tight-``sigma_y`` regime we can afford inside a
+    unit test (B=16, n=8, 30 steps); we check that the method runs
+    end-to-end and produces finite samples, not that it concentrates
+    near the posterior mean.  Pi-GDM (the preceding tests) is the
+    correct comparison point for posterior accuracy on this
+    Gaussian-likelihood + linear-forward family.
     """
-    # Rebuild setup with a DPS-appropriate sigma_y.
     rng = np.random.default_rng(self.rng_seed)
     indices = np.sort(rng.choice(self.n, size=self.m, replace=False))
-    forward_matrix = np.eye(self.n, dtype=np.float64)[indices]
     y = rng.standard_normal(self.m).astype(np.float64)
-    sigma_y = 0.5  # looser than the Pi-GDM tests
     prior_covariance = np.eye(self.n, dtype=np.float64)
 
     schedule = schedules.CosineSchedule()
@@ -312,23 +311,14 @@ class AnalyticGaussianPosteriorTest(unittest.TestCase):
     observation = jnp.broadcast_to(
         jnp.asarray(y, dtype=jnp.float64)[None], (self.batch, self.m),
     )
-    mu_post = _analytic_posterior_mean(
-        prior_covariance, forward_matrix,
-        np.broadcast_to(y[None], (self.batch, self.m)),
-        sigma_y,
-    )
 
-    twist = GaussianLikelihoodTwistFn(
-        observation=observation,
-        forward_fn=forward_fn,
-        observation_noise=sigma_y,
+    # Canonical DPS = gradient of the (smoothed) residual norm.  The
+    # ``NormResidualTwistFn`` carries the eps smoothing so the gradient
+    # stays finite at the constraint surface.
+    twist = NormResidualTwistFn(
+        observation=observation, forward_fn=forward_fn,
     )
-    # DPS papers use a small ``zeta`` (the ``strength``) to keep
-    # ``zeta / ||residual||`` bounded across the trajectory.  ``1.0`` is
-    # far beyond the stable regime for this tight sigma_y / small batch.
-    correction = GradientCorrectionFn(
-        twist=twist, strength=0.1, prefactor_fn=dps_prefactor,
-    )
+    correction = GradientCorrectionFn(twist=twist, strength=0.05)
     sampler = ConditionalDiffusionSampler(
         base_sampler=base_sampler, corruption_process=corruption,
         correction_fn=correction,
@@ -341,6 +331,119 @@ class AnalyticGaussianPosteriorTest(unittest.TestCase):
 
     self.assertTrue(bool(jnp.all(jnp.isfinite(final.xt))))
     self.assertEqual(samples.shape, (self.batch, self.n))
+
+
+################################################################################
+# MARK: Clean-endpoint / hard-observation inpainting
+################################################################################
+
+
+class CleanEndpointInpaintingTest(unittest.TestCase):
+  """``observation_noise = 0`` + ``Cov = I`` = exact affine projection.
+
+  Under a Gaussian prior ``N(0, I)`` and an inpainting forward
+  ``y = mask * x_0`` with no observation noise, the posterior factorises:
+  observed coordinates are a delta at ``x_true[observed]`` and unobserved
+  coordinates retain the prior ``N(0, I)`` (the prior is diagonal).
+  Running DDIM with the singular-Gaussian branch of the framework --
+  :class:`KalmanCorrectionFn` with ``solver="pinv"`` and the
+  ``IsotropicPosteriorCovarianceFn(scale_fn=unit_scale)`` covariance --
+  should recover both moments.  This test is also the executable form
+  of the inpainting recipe in ``docs/composable_guidance.md``.
+  """
+
+  n = 8
+  m = 3
+  batch = 1024
+  num_steps = 40
+  rng_seed = 0
+  # Observed-coord tolerance is tight (projection is exact each step;
+  # only residual is DDIM-discretisation noise on the clean forward
+  # process).  Unobserved-coord tolerance follows the MC band on the
+  # prior mean: ~3*sigma_prior / sqrt(batch) ~ 0.10 at batch=1024.
+  observed_tolerance = 1e-3
+  free_tolerance = 0.10
+
+  def _setup(self):
+    rng = np.random.default_rng(self.rng_seed)
+    indices = np.sort(rng.choice(self.n, size=self.m, replace=False))
+    mask_np = np.zeros(self.n, dtype=np.float64)
+    mask_np[indices] = 1.0
+    x_true = rng.standard_normal(self.n).astype(np.float64)
+    y_np = mask_np * x_true
+
+    schedule = schedules.CosineSchedule()
+    corruption = GaussianProcess(schedule=schedule)
+    base_sampler = DiffusionSampler(
+        time_schedule=UniformTimeSchedule(),
+        stepper=DDIMStep(corruption_process=corruption, stoch_coeff=0.0),
+        num_steps=self.num_steps,
+        return_trajectory=False,
+    )
+    inference_fn = _gaussian_tweedie_inference_fn(
+        np.eye(self.n, dtype=np.float64), schedule,
+    )
+
+    mask = jnp.asarray(mask_np)
+    forward_fn = InpaintingForwardFn(mask=mask)
+    observation = jnp.broadcast_to(
+        jnp.asarray(y_np, dtype=jnp.float64)[None], (self.batch, self.n),
+    )
+    return dict(
+        schedule=schedule, corruption=corruption,
+        base_sampler=base_sampler, inference_fn=inference_fn,
+        forward_fn=forward_fn, mask=mask,
+        observation=observation, indices=indices, x_true=x_true,
+    )
+
+  def test_pinv_kalman_recovers_clean_endpoint(self):
+    s = self._setup()
+    # ``Cov = I`` via the unit_scale helper makes the singular-Gaussian
+    # Kalman update reduce to an exact projection onto ``{x : mask * x = y}``.
+    cov = IsotropicPosteriorCovarianceFn(scale_fn=unit_scale)
+    correction = KalmanCorrectionFn(
+        observation=s["observation"],
+        forward_fn=s["forward_fn"],
+        posterior_covariance_fn=cov,
+        observation_noise=0.0,
+        solver="pinv",
+    )
+    sampler = ConditionalDiffusionSampler(
+        base_sampler=s["base_sampler"],
+        corruption_process=s["corruption"],
+        correction_fn=correction,
+    )
+    rng = jax.random.PRNGKey(self.rng_seed)
+    init = jax.random.normal(rng, (self.batch, self.n), dtype=jnp.float64)
+    out = sampler(inference_fn=s["inference_fn"], rng=rng, initial_noise=init)
+    samples = np.asarray(out[0].xt)
+
+    # Observed coords match x_true to projection-precision (the
+    # correction clamps mask * x0 to y every step).
+    observed_err = np.max(np.abs(
+        samples[:, s["indices"]] - s["x_true"][s["indices"]][None, :],
+    ))
+    self.assertLess(
+        observed_err, self.observed_tolerance,
+        msg=(
+            f"observed-coord deviation {observed_err:.6f} exceeds "
+            f"{self.observed_tolerance}; clean-endpoint clamp is leaking."
+        ),
+    )
+
+    # Unobserved coords come from the prior N(0, I) -- empirical mean
+    # should be near zero within the MC band.
+    free_mask_np = np.ones(self.n, dtype=bool)
+    free_mask_np[s["indices"]] = False
+    free_mean = samples[:, free_mask_np].mean(axis=0)
+    free_err = np.max(np.abs(free_mean))
+    self.assertLess(
+        free_err, self.free_tolerance,
+        msg=(
+            f"free-coord sample mean {free_err:.4f} drifted from prior "
+            f"mean 0 (tol {self.free_tolerance})."
+        ),
+    )
 
 
 ################################################################################

@@ -14,30 +14,30 @@
 
 """Observation-driven ``x_0 -> x_0_new`` corrections.
 
-Three primitives cover every posterior-sampling method:
+Four primitives:
 
 - :class:`KalmanCorrectionFn`: closed-form Kalman update
-  ``x_0 + Sigma A^T (A Sigma A^T + sigma_y^2 I)^{-1} (y - A x_0)``
-  parameterised over a :class:`ForwardFn` and a
-  :class:`PosteriorCovarianceFn`.  Pi-GDM family.
-- :class:`GradientCorrectionFn`: first-order shift
-  ``x_0 + prefactor * grad_{xt} log psi``.  DPS family.
-- :class:`IteratedCorrectionFn`: wrap any base correction to apply it
-  ``num_iters`` times with denoiser re-evaluation at each shifted xt.
+  ``x_0 + Cov A^T (A Cov A^T + sigma_y^2 I)^{-1} (y - A x_0)``.  One
+  class with three solver paths -- direct pseudo-inverse for hard
+  observations / low-dim ``y``, CG and MINRES for high-dim ``y``.
+- :class:`GradientCorrectionFn`: Tweedie-scaled gradient correction
+  ``x_0 + strength * (sigma^2 / alpha) * grad_{xt} log psi``.  For
+  *non-Gaussian* twists (classifier, energy); for Gaussian-likelihood +
+  linear forward, ``KalmanCorrectionFn`` is the closed-form route.
+- :class:`IteratedCorrectionFn`: re-evaluate the denoiser between
+  corrections.  Wraps any base.
+- :class:`CategoricalProjectionCorrectionFn`: per-site Bayes update of
+  a soft-categorical ``x_0`` prediction (discrete / simplicial state).
 
-All three satisfy :class:`CorrectionFn`: they take ``(x0, xt, time)`` and
-a :class:`DenoiserFn` + schedule, and return the new ``x0``.  No
-``corruption_process``, no raw ``inference_fn``, no ``rng``/``conditioning``
-plumbing -- those are captured inside ``denoiser_fn``.
+All four satisfy :class:`CorrectionFn`: they take ``(x0, xt, time)``
+plus a :class:`DenoiserFn` + schedule, and return the new ``x0``.
 
 Modality compatibility
 ----------------------
-- ``KalmanCorrectionFn``: Euclidean-x0 only (Gaussian ODE / SDE /
-  posterior-sampler).  Kalman math assumes a standard inner product.
-- ``GradientCorrectionFn``: Euclidean-x0 in principle (the gradient
-  step is a Euclidean shift).  On a simplex the Euclidean step leaves
-  the constraint set; use a simplex-aware correction.
-- ``IteratedCorrectionFn``: inherits modality from its ``base``.
+- :class:`KalmanCorrectionFn`, :class:`GradientCorrectionFn`:
+  Euclidean-x0 only (Gaussian ODE / SDE / distributional).
+- :class:`CategoricalProjectionCorrectionFn`: simplicial / discrete.
+- :class:`IteratedCorrectionFn`: inherits from its ``base``.
 """
 
 from __future__ import annotations
@@ -48,6 +48,12 @@ from typing import Any, Callable
 import jax
 import jax.numpy as jnp
 
+from hackable_diffusion.lib.guidance.gaussian_conditioning import (
+    _broadcast_observation,
+    _flatten_observation,
+    _materialize_observation_covariance,
+    psd_pinv_solve,
+)
 from hackable_diffusion.lib.guidance.linalg import (
     batched_cg,
     batched_minres,
@@ -63,7 +69,6 @@ from hackable_diffusion.lib.guidance.protocols import (
     ForwardFn,
     PosteriorCloudFn,
     PosteriorCovarianceFn,
-    TwistFn,
 )
 from hackable_diffusion.lib.guidance.utils import (
     scalar_alpha,
@@ -72,58 +77,15 @@ from hackable_diffusion.lib.guidance.utils import (
 
 
 ################################################################################
-# MARK: Prefactors for GradientCorrectionFn
+# MARK: Kalman correction (Pi-GDM family) -- unified pinv / CG / MINRES
 ################################################################################
 
 
-def miyasawa_prefactor(
-    *,
-    alpha: jax.Array,
-    sigma: jax.Array,
-    xt: jax.Array,
-    x0: jax.Array,
-) -> jax.Array:
-  """Tweedie-identity prefactor ``sigma^2 / alpha``.
-
-  Exact in the single-Gaussian-prior limit via Miyasawa:
-  ``Cov(x0 | xt) = (sigma^2 / alpha) d xhat_0/d xt``.
-  """
-  del xt, x0
-  return (sigma ** 2) / jnp.maximum(alpha, 1e-8)
+_ITERATIVE_SOLVERS = {"cg": batched_cg, "minres": batched_minres}
+_VALID_SOLVERS = ("pinv",) + tuple(_ITERATIVE_SOLVERS)
 
 
-def dps_prefactor(
-    *,
-    alpha: jax.Array,
-    sigma: jax.Array,
-    xt: jax.Array,
-    x0: jax.Array,
-) -> jax.Array:
-  """Canonical DPS step ``1 / ||residual||``."""
-  del sigma
-  flat = x0 - xt / jnp.maximum(alpha, 1e-8)
-  norm = jnp.linalg.norm(
-      flat.reshape(flat.shape[0], -1), axis=-1, keepdims=True,
-  ) + 1e-8
-  return 1.0 / jnp.maximum(norm, 1e-8)
-
-
-# Signature of a step-size prefactor callable.
-PrefactorFn = Callable[..., jax.Array]
-
-
-################################################################################
-# MARK: Kalman correction (Pi-GDM family)
-################################################################################
-
-
-SOLVERS: dict[str, Callable] = {
-    "cg": batched_cg,
-    "minres": batched_minres,
-}
-
-
-def _default_solver_for(cov_fn: PosteriorCovarianceFn) -> str:
+def _default_iterative_solver_for(cov_fn: PosteriorCovarianceFn) -> str:
   """Pick CG vs MINRES based on whether ``cov_fn`` may be indefinite.
 
   Full ``TweediePosteriorCovarianceFn`` only symmetrises -- the
@@ -145,44 +107,63 @@ def _default_solver_for(cov_fn: PosteriorCovarianceFn) -> str:
 class KalmanCorrectionFn(CorrectionFn):
   """Closed-form Kalman update on ``x_0``.
 
-      x_0_new = x_0 + Sigma A^T (A Sigma A^T + sigma_y^2 I)^{-1} (y - A x_0)
+      x_0_new = x_0 + Cov A^T (A Cov A^T + sigma_y^2 I)^{-1} (y - A x_0)
 
   over any linear :class:`ForwardFn` ``A`` and any
-  :class:`PosteriorCovarianceFn` ``Sigma``.  Choice of covariance picks
-  the Pi-GDM variant:
+  :class:`PosteriorCovarianceFn` ``Cov``.  Three solver paths:
 
-  - :class:`IsotropicPosteriorCovarianceFn`: DPS-style projection.
-  - :class:`FixedPriorPosteriorCovarianceFn`: "cov-aware" (known prior).
-  - :class:`TweediePosteriorCovarianceFn`: exact under any prior via
-    Miyasawa JVP through the denoiser.
+  - ``solver="pinv"`` (default): materialise ``A Cov A^T`` as an
+    ``M x M`` matrix (``M`` = observation dim) and solve via a
+    symmetric eigendecomposition pseudo-inverse.  Handles
+    ``observation_noise = 0`` correctly (rank-deficient hard
+    observations), but ``O(M^3)`` per step -- right for low-dim ``y``
+    (anti-diagonal constraints, scalar reward observations).
 
-  The ``(A Sigma A^T + sigma_y^2 I) z = r`` solve is iterative;
-  posterior covariance only needs a matvec.  Two solvers ship in
-  ``SOLVERS``:
-
-  - ``'cg'``: conjugate gradient.  Cheaper per iteration but requires
-    the Kalman matrix to be symmetric *positive-definite*.  Right
-    choice when ``Sigma`` is PSD -- :class:`IsotropicPosteriorCovarianceFn`,
+  - ``solver="cg"``: conjugate gradient on the matvec
+    ``w -> (A Cov A^T + sigma_y^2 I) w``.  Never materialises the
+    matrix; scales to high-dim ``y`` (image inpainting, super-
+    resolution).  Requires the operator to be symmetric positive
+    *definite* -- pair with PSD covariances
+    (:class:`IsotropicPosteriorCovarianceFn`,
     :class:`FixedPriorPosteriorCovarianceFn`,
     :class:`PCAPosteriorCovarianceFn`,
-    :class:`LowRankTweediePosteriorCovarianceFn` with ``project_psd=True``.
-  - ``'minres'``: minimum-residual.  Handles symmetric *indefinite*
-    operators correctly; pick this when ``Sigma`` is symmetric but may
-    have negative eigenvalues -- :class:`TweediePosteriorCovarianceFn`
-    on a non-Bayes-optimal denoiser.
+    :class:`LowRankTweediePosteriorCovarianceFn` with
+    ``project_psd=True``).
 
-  ``solver=None`` (default) auto-selects via :func:`_default_solver_for`:
-  MINRES for full-Tweedie / non-PSD-projected low-rank Tweedie, CG
-  otherwise.  Pass an explicit string to override.
+  - ``solver="minres"``: minimum-residual.  Same scaling as CG but
+    handles symmetric *indefinite* operators -- the case for full
+    :class:`TweediePosteriorCovarianceFn` on a non-Bayes-optimal
+    denoiser or low-rank Tweedie with ``project_psd=False``.
+
+  Picking the covariance picks the Pi-GDM variant: Isotropic gives the
+  DPS-style projection, FixedPrior gives the "cov-aware" update with a
+  known prior covariance, Tweedie gives the Miyasawa-exact update via
+  JVP through the denoiser.
+
+  CG and MINRES need ``observation_noise > 0`` to keep the Kalman
+  matrix full-rank; ``"pinv"`` is the right solver for hard
+  observations.  ``solver=None`` is *not* supported -- the user should
+  explicitly choose; see ``solver`` argument.
   """
 
   observation: jax.Array
   forward_fn: ForwardFn
   posterior_covariance_fn: PosteriorCovarianceFn
-  observation_noise: float = 0.1
+  observation_noise: float = 0.0
+  solver: str = "pinv"
+  # Pinv knobs (used when ``solver == "pinv"``).
+  pinv_rtol: float = 1e-5
+  pinv_atol: float = 1e-8
+  # Iterative-solver knobs (used when ``solver in {"cg", "minres"}``).
   cg_max_iter: int = 20
   cg_tol: float = 1e-6
-  solver: str | None = None
+
+  def __post_init__(self) -> None:
+    if self.solver not in _VALID_SOLVERS:
+      raise ValueError(
+          f"KalmanCorrectionFn.solver must be one of {_VALID_SOLVERS}; "
+          f"got {self.solver!r}.",
+      )
 
   def __call__(
       self,
@@ -195,58 +176,80 @@ class KalmanCorrectionFn(CorrectionFn):
       cloud_fn: PosteriorCloudFn | None = None,
       rng: jax.Array | None = None,
   ) -> jax.Array:
-    del cloud_fn, rng  # single-point correction; cloud / rng unused here.
-    adjoint = linear_adjoint(self.forward_fn, x0)
-    sigma_y2 = max(float(self.observation_noise) ** 2, 1e-30)
-
-    # Build the Cov matvec ONCE per Kalman call; reuse across CG iterations
-    # and the final ``x0 + apply_cov(w)`` step.  For LowRankTweedie this
-    # hoists the randomized-SVD sketch out of the inner loop.
     cov_matvec = self.posterior_covariance_fn(
         xt=xt, time=time, schedule=schedule, denoiser_fn=denoiser_fn,
     )
 
+    if self.solver == "pinv":
+      predicted = self.forward_fn.forward(x0)
+      target = _broadcast_observation(self.observation, predicted)
+      residual = _flatten_observation(target - predicted)
+      system, adjoint, observation_shape = _materialize_observation_covariance(
+          forward_fn=self.forward_fn,
+          cov_matvec=cov_matvec,
+          x0=x0,
+      )
+      sigma_y2 = float(self.observation_noise) ** 2
+      if sigma_y2 > 0.0:
+        eye = jnp.eye(system.shape[-1], dtype=system.dtype)
+        system = system + sigma_y2 * eye[None, :, :]
+      weights = psd_pinv_solve(
+          system, residual,
+          rtol=float(self.pinv_rtol), atol=float(self.pinv_atol),
+      )
+      weights_obs = weights.reshape(
+          (weights.shape[0],) + observation_shape,
+      )
+      return x0 + cov_matvec(adjoint(weights_obs))
+
+    # Iterative path (CG / MINRES) -- never materialises ``A Cov A^T``.
+    adjoint = linear_adjoint(self.forward_fn, x0)
+    sigma_y2 = max(float(self.observation_noise) ** 2, 1e-30)
+
     def apply_cov(w):
       return cov_matvec(adjoint(w))
 
-    def matvec(w):  # (A Sigma A^T + sigma_y^2 I) w
+    def matvec(w):
       return self.forward_fn.forward(apply_cov(w)) + sigma_y2 * w
 
     residual = self.observation - self.forward_fn.forward(x0)
-    solver = (
-        self.solver if self.solver is not None
-        else _default_solver_for(self.posterior_covariance_fn)
-    )
-    if solver not in SOLVERS:
-      raise ValueError(
-          f"Unknown solver {solver!r}; choose from {sorted(SOLVERS)}."
-      )
-    w = SOLVERS[solver](
-        matvec, residual, max_iter=self.cg_max_iter, tol=self.cg_tol,
+    w = _ITERATIVE_SOLVERS[self.solver](
+        matvec, residual,
+        max_iter=int(self.cg_max_iter), tol=float(self.cg_tol),
     )
     return x0 + apply_cov(w)
 
 
 ################################################################################
-# MARK: Gradient correction (DPS family)
+# MARK: Gradient correction (Tweedie-scaled DPS-style)
 ################################################################################
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class GradientCorrectionFn(CorrectionFn):
-  """First-order shift from a differentiable :class:`TwistFn`.
+  """Tweedie-scaled first-order shift from a differentiable :class:`TwistFn`.
 
-      x_0_new = x_0 + strength * prefactor * grad_{xt} log psi(y | xt)
+      x_0_new = x_0 + strength * (sigma^2 / alpha) * grad_{xt} log psi(xt)
 
-  Implements DPS-style guidance generically: any differentiable twist
-  plugs in.  Step-size prefactor is an injected callable
-  (:func:`miyasawa_prefactor` exact on Gaussian priors;
-  :func:`dps_prefactor` canonical DPS ``1/||residual||``).
+  ``sigma^2 / alpha`` is the Tweedie-identity scalar (Miyasawa);
+  exact in the single-Gaussian-prior limit via
+  ``Cov(x_0 | x_t) = (sigma^2 / alpha) d xhat_0 / d xt``.
+
+  Intended for *non-Gaussian* twists -- :class:`ClassifierTwistFn`,
+  :class:`EnergyTwistFn`, custom twists -- where ``log psi`` has no
+  closed-form gradient with respect to ``x_0``.
+
+  For Gaussian-likelihood + linear forward (e.g.
+  :class:`GaussianLikelihoodTwistFn`,
+  :class:`PosteriorPredictiveGaussianTwistFn`,
+  :class:`NormResidualTwistFn`) :class:`KalmanCorrectionFn` is the
+  closed-form route -- equivalent Cov-weighted update without going
+  through the chain-rule split, which has a removable ``inf * 0``
+  singularity at ``alpha -> 0`` and is FP-unstable in practice.
   """
 
-  twist: TwistFn
+  twist: 'TwistFn'                          # noqa: F821 - forward ref
   strength: float = 1.0
-  prefactor_fn: PrefactorFn = miyasawa_prefactor
 
   def __call__(
       self,
@@ -259,14 +262,13 @@ class GradientCorrectionFn(CorrectionFn):
       cloud_fn: PosteriorCloudFn | None = None,
       rng: jax.Array | None = None,
   ) -> jax.Array:
-    del cloud_fn, rng  # single-point correction; cloud / rng unused here.
     alpha, sigma = scalar_alpha_sigma(schedule, time)
 
     def scalar_twist(xt_inner: jax.Array) -> jax.Array:
       return jnp.sum(self.twist(xt_inner, time, denoiser_fn=denoiser_fn))
 
     grad_xt = jax.grad(scalar_twist)(xt)
-    prefactor = self.prefactor_fn(alpha=alpha, sigma=sigma, xt=xt, x0=x0)
+    prefactor = (sigma ** 2) / jnp.maximum(alpha, 1e-8)
     return x0 + float(self.strength) * prefactor * grad_xt
 
 
@@ -309,7 +311,6 @@ class IteratedCorrectionFn(CorrectionFn):
       cloud_fn: PosteriorCloudFn | None = None,
       rng: jax.Array | None = None,
   ) -> jax.Array:
-    del cloud_fn, rng  # single-point correction; cloud / rng unused here.
     alpha = scalar_alpha(schedule, time)
     xt_curr, x0_curr = xt, x0
     for _ in range(int(self.num_iters) - 1):
@@ -335,6 +336,7 @@ class IteratedCorrectionFn(CorrectionFn):
 # of category ``k`` at site ``i`` under the observation ``y``.  Closed-form
 # for site-factorised observations; the closure can also depend on the
 # soft-prior ``x0_soft`` if the likelihood is non-factorised.
+from typing import Callable
 PerSiteLogLikelihoodFn = Callable[..., jax.Array]
 
 
@@ -383,9 +385,10 @@ class CategoricalProjectionCorrectionFn(CorrectionFn):
       *,
       denoiser_fn: DenoiserFn,
       schedule: Any,
-      **kwargs,                                                  # cloud_fn / rng
+      cloud_fn: PosteriorCloudFn | None = None,
+      rng: jax.Array | None = None,
   ) -> jax.Array:
-    del xt, denoiser_fn, schedule, kwargs
+    del xt, denoiser_fn, schedule
     log_prior = jnp.log(jnp.clip(x0, self.eps, 1.0))
     log_lik = self.log_likelihood_fn(x0, time)
     log_post = log_prior + log_lik
@@ -393,7 +396,7 @@ class CategoricalProjectionCorrectionFn(CorrectionFn):
 
 
 ################################################################################
-# MARK: Cloud-aware projection (posterior-bridges Algorithm 2)
+# MARK: Projection cloud correction (posterior-sample SMC)
 ################################################################################
 
 

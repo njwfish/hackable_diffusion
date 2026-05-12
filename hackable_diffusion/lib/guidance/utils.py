@@ -14,11 +14,13 @@
 
 """Small utilities shared across guidance-framework modules.
 
-The :func:`make_denoiser_fn` factory used to live here; it moved to
-``denoisers.py`` where it belongs alongside the other denoiser-level
-primitives.  :func:`replace_x0` is gone -- corrections now operate on
-``x_0`` directly, so the outputs-dict roundtrip is confined to the
-sampler boundary.
+- :func:`accepts_rng_kwarg`: introspect whether an ``inference_fn``
+  accepts an ``rng`` kwarg, so stochastic vs deterministic callers can
+  share one entry point.
+- :func:`call_inference_fn`: uniform call wrapper handling either
+  signature.
+- :func:`scalar_alpha` / :func:`scalar_alpha_sigma`: extract scalar
+  schedule values at a (possibly batched) ``time`` input.
 """
 
 from __future__ import annotations
@@ -79,5 +81,3 @@ def scalar_alpha_sigma(
   """
   t = jnp.atleast_1d(time).reshape(-1)[0:1]
   return schedule.alpha(t).reshape(()), schedule.sigma(t).reshape(())
-
-

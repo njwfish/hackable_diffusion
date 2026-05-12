@@ -129,24 +129,6 @@ def _gather_particle_leaves(carry, indices: jax.Array):
   return jax.tree.map(gather_leaf, carry)
 
 
-def _resample_indices(
-    resampler_fn: ResamplerFn,
-    log_weights: jax.Array,
-    *,
-    rng: jax.Array,
-) -> tuple[jax.Array, jax.Array]:
-  """Return ``(gather_indices, new_log_weights)`` from a :class:`ResamplerFn`."""
-  k = log_weights.shape[0]
-  identity = jnp.arange(k)
-  resampled_ids, new_log_weights = resampler_fn(
-      identity[:, None].astype(log_weights.dtype),
-      log_weights,
-      rng=rng,
-  )
-  indices = resampled_ids[:, 0].astype(jnp.int32)
-  return indices, new_log_weights
-
-
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class ConditionalDiffusionSampler:
   """Conditional sampler composing CorrectionFn, TwistFn, and ResamplerFn.
@@ -172,8 +154,9 @@ class ConditionalDiffusionSampler:
     correction_fn: optional ``x0 -> x0_new`` correction.
     twist_fn: optional ``log psi(y | xt)`` potential.
     resampler_fn: particle resampler (defaults to :class:`NoResamplerFn`).
-    num_particles: SMC population size; ``1`` with no correction / twist
-      / resampler short-circuits to the base sampler.
+      The SMC population size is ``initial_noise.shape[0]``; with no
+      correction / twist / non-identity resampler the call short-circuits
+      to ``base_sampler``.
     resample_until_step_frac: fraction of the trajectory after which
       ``resampler_fn`` is replaced by the identity (``NoResamplerFn``).
       ``1.0`` (default) resamples for the entire trajectory; ``0.8``
@@ -199,7 +182,6 @@ class ConditionalDiffusionSampler:
   correction_fn: CorrectionFn | None = None
   twist_fn: TwistFn | None = None
   resampler_fn: ResamplerFn = dataclasses.field(default_factory=NoResamplerFn)
-  num_particles: int = 1
   resample_until_step_frac: float = 1.0
   posterior_cloud_size: int = 0
 
@@ -412,9 +394,7 @@ class ConditionalDiffusionSampler:
       log_w = log_w + log_proposal_ratio + (log_psi_new - log_psi_old)
 
       rng_state, resample_rng = jax.random.split(rng_state)
-      indices, log_w_res = _resample_indices(
-          self.resampler_fn, log_w, rng=resample_rng,
-      )
+      indices, log_w_res = self.resampler_fn(log_w, rng=resample_rng)
 
       # Gate resampling on the step counter: past the cutoff we keep the
       # current particles and weights so the population can spread out

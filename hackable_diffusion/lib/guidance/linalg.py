@@ -12,9 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Linear-algebra helpers for guidance corrections.
-
-Primitives used by :class:`PiGDMCorrectionFn` and its extensions:
+"""Linear-algebra helpers for Kalman / Pi-GDM-family corrections.
 
 - :func:`batch_inner`: per-particle dot product summed over all
   non-batch axes.
@@ -264,11 +262,6 @@ def randomized_svd_jvp(
   plus a QR on a ``(d, k)`` tall-skinny matrix.  For the Halko-Martinsson
   -Tropp sketch, one power iteration is typically enough to get
   meaningful accuracy on well-conditioned operators.
-
-  If this is still too expensive, a pure-random sketch without power
-  iteration approximates the prior covariance rather than the
-  Jacobian; see :class:`RandomProjectionPosteriorCovarianceFn` (not
-  currently implemented).
 
   Shapes: ``example`` is ``(B, *spatial)``; Q and T are per-batch
   tensors shaped ``(B, d, k)`` and ``(B, k, k)`` where

@@ -48,13 +48,6 @@ and scale cleanly to high-dimensional data (images):
 All five satisfy :class:`PosteriorCovarianceFn` and so plug into
 :class:`KalmanCorrectionFn` interchangeably.
 
-A cheaper still fallback, not currently implemented, would be a
-fixed random projection ``Omega: (d, k)`` with
-``Cov = (sigma^2/alpha) Omega Omega^T / k``.  This has no power over
-the true posterior covariance but costs only ``O(d k)`` per matvec
-with no setup -- useful as a sanity baseline.  Add as a sibling class
-if needed.
-
 Modality compatibility
 ----------------------
 All five assume ``x_0`` lives in a Euclidean space where ``Cov`` is a
@@ -87,6 +80,21 @@ def miyasawa_scale(alpha: jax.Array, sigma: jax.Array) -> jax.Array:
   return (sigma ** 2) / jnp.maximum(alpha, 1e-8)
 
 
+def unit_scale(alpha: jax.Array, sigma: jax.Array) -> jax.Array:
+  """Constant ``1.0`` scale -- yields ``Cov = I`` for any (alpha, sigma).
+
+  Pair with :class:`IsotropicPosteriorCovarianceFn` to make
+  :class:`KalmanCorrectionFn` with ``solver="pinv"`` and
+  ``observation_noise = 0`` reduce to the exact affine projection
+  ``x0 + A^T (A A^T)^+ (y - A x0)``
+  onto the constraint surface ``{x : A x = y}``.  This is the
+  ``C_t = I`` limit -- a *clean-endpoint* / hard-observation recipe that
+  does not depend on a learned posterior covariance.
+  """
+  del alpha, sigma
+  return jnp.asarray(1.0)
+
+
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class IsotropicPosteriorCovarianceFn(PosteriorCovarianceFn):
   """``Cov(x_0 | x_t) = scale(alpha, sigma) * I``.
@@ -95,7 +103,10 @@ class IsotropicPosteriorCovarianceFn(PosteriorCovarianceFn):
   which is the Gaussian-white-prior posterior variance under the
   Miyasawa identity.  Any callable ``(alpha, sigma) -> scalar`` can be
   plugged in -- e.g. a constant ``strength`` for the classic DPS
-  projection.
+  projection, or :func:`unit_scale` (``= 1``) to make
+  :class:`KalmanCorrectionFn` with ``solver="pinv"`` reduce to an
+  exact affine projection onto ``{x : A x = y}`` for clean-endpoint
+  conditioning.
   """
 
   scale_fn: ScaleFn = miyasawa_scale
@@ -177,13 +188,13 @@ class PCAPosteriorCovarianceFn(PosteriorCovarianceFn):
   def __post_init__(self):
     if self.u_factor.ndim != 2:
       raise ValueError(
-          f'u_factor must be (d, k); got shape {self.u_factor.shape}.'
+          f"u_factor must be (d, k); got shape {self.u_factor.shape}."
       )
     if (self.singular_values is not None
         and self.singular_values.shape[0] != self.u_factor.shape[1]):
       raise ValueError(
-          f'singular_values length {self.singular_values.shape[0]} != '
-          f'u_factor rank {self.u_factor.shape[1]}.'
+          f"singular_values length {self.singular_values.shape[0]} != "
+          f"u_factor rank {self.u_factor.shape[1]}."
       )
 
   @classmethod
@@ -194,7 +205,7 @@ class PCAPosteriorCovarianceFn(PosteriorCovarianceFn):
       num_components: int,
       regulariser: float = 0.0,
       scale_fn: ScaleFn = miyasawa_scale,
-  ) -> 'PCAPosteriorCovarianceFn':
+  ) -> "PCAPosteriorCovarianceFn":
     """Build from a full covariance via top-``k`` eigendecomposition.
 
     Sorts eigenvalues descending, takes the top ``num_components``, and
@@ -304,13 +315,6 @@ class LowRankTweediePosteriorCovarianceFn(PosteriorCovarianceFn):
   every matvec), this amortises the denoiser over a one-time setup;
   the break-even point is ``cg_max_iter ~ k + 2 oversample`` for
   ``num_power_iters=1``.
-
-  If even this is too expensive -- e.g. many-particle SMC on very
-  large images -- a data-agnostic fallback is to replace the
-  randomized-SVD sketch with a plain fixed random projection
-  ``Omega: (d, k)``: ``Cov v = (sigma^2/alpha) * Omega (Omega^T v) / k``.
-  That has no Jacobian information but skips the JVP setup entirely.
-  Add a sibling class if you need it.
   """
 
   num_components: int
@@ -327,8 +331,8 @@ class LowRankTweediePosteriorCovarianceFn(PosteriorCovarianceFn):
   def __call__(self, *, xt, time, schedule, denoiser_fn=None):
     if denoiser_fn is None:
       raise ValueError(
-          'LowRankTweediePosteriorCovarianceFn requires ``denoiser_fn``; '
-          'KalmanCorrectionFn threads it in automatically.'
+          "LowRankTweediePosteriorCovarianceFn requires ``denoiser_fn``; "
+          "KalmanCorrectionFn threads it in automatically."
       )
     alpha, sigma = scalar_alpha_sigma(schedule, time)
     scale = self.scale_fn(alpha, sigma)

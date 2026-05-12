@@ -12,47 +12,30 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Posterior-predictive Gaussian conditioning for hard linear observations.
+"""Linear-algebra helpers for hard linear observations.
 
-For a linear observation ``Y = A X_0`` and an approximate clean posterior
-
-    ``X_0 | X_t = x_t ~= N(m_t(x_t), C_t(x_t))``,
-
-the Doob transform for the hard observation ``Y = y`` uses the posterior
-predictive density
-
-    ``h_t(x_t) = p(Y = y | X_t = x_t)``,
-
-not a zero-variance likelihood around ``A m_t``.  This module implements the
-corresponding singular-Gaussian row-space objects:
-
-    ``S_t = A C_t A^T``
-    ``m_t^y = m_t + C_t A^T S_t^+ (y - A m_t)``
-    ``log h_t = log N_sing(y; A m_t, S_t)``.
-
-``S_t^+`` is the Moore-Penrose inverse.  The covariance supplied by
-``posterior_covariance_fn`` is assumed to be symmetric PSD; callers using a
-learned Tweedie Jacobian should project to a PSD covariance family first.
+For a linear observation ``Y = A X_0`` and an approximate clean
+posterior ``X_0 | X_t = x_t ~= N(m_t(x_t), C_t(x_t))``, the Doob
+transform for the hard observation ``Y = y`` involves three building
+blocks: the row-space pseudo-inverse of ``A C_t A^T``, the singular-
+Gaussian log-density on the row-space, and the materialisation of
+``A C_t A^T`` itself.  This module exposes those building blocks;
+the consumers live in
+:mod:`hackable_diffusion.lib.guidance.corrections` (the pinv path of
+:class:`KalmanCorrectionFn`) and
+:mod:`hackable_diffusion.lib.guidance.twists` (the
+:class:`PosteriorPredictiveGaussianTwistFn`).
 """
 
 from __future__ import annotations
 
-import dataclasses
 import math
-from typing import Any
 
 import jax
 import jax.numpy as jnp
 
 from hackable_diffusion.lib.guidance.linalg import linear_adjoint
-from hackable_diffusion.lib.guidance.protocols import (
-    CorrectionFn,
-    DenoiserFn,
-    ForwardFn,
-    PosteriorCloudFn,
-    PosteriorCovarianceFn,
-    TwistFn,
-)
+from hackable_diffusion.lib.guidance.protocols import ForwardFn
 
 
 def _broadcast_observation(observation: jax.Array, predicted: jax.Array) -> jax.Array:
@@ -150,113 +133,3 @@ def singular_gaussian_logpdf(
   return logp
 
 
-@dataclasses.dataclass(kw_only=True, frozen=True)
-class PseudoInverseKalmanCorrectionFn(CorrectionFn):
-  """Hard/row-space Kalman update using ``(A C A^T)^+``.
-
-  This is the singular-observation limit of the Gaussian conditioning
-  identity.  With ``observation_noise > 0`` it computes the same update with
-  ``A C A^T + sigma_y^2 I`` and therefore reduces to the usual Kalman
-  correction for a full-rank observation covariance.
-  """
-
-  observation: jax.Array
-  forward_fn: ForwardFn
-  posterior_covariance_fn: PosteriorCovarianceFn
-  observation_noise: float = 0.0
-  pinv_rtol: float = 1e-5
-  pinv_atol: float = 1e-8
-
-  def __call__(
-      self,
-      x0: jax.Array,
-      xt: jax.Array,
-      time: jax.Array,
-      *,
-      denoiser_fn: DenoiserFn,
-      schedule: Any,
-      cloud_fn: PosteriorCloudFn | None = None,
-      rng: jax.Array | None = None,
-  ) -> jax.Array:
-    del cloud_fn, rng  # single-point correction; cloud / rng unused here.
-    cov_matvec = self.posterior_covariance_fn(
-        xt=xt, time=time, schedule=schedule, denoiser_fn=denoiser_fn,
-    )
-    predicted = self.forward_fn.forward(x0)
-    target = _broadcast_observation(self.observation, predicted)
-    residual = _flatten_observation(target - predicted)
-    system, adjoint, observation_shape = _materialize_observation_covariance(
-        forward_fn=self.forward_fn,
-        cov_matvec=cov_matvec,
-        x0=x0,
-    )
-    sigma_y2 = float(self.observation_noise) ** 2
-    if sigma_y2 > 0.0:
-      eye = jnp.eye(system.shape[-1], dtype=system.dtype)
-      system = system + sigma_y2 * eye[None, :, :]
-    weights = psd_pinv_solve(
-        system,
-        residual,
-        rtol=float(self.pinv_rtol),
-        atol=float(self.pinv_atol),
-    )
-    weights_obs = weights.reshape((weights.shape[0],) + observation_shape)
-    return x0 + cov_matvec(adjoint(weights_obs))
-
-
-@dataclasses.dataclass(kw_only=True, frozen=True)
-class PosteriorPredictiveGaussianTwistFn(TwistFn):
-  """Posterior-predictive Gaussian twist ``log p(y | x_t)``.
-
-  Unlike :class:`GaussianLikelihoodTwistFn`, this twist integrates over the
-  approximate clean posterior ``X_0 | X_t``.  For ``observation_noise=0`` it
-  evaluates the singular Gaussian density on the row-space of
-  ``A C_t A^T``.  For ``observation_noise > 0`` it evaluates the noisy
-  predictive model ``Y = A X_0 + eps``.
-  """
-
-  observation: jax.Array
-  forward_fn: ForwardFn
-  posterior_covariance_fn: PosteriorCovarianceFn
-  schedule: Any
-  observation_noise: float = 0.0
-  pinv_rtol: float = 1e-5
-  pinv_atol: float = 1e-8
-  enforce_support: bool = True
-  support_atol: float = 1e-5
-  support_rtol: float = 1e-4
-
-  def __call__(
-      self,
-      xt: jax.Array,
-      time: jax.Array,
-      *,
-      denoiser_fn: DenoiserFn,
-      cloud_fn: PosteriorCloudFn | None = None,
-  ) -> jax.Array:
-    del cloud_fn  # single-point twist; cloud is unused here.
-    x0 = denoiser_fn(xt)
-    cov_matvec = self.posterior_covariance_fn(
-        xt=xt, time=time, schedule=self.schedule, denoiser_fn=denoiser_fn,
-    )
-    predicted = self.forward_fn.forward(x0)
-    target = _broadcast_observation(self.observation, predicted)
-    residual = _flatten_observation(target - predicted)
-    system, _, _ = _materialize_observation_covariance(
-        forward_fn=self.forward_fn,
-        cov_matvec=cov_matvec,
-        x0=x0,
-    )
-    sigma_y2 = float(self.observation_noise) ** 2
-    if sigma_y2 > 0.0:
-      eye = jnp.eye(system.shape[-1], dtype=system.dtype)
-      system = system + sigma_y2 * eye[None, :, :]
-    return singular_gaussian_logpdf(
-        residual,
-        system,
-        rtol=float(self.pinv_rtol),
-        atol=float(self.pinv_atol),
-        enforce_support=bool(self.enforce_support) and sigma_y2 == 0.0,
-        support_atol=float(self.support_atol),
-        support_rtol=float(self.support_rtol),
-    )
