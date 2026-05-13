@@ -107,7 +107,7 @@ class CloudThreadingTest(unittest.TestCase):
         time_schedule=UniformTimeSchedule(),
         stepper=DDIMStep(corruption_process=corruption, stoch_coeff=0.0),
         num_steps=num_steps,
-        return_trajectory=False,
+        store_trajectory=False,
     )
     return schedule, corruption, base_sampler
 
