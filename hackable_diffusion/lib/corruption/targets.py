@@ -16,8 +16,8 @@
 
 - :class:`GaussianSourceTargets`: emits ``{x0, x1, score, velocity, v}``.
   Owns the ``CONVERTERS`` table of bidirectional parameterisation
-  conversions.  Valid only when the coupling's source is
-  ``StandardNormalSource``.
+  conversions.  Valid only when ``x_1`` is Gaussian (i.e. the process's
+  prior is :class:`GaussianPrior`).
 - :class:`VelocityOnlyTargets`: emits ``{x0, x1, velocity}`` for any
   interpolant / source.  Threads ``z`` into ``interpolant.eval`` so it
   works unchanged for :class:`GeodesicInterpolant` (``z`` is ``None``
@@ -229,7 +229,7 @@ class GaussianSourceTargets(TargetAdapter):
 
   Byte-equivalent to legacy ``GaussianProcess.corrupt``'s ``target_info``
   dict when composed with :class:`LinearInterpolant` and a
-  :class:`StandardNormalSource`.  The identities
+  :class:`GaussianPrior`.  The identities
   ``score = -x1/sigma`` and ``v = alpha*x1 - sigma*x0`` only hold when
   ``x_1 ~ N(0, I)``; composing this adapter with a non-Gaussian source
   produces incorrect target dicts.  Construction-time checks in
@@ -341,5 +341,5 @@ class VelocityOnlyTargets(TargetAdapter):
     raise NotImplementedError(
         'VelocityOnlyTargets only supports velocity predictions.  For '
         'other parameterisations, use GaussianSourceTargets (requires '
-        'a StandardNormalSource).'
+        'a GaussianPrior).'
     )

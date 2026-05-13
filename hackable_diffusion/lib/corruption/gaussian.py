@@ -15,11 +15,11 @@
 """Gaussian corruption: shim over the composed ``InterpolantProcess``.
 
 ``GaussianProcess(schedule=...)`` wraps an ``InterpolantProcess`` with
-``(StandardNormalSource(), LinearInterpolant(schedule),
-GaussianSourceTargets())``.  The legacy parameterisations (``x0``,
-``x1``, ``score``, ``velocity``, ``v``) and their bidirectional
-conversions all live in ``targets.py``'s ``CONVERTERS`` table -- moved
-out of this module but byte-identical in behaviour.
+``(prior=GaussianPrior(), interpolant=LinearInterpolant(schedule),
+targets=GaussianSourceTargets())``.  The legacy parameterisations
+(``x0``, ``x1``, ``score``, ``velocity``, ``v``) and their
+bidirectional conversions all live in ``targets.py``'s ``CONVERTERS``
+table -- moved out of this module but byte-identical in behaviour.
 
 The shim is a named class (not a factory) so type annotations
 ``corruption_process: GaussianProcess`` throughout downstream code --
@@ -37,8 +37,8 @@ from __future__ import annotations
 import dataclasses
 
 from hackable_diffusion.lib.corruption import base
-from hackable_diffusion.lib.corruption import couplings
 from hackable_diffusion.lib.corruption import interpolants
+from hackable_diffusion.lib.corruption import priors
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.corruption import targets
 
@@ -55,9 +55,9 @@ class GaussianProcess(base.CorruptionProcess):
   """Gaussian corruption ``xt = alpha(t) x_0 + sigma(t) epsilon``.
 
   Shim over :class:`InterpolantProcess` configured with
-  ``(StandardNormalSource(), LinearInterpolant, GaussianSourceTargets)``.
-  Every method delegates to the internally built ``_process``;
-  behaviour is byte-identical to the pre-refactor implementation.
+  ``(prior=GaussianPrior(), interpolant=LinearInterpolant,
+  targets=GaussianSourceTargets)`` -- the default
+  :class:`IndependentCoupling` is implicit.
   """
 
   schedule: GaussianSchedule
@@ -69,7 +69,7 @@ class GaussianProcess(base.CorruptionProcess):
     object.__setattr__(
         self, '_process',
         base.InterpolantProcess(
-            coupling=couplings.StandardNormalSource(),
+            prior=priors.GaussianPrior(),
             interpolant=interpolants.LinearInterpolant(schedule=self.schedule),
             targets=targets.GaussianSourceTargets(),
         ),

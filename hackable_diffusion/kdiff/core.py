@@ -86,6 +86,13 @@ class Diffusion(nn.Module, kw_only=True):
       {'label': 'batch.label'}. The tree will be passed to the __call__ function
       as `cond` argument, with the keys replaced by the corresponding values
       from the context.
+    x1: (Optional) Key into the batch for paired ``x_1`` data.  When the
+      dataset yields a joint ``(x_0, x_1)`` distribution (image-to-image,
+      blurry/sharp, paired timestamps, ...), set this to e.g.
+      ``'batch.image_target'`` and the corruption process will receive
+      ``x_1`` directly rather than invent it via its prior.  Only the new
+      ``InterpolantProcess``-based corruption processes accept ``x_1``;
+      legacy discrete / simplicial processes ignore the kontext key.
     network: The diffusion network to use. This model needs to accept the
       following arguments (time, xt, cond, is_training), and it should return a
       dictionary of predictions of the form `{'prediction_type': prediction,
@@ -103,6 +110,7 @@ class Diffusion(nn.Module, kw_only=True):
 
   x0: kd.kontext.Key = kd.kontext.REQUIRED  # E.g. 'batch.image'.
   cond: Optional[kd.kontext.KeyTree] = None  # e.g. 'batch.label'
+  x1: Optional[kd.kontext.Key] = None  # e.g. 'batch.image_target'
   is_training = kd.nn.train_property()
 
   @nn.compact
@@ -111,6 +119,7 @@ class Diffusion(nn.Module, kw_only=True):
       self,
       x0: DataTree,
       cond: Conditioning | None = None,
+      x1: DataTree | None = None,
   ) -> dict[str, dict[str, Array] | Array]:
     """Run the diffusion training step.
 
@@ -121,6 +130,9 @@ class Diffusion(nn.Module, kw_only=True):
     Args:
       x0: The input data.
       cond: The conditioning (optional).
+      x1: Paired ``x_1`` from the dataset (optional).  When supplied, the
+        corruption process uses this directly instead of drawing from its
+        prior -- the path used for joint-distribution training and OT.
 
     Returns:
       A dictionary of outputs that are useful for training.
@@ -135,10 +147,17 @@ class Diffusion(nn.Module, kw_only=True):
     # Sample timesteps.
     time = self.time_sampler(self.make_rng("default"), data_spec=x0)
 
-    # Corrupt the input data according to the timesteps.
-    xt, target_info = self.corruption_process.corrupt(
-        self.make_rng("default"), x0, time
-    )
+    # Corrupt the input data according to the timesteps.  Only forward x1
+    # when present -- legacy CategoricalProcess / SimplicialProcess don't
+    # accept the kwarg.
+    if x1 is None:
+      xt, target_info = self.corruption_process.corrupt(
+          self.make_rng("default"), x0, time
+      )
+    else:
+      xt, target_info = self.corruption_process.corrupt(
+          self.make_rng("default"), x0, time, x1=x1
+      )
 
     # Run the diffusion network
     output = self.network(

@@ -15,17 +15,21 @@
 """Bitwise parity between the shim ``GaussianProcess`` / ``RiemannianProcess``
 and the pinned legacy implementations.
 
-Covers:
+Covers (post Prior/Coupling split):
 
-- ``corrupt`` across 5 schedules, 8 seeds, 5 times.
 - ``convert_predictions`` across all 5 ``x0 / epsilon / score / velocity / v``
-  source types.
-- ``sample_from_invariant`` for both Gaussian and Riemannian.
+  source types -- pure math, byte-parity holds.
+- ``sample_from_invariant`` for both Gaussian and Riemannian -- the
+  legacy ``coupling.marginal.sample(key, ...)`` and the new
+  ``prior.sample(key, ...)`` consume the same key, so byte-parity holds.
 - ``get_schedule_info`` for both.
 
-See ``docs/interpolant_refactor_plan.md`` §4.2 for the rationale.  The
-``_*_legacy.py`` fixture files will be removed after M1 merges and the
-test rewrites to use git-archaeology snapshots.
+``corrupt`` byte-parity is *not* tested: the Prior/Coupling refactor
+re-splits the per-step key into three slots (prior, coupling, z) for
+uniformity, so the sampled ``x_1`` differs from the legacy unsplit
+flow even when the math is unchanged.  Correctness is covered by
+``gaussian_test.py`` / ``riemannian_test.py`` / the per-shim end-to-end
+flow-matching tests.
 """
 
 from __future__ import annotations
@@ -55,7 +59,6 @@ _GAUSSIAN_SCHEDULES = [
      lambda: _schedules.GeometricSchedule(sigma_min=1e-3, sigma_max=10.0)),
 ]
 _GAUSSIAN_TIMES = [0.01, 0.25, 0.5, 0.75, 0.99]
-_SEEDS = range(8)
 
 
 def _assert_tree_equal(a, b, msg=""):
@@ -72,44 +75,9 @@ def _assert_tree_equal(a, b, msg=""):
 
 
 class GaussianParityTest(unittest.TestCase):
-  """Shim ``GaussianProcess`` is byte-identical to the legacy class."""
-
-  def test_corrupt(self):
-    for (name, make_sched), seed, t in itertools.product(
-        _GAUSSIAN_SCHEDULES, _SEEDS, _GAUSSIAN_TIMES,
-    ):
-      schedule = make_sched()
-      old = _gaussian_legacy._LegacyGaussianProcess(schedule=schedule)
-      new = GaussianProcess(schedule=schedule)
-      key = jax.random.PRNGKey(seed)
-      x0 = jax.random.normal(
-          jax.random.fold_in(key, 1), (8, 16), dtype=jnp.float64,
-      )
-      t_arr = jnp.full((8,), t, dtype=jnp.float64)
-      old_xt, old_ti = old.corrupt(key, x0, t_arr)
-      new_xt, new_ti = new.corrupt(key, x0, t_arr)
-      _assert_tree_equal(
-          old_xt, new_xt, f"[{name}, seed={seed}, t={t}] xt mismatch",
-      )
-      # Global rename: legacy ``epsilon`` key becomes ``x1`` as the
-      # modality-agnostic endpoint name.  All other keys must be
-      # byte-identical.
-      self.assertEqual(
-          (set(old_ti) - {"epsilon"}) | {"x1"}, set(new_ti),
-          f"[{name}] target_info keyset drift: old={set(old_ti)} "
-          f"new={set(new_ti)}",
-      )
-      _assert_tree_equal(
-          old_ti["epsilon"], new_ti["x1"],
-          f"[{name}, seed={seed}, t={t}] x1 must equal legacy epsilon",
-      )
-      for k in old_ti:
-        if k == "epsilon":
-          continue  # checked above under the new name ``x1``.
-        _assert_tree_equal(
-            old_ti[k], new_ti[k],
-            f"[{name}, seed={seed}, t={t}] target_info[{k}]",
-        )
+  """Shim ``GaussianProcess`` matches the legacy class on everything
+  that doesn't depend on the per-step key split (i.e. everything except
+  ``corrupt``)."""
 
   def test_convert_predictions(self):
     for (name, make_sched), t in itertools.product(
@@ -193,29 +161,6 @@ class RiemannianParityTest(unittest.TestCase):
   def _sphere_points(self, key, batch):
     manifold = manifolds.Sphere()
     return manifold.random_uniform(key, shape=(batch, 3))
-
-  def test_corrupt(self):
-    for schedule_name, seed, t in itertools.product(
-        ["RiemannianCosineSchedule", "LinearRiemannianSchedule"], _SEEDS, _GAUSSIAN_TIMES,
-    ):
-      try:
-        old, new = self._make_pieces(schedule_name)
-      except AttributeError:
-        continue  # schedule may not exist; skip
-      key = jax.random.PRNGKey(seed)
-      x0 = self._sphere_points(jax.random.fold_in(key, 1), batch=8)
-      t_arr = jnp.full((8,), t, dtype=jnp.float64)
-      old_xt, old_ti = old.corrupt(key, x0, t_arr)
-      new_xt, new_ti = new.corrupt(key, x0, t_arr)
-      _assert_tree_equal(
-          old_xt, new_xt, f"[{schedule_name}, seed={seed}, t={t}] xt",
-      )
-      self.assertEqual(set(old_ti), set(new_ti))
-      for k in old_ti:
-        _assert_tree_equal(
-            old_ti[k], new_ti[k],
-            f"[{schedule_name}, seed={seed}, t={t}] target_info[{k}]",
-        )
 
   def test_sample_from_invariant(self):
     for schedule_name in ["RiemannianCosineSchedule", "LinearRiemannianSchedule"]:

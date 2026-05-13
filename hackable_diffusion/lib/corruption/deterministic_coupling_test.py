@@ -12,13 +12,15 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""M3 integration test: data-to-data flow matching with ``DeterministicCoupling``.
+"""Integration test: data-to-data flow matching with ``DeterministicPrior``.
 
 Trains a tiny MLP velocity predictor on a 2D ``x_0 -> x_1`` task where
 ``x_1 = rotate(x_0, pi/4)``.  The training loop uses ``VelocityOnlyTargets``
 -- no Gaussian-source identities -- exercising the generic
-``InterpolantProcess(DeterministicCoupling, LinearInterpolant,
-VelocityOnlyTargets)`` composition end-to-end.
+``InterpolantProcess(prior=DeterministicPrior, LinearInterpolant,
+VelocityOnlyTargets)`` composition end-to-end.  ``DeterministicPrior``
+is the new home for the ``x_1 = map_fn(x_0)`` semantics that the
+pre-refactor ``DeterministicCoupling`` provided.
 
 Acceptance: loss decreases from its random-init value by a factor of 10+
 over 200 training steps.
@@ -36,8 +38,8 @@ import numpy as np
 import optax
 
 from hackable_diffusion.lib.corruption import base
-from hackable_diffusion.lib.corruption import couplings
 from hackable_diffusion.lib.corruption import interpolants
+from hackable_diffusion.lib.corruption import priors
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.corruption import targets
 
@@ -66,7 +68,7 @@ def _tiny_mlp_apply(params, xt, time):
   return h @ params["w3"]  # velocity prediction
 
 
-class DeterministicCouplingFlowMatchingTest(unittest.TestCase):
+class DeterministicPriorFlowMatchingTest(unittest.TestCase):
 
   def test_rotation_flow_matching_loss_decreases(self):
     # Data: x_0 from a 2D Gaussian mixture; x_1 = rotate(x_0, pi/4).
@@ -76,9 +78,9 @@ class DeterministicCouplingFlowMatchingTest(unittest.TestCase):
       return jax.random.normal(key, (batch, 2), dtype=jnp.float64)
 
     # Build the data-to-data corruption process:
-    # deterministic coupling + linear interpolant + velocity-only targets.
+    # deterministic prior + linear interpolant + velocity-only targets.
     process = base.InterpolantProcess(
-        coupling=couplings.DeterministicCoupling(
+        prior=priors.DeterministicPrior(
             map_fn=lambda x0: _rotate_2d(x0, angle),
         ),
         interpolant=interpolants.LinearInterpolant(
@@ -121,18 +123,15 @@ class DeterministicCouplingFlowMatchingTest(unittest.TestCase):
     self.assertLess(
         loss_last_10, loss_first_10 / 10.0,
         msg=(
-            f"DeterministicCoupling flow-matching did not converge: "
+            f"DeterministicPrior flow-matching did not converge: "
             f"init-avg={loss_first_10:.4f}, final-avg={loss_last_10:.4f}"
         ),
     )
 
-  def test_marginal_is_none_for_deterministic_coupling(self):
-    # DeterministicCoupling has no well-defined x_1 marginal.
-    coupling = couplings.DeterministicCoupling(map_fn=lambda x: x + 1)
-    self.assertIsNone(coupling.marginal)
-
+  def test_sample_from_invariant_raises_with_no_prior(self):
+    # A paired-data setup (no prior) has no standalone x_1 marginal.
     process = base.InterpolantProcess(
-        coupling=coupling,
+        # No prior set -- paired data path; sample_from_invariant should fail.
         interpolant=interpolants.LinearInterpolant(schedule=schedules.RFSchedule()),
         targets=targets.VelocityOnlyTargets(),
     )

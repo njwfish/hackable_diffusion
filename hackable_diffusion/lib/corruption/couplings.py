@@ -14,30 +14,23 @@
 
 """Concrete :class:`Coupling` implementations.
 
-Every concrete coupling satisfies the single :class:`Coupling`
-Protocol: ``sample(key, x0) -> x_1``, plus ``marginal`` (an
-``x_0``-independent coupling usable at inference time) and
-``is_batch_level`` (whether ``sample`` must see the whole batch).
+A :class:`Coupling` re-pairs an ``(x_0, x_1)`` batch without producing
+``x_1`` itself.  Production is the :class:`Prior`'s job (see
+:mod:`priors`).
 
-- :class:`StandardNormalSource`: ``x_1 ~ N(0, I)``; ignores ``x_0``
-  values (uses only its shape).  ``marginal = self``.  Recovers legacy
-  diffusion behaviour when paired with :class:`LinearInterpolant`.
-- :class:`UniformManifoldSource`: ``x_1 ~ Uniform(manifold)``.
-  ``marginal = self``.  Riemannian case.
-- :class:`DataloaderSource`: ``x_1 = pull(x_0)`` where ``pull`` is a
-  caller-provided dataset callable (``key`` ignored -- dataloader
-  provides its own ordering).  ``marginal = self``.
-- :class:`DeterministicCoupling`: ``x_1 = map_fn(x_0)``.
-  ``marginal = None`` (depends on ``p_0``); blur-deblur / data-to-data.
+- :class:`IndependentCoupling`: identity; the trivial coupling.
+  Re-exported from :mod:`base` -- defined there because it's
+  :class:`InterpolantProcess`'s default and must avoid a circular
+  import.
 - :class:`MiniBatchOTCoupling`: entropic-OT matching via ott-jax
-  Sinkhorn between a batch of ``x_0`` and an unmatched ``x_1 ~ source``
-  batch.  ``marginal = source``.  ``is_batch_level = True``.
+  Sinkhorn (Tong et al. 2024).  Permutes ``x_1`` within the batch so
+  paired indices minimise transport cost.  ``is_batch_level = True``.
 """
 
 from __future__ import annotations
 
 import dataclasses
-from typing import Any, Callable, ClassVar
+from typing import ClassVar
 
 import jax
 import jax.numpy as jnp
@@ -49,80 +42,22 @@ PRNGKey = hd_typing.PRNGKey
 DataTree = hd_typing.DataTree
 
 Coupling = base.Coupling
-
-
-@dataclasses.dataclass(kw_only=True, frozen=True)
-class StandardNormalSource(Coupling):
-  """``x_1 ~ N(0, I)``; ignores ``x_0`` values, uses only its shape."""
-
-  is_batch_level: ClassVar[bool] = False
-
-  @property
-  def marginal(self) -> 'StandardNormalSource':
-    return self
-
-  def sample(self, key: PRNGKey, x0: DataTree) -> DataTree:
-    return jax.random.normal(key, shape=x0.shape)
-
-
-@dataclasses.dataclass(kw_only=True, frozen=True)
-class UniformManifoldSource(Coupling):
-  """``x_1 ~ Uniform(manifold)``; wraps :meth:`manifold.random_uniform`."""
-
-  manifold: Any
-  is_batch_level: ClassVar[bool] = False
-
-  @property
-  def marginal(self) -> 'UniformManifoldSource':
-    return self
-
-  def sample(self, key: PRNGKey, x0: DataTree) -> DataTree:
-    return self.manifold.random_uniform(key, x0.shape)
-
-
-@dataclasses.dataclass(kw_only=True, frozen=True)
-class DataloaderSource(Coupling):
-  """``x_1 = pull(x_0)``.  Caller-provided dataset callable; ``key`` ignored.
-
-  The ``key`` argument is ignored because the dataloader provides its
-  own ordering.  This is an impurity the framework tolerates because
-  the alternative -- threading a pytree of dataset iterators through
-  ``corrupt`` -- is much worse.
-  """
-
-  pull: Callable[[DataTree], DataTree]
-  is_batch_level: ClassVar[bool] = False
-
-  @property
-  def marginal(self) -> 'DataloaderSource':
-    return self
-
-  def sample(self, key: PRNGKey, x0: DataTree) -> DataTree:
-    del key
-    return self.pull(x0)
-
-
-@dataclasses.dataclass(kw_only=True, frozen=True)
-class DeterministicCoupling(Coupling):
-  """``x_1 = map_fn(x_0)``; no well-defined marginal."""
-
-  map_fn: Callable[[DataTree], DataTree]
-  is_batch_level: ClassVar[bool] = False
-  marginal: 'Coupling | None' = None
-
-  def sample(self, key: PRNGKey, x0: DataTree) -> DataTree:
-    del key
-    return self.map_fn(x0)
+# Re-export the trivial identity coupling so callers can write
+# ``from hackable_diffusion.lib.corruption import couplings;
+#   couplings.IndependentCoupling()`` symmetrically with the OT one.
+IndependentCoupling = base.IndependentCoupling
 
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class MiniBatchOTCoupling(Coupling):
-  """Mini-batch entropic-OT coupling between ``x_0`` and ``x_1 ~ source``.
+  """Mini-batch entropic-OT re-pairer for ``(x_0, x_1)``.
 
-  Given a batch of ``x_0``, samples an unmatched batch of ``x_1`` from
-  ``source`` and computes an optimal-transport plan between them via
-  entropy-regularised Sinkhorn (ott-jax).  Each ``x_0[i]`` is paired
-  with ``x_1[j]`` by sampling ``j ~ Categorical(plan[i, :] / sum(plan[i, :]))``.
+  Given an ``(x_0, x_1)`` batch, computes the entropy-regularised
+  Sinkhorn transport plan between the two empirical distributions and
+  re-samples ``x_0`` so that ``(x_0[i], x_1[i])`` minimises transport
+  cost.  **``x_1`` order is preserved** -- any conditioning,
+  embeddings, or aux metadata aligned with ``x_1`` in the dataset
+  stays index-aligned with the post-pairing batch.
 
   Batch-level: ``is_batch_level = True``.  Training loops must call
   ``corrupt`` on the whole batch at once, not vmap over it.
@@ -135,17 +70,12 @@ class MiniBatchOTCoupling(Coupling):
   Configuration surface is intentionally narrow: ``epsilon`` (Sinkhorn
   regularisation) and ``num_iters`` only.  Users who need other
   ott-jax knobs (unbalanced, low-rank, custom cost) can subclass and
-  override ``_transport_plan``.
+  override :meth:`_transport_plan`.
   """
 
-  source: Coupling
   epsilon: float = 0.01
   num_iters: int = 100
   is_batch_level: ClassVar[bool] = True
-
-  @property
-  def marginal(self) -> Coupling:
-    return self.source
 
   def _transport_plan(
       self, x0_flat: jax.Array, x1_flat: jax.Array,
@@ -164,22 +94,30 @@ class MiniBatchOTCoupling(Coupling):
     output = solver(problem)
     return output.matrix
 
-  def sample(self, key: PRNGKey, x0: DataTree) -> DataTree:
-    key_source, key_match = jax.random.split(key)
-    x1_unmatched = self.source.sample(key_source, x0)
-
+  def __call__(
+      self,
+      key: PRNGKey,
+      x0: DataTree,
+      x1: DataTree,
+  ) -> tuple[DataTree, DataTree]:
     x0_flat = x0.reshape(x0.shape[0], -1)
-    x1_flat = x1_unmatched.reshape(x1_unmatched.shape[0], -1)
+    x1_flat = x1.reshape(x1.shape[0], -1)
 
+    # ``plan[i, j]`` is the OT mass from ``x_0[i]`` to ``x_1[j]``.
+    # For each ``x_1[j]`` (the order we want to preserve), sample which
+    # ``x_0[i]`` to pair with -- conditional Categorical over rows.
     plan = self._transport_plan(x0_flat, x1_flat)
-    row_sums = jnp.sum(plan, axis=-1, keepdims=True)
-    row_log_probs = jnp.log(
-        jnp.clip(plan / jnp.maximum(row_sums, 1e-30), 1e-30, None),
+    col_sums = jnp.sum(plan, axis=0, keepdims=True)
+    col_log_probs = jnp.log(
+        jnp.clip(plan / jnp.maximum(col_sums, 1e-30), 1e-30, None),
     )
-    indices = jax.random.categorical(key_match, row_log_probs, axis=-1)
+    # ``jax.random.categorical`` samples over the last axis; transpose
+    # so each "row" of the input is a distribution over ``x_0`` rows
+    # for a given ``x_1`` index ``j``.
+    indices = jax.random.categorical(key, col_log_probs.T, axis=-1)
 
-    x1_matched = x1_unmatched[indices]
-    return jax.lax.stop_gradient(x1_matched)
+    x0_matched = x0[indices]
+    return jax.lax.stop_gradient(x0_matched), x1
 
 
 def assert_vmappable(process: base.InterpolantProcess) -> None:

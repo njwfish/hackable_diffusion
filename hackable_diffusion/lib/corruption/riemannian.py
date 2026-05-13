@@ -15,9 +15,9 @@
 """Riemannian flow matching: shim over the composed ``InterpolantProcess``.
 
 ``RiemannianProcess(manifold=..., schedule=...)`` wraps an
-``InterpolantProcess`` with ``(UniformManifoldSource(manifold),
-GeodesicInterpolant, VelocityOnlyTargets)``.  Based on
-https://arxiv.org/abs/2302.03660.
+``InterpolantProcess`` with ``(prior=UniformManifoldPrior(manifold),
+interpolant=GeodesicInterpolant, targets=VelocityOnlyTargets)``.
+Based on https://arxiv.org/abs/2302.03660.
 
 See ``lib/corruption/base.py`` for the protocol design.
 """
@@ -28,8 +28,8 @@ import dataclasses
 
 from hackable_diffusion.lib import manifolds
 from hackable_diffusion.lib.corruption import base
-from hackable_diffusion.lib.corruption import couplings
 from hackable_diffusion.lib.corruption import interpolants
+from hackable_diffusion.lib.corruption import priors
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.corruption import targets
 
@@ -44,8 +44,8 @@ class RiemannianProcess(base.CorruptionProcess):
       target = alpha_dot(t) * manifold.velocity(x_1, x_0, alpha(t))
 
   Shim over :class:`InterpolantProcess` with
-  ``(UniformManifoldSource(manifold), GeodesicInterpolant,
-  VelocityOnlyTargets)``.
+  ``(prior=UniformManifoldPrior(manifold), interpolant=GeodesicInterpolant,
+  targets=VelocityOnlyTargets)`` -- default :class:`IndependentCoupling`.
   """
 
   manifold: manifolds.Manifold
@@ -58,7 +58,7 @@ class RiemannianProcess(base.CorruptionProcess):
     object.__setattr__(
         self, '_process',
         base.InterpolantProcess(
-            coupling=couplings.UniformManifoldSource(manifold=self.manifold),
+            prior=priors.UniformManifoldPrior(manifold=self.manifold),
             interpolant=interpolants.GeodesicInterpolant(
                 manifold=self.manifold, schedule=self.schedule,
             ),
