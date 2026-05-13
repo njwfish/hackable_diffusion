@@ -1,0 +1,118 @@
+# Copyright 2026 Hackable Diffusion Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#     http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
+
+"""Test for time sampling."""
+
+from hackable_diffusion.lib import jax_helpers
+from hackable_diffusion.lib.training import time_sampling
+import jax
+import jax.numpy as jnp
+from absl.testing import absltest
+from absl.testing import parameterized
+
+
+class TimeSamplersTest(parameterized.TestCase):
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="uniform",
+          sampler_cls=time_sampling.UniformTimeSampler,
+      ),
+      dict(
+          testcase_name="logit_normal",
+          sampler_cls=time_sampling.LogitNormalTimeSampler,
+      ),
+      dict(
+          testcase_name="uniform_stratified",
+          sampler_cls=time_sampling.UniformStratifiedTimeSampler,
+      ),
+  )
+  def test_time_sampler(self, sampler_cls):
+    data_shape = jnp.zeros((2, 3, 4))
+    key = jax.random.PRNGKey(0)
+
+    # Test with default batch_axes
+    sampler = sampler_cls()
+    time = sampler(key, data_shape)
+    self.assertEqual(time.shape, (2, 1, 1))
+    self.assertTrue(jnp.all(time >= 0.0))
+    self.assertTrue(jnp.all(time <= 1.0))
+
+    # Test with different batch_axes
+    sampler = sampler_cls(axes=(0, 1))
+    time = sampler(key, data_shape)
+    self.assertEqual(time.shape, (2, 3, 1))
+    self.assertTrue(jnp.all(time >= 0.0))
+    self.assertTrue(jnp.all(time <= 1.0))
+
+    # Test with different time_range
+    sampler = sampler_cls(
+        span=jax_helpers.SafeSpan(_minval=0.2, _maxval=0.8, safety_epsilon=1e-6)
+    )
+    time = sampler(key, data_shape)
+    self.assertEqual(time.shape, (2, 1, 1))
+    self.assertTrue(jnp.all(time >= 0.2))
+    self.assertTrue(jnp.all(time <= 0.8))
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="uniform",
+          sampler_cls=time_sampling.UniformTimeSampler,
+      ),
+      dict(
+          testcase_name="logit_normal",
+          sampler_cls=time_sampling.LogitNormalTimeSampler,
+      ),
+      dict(
+          testcase_name="uniform_stratified",
+          sampler_cls=time_sampling.UniformStratifiedTimeSampler,
+      ),
+  )
+  def test_from_safety_epsilon(self, sampler_cls):
+    sampler = sampler_cls(span=jax_helpers.SafeSpan(safety_epsilon=0.4))
+    data_shape = jnp.zeros((100, 2, 3))
+    key = jax.random.PRNGKey(0)
+    time = sampler(key, data_shape)
+    self.assertGreaterEqual(jnp.min(time), 0.4)
+    self.assertLessEqual(jnp.max(time), 0.6)
+
+  @parameterized.named_parameters(
+      dict(
+          testcase_name="uniform_no_batch",
+          sampler_cls=time_sampling.UniformTimeSampler,
+          axes=(1,),
+      ),
+      dict(
+          testcase_name="logit_normal_no_batch",
+          sampler_cls=time_sampling.LogitNormalTimeSampler,
+          axes=(1,),
+      ),
+      dict(
+          testcase_name="uniform_stratified_no_batch",
+          sampler_cls=time_sampling.UniformStratifiedTimeSampler,
+          axes=(1,),
+      ),
+      dict(
+          testcase_name="uniform_stratified_no_batch_multi",
+          sampler_cls=time_sampling.UniformStratifiedTimeSampler,
+          axes=(1, 2),
+      ),
+  )
+  def test_invalid_axes_missing_batch_dim(self, sampler_cls, axes):
+    with self.assertRaisesRegex(ValueError, "axes must include 0"):
+      sampler_cls(axes=axes)
+
+
+if __name__ == "__main__":
+  absltest.main()

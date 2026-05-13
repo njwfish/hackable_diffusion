@@ -44,6 +44,8 @@ context.preds = model(
     x0=context.batch["image"],
     cond={"label": context.batch["label"]})
 ```
+
+See also https://kauldron.readthedocs.io/en/latest/kontext.html#use-case
 """
 
 import dataclasses
@@ -54,7 +56,7 @@ from hackable_diffusion.lib import hd_typing
 from kauldron import kd
 
 ################################################################################
-# MARK: Type aliases
+# MARK: Type Aliases
 ################################################################################
 
 Array = hd_typing.Array
@@ -101,12 +103,12 @@ class Diffusion(nn.Module, kw_only=True):
       the input data.
     time_sampler: The time sampler to use for sampling timesteps. In the
       simplest case this can just be a
-      `UniformTimeSampler(safety_epsilon=1e-4)`.
+      `UniformTimeSampler(span=hd.jax_helpers.SafeSpan(safety_epsilon=1e-4))`.
   """
 
   network: nn.Module
   corruption_process: hd.corruption.CorruptionProcess
-  time_sampler: hd.time_sampling.TimeSampler
+  time_sampler: hd.training.time_sampling.TimeSampler
 
   x0: kd.kontext.Key = kd.kontext.REQUIRED  # E.g. 'batch.image'.
   cond: Optional[kd.kontext.KeyTree] = None  # e.g. 'batch.label'
@@ -194,7 +196,7 @@ class KauldronLossWrapper(kd.losses.Loss):
 
   # Implicitly supports `weight` and `mask` as well (see `kd.losses.Loss`).
 
-  loss: hd.loss.DiffusionLoss
+  loss: hd.training.DiffusionLoss
 
   @typechecked
   def get_values(

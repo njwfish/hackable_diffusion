@@ -16,7 +16,7 @@
 
 import itertools
 
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import gaussian
 from hackable_diffusion.lib.corruption import schedules
 import jax
@@ -67,8 +67,8 @@ class PredictionConverterTest(parameterized.TestCase):
 
     sigma = schedule.sigma(t)
     alpha = schedule.alpha(t)
-    alpha_der = utils.egrad(schedule.alpha)(t)
-    sigma_der = utils.egrad(schedule.sigma)(t)
+    alpha_der = jax_helpers.egrad(schedule.alpha)(t)
+    sigma_der = jax_helpers.egrad(schedule.sigma)(t)
 
     kwargs = {
         'xt': xt,

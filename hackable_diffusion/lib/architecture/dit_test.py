@@ -28,7 +28,7 @@ from absl.testing import parameterized
 # MARK: Type Aliases
 ################################################################################
 
-ConditioningMechanism = arch_typing.ConditioningMechanism
+
 
 ################################################################################
 # MARK: Tests
@@ -67,7 +67,7 @@ class DiTTest(parameterized.TestCase):
         ),
     )
     conditioning_embeddings = {
-        ConditioningMechanism.ADAPTIVE_NORM: jnp.ones(
+        'adaptive_norm': jnp.ones(
             (self.batch_size, self.cond_dim)
         ),
     }
@@ -103,7 +103,7 @@ class DiTTest(parameterized.TestCase):
         absolute_posenc=dit_blocks.PositionalEmbedding(),
     )
     conditioning_embeddings = {
-        ConditioningMechanism.ADAPTIVE_NORM: jnp.ones(
+        'adaptive_norm': jnp.ones(
             (self.batch_size, self.cond_dim)
         ),
     }
@@ -212,7 +212,7 @@ class DiTTest(parameterized.TestCase):
     input_shape = (self.batch_size, self.sequence_length, self.embedding_dim)
     x = jnp.ones(input_shape)
     conditioning_embeddings = {
-        ConditioningMechanism.ADAPTIVE_NORM: jnp.ones(
+        'adaptive_norm': jnp.ones(
             (self.batch_size, self.cond_dim)
         ),
     }

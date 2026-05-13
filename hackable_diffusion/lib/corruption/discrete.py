@@ -21,12 +21,13 @@ import enum
 from typing import Protocol, Sequence
 
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import base
 from hackable_diffusion.lib.corruption import schedules
 import jax
 import jax.numpy as jnp
 import kauldron.ktyping as kt
+import numpy as np
 
 ################################################################################
 # MARK: Constants
@@ -66,7 +67,7 @@ class SamplingPrecisionMode(enum.StrEnum):
 
 
 ################################################################################
-# MARK: Projection functions
+# MARK: Projection Functions
 ################################################################################
 
 
@@ -202,10 +203,10 @@ class CategoricalProcess(CorruptionProcess):
       return False
     else:
       invariant_probs_masking = (0.0,) * self.num_categories + (1.0,)
-      invariant_probs_masking_vec = jnp.array(invariant_probs_masking)
-      return jnp.all(
-          self.invariant_probs_vec == invariant_probs_masking_vec
-      ).item()
+      invariant_probs_masking_vec = np.array(invariant_probs_masking)
+      return np.all(
+          np.array(self.invariant_probs) == invariant_probs_masking_vec
+      )
 
   ##############################################################################
   # MARK: Methods
@@ -260,7 +261,7 @@ class CategoricalProcess(CorruptionProcess):
         `unused_token`, False otherwise. The shape of both masks is (*b, 1).
     """
     # Broadcast the time to a shape compatible with x0.
-    time = utils.bcast_right(time, x0.ndim)
+    time = jax_helpers.bcast_right(time, x0.ndim)
 
     # compute alpha
     alpha = self.schedule.alpha(time)
@@ -275,11 +276,13 @@ class CategoricalProcess(CorruptionProcess):
     assert alpha_bcast.shape == x0.shape
     # Get the mask of the corruption process.  It is true if the token is not
     # corrupted and False if it is corrupted.
-    is_not_corrupted = jax.random.bernoulli(key, p=alpha_bcast, mode=self.mode)
-    key, _ = jax.random.split(key)
+    mask_key, noise_key = jax.random.split(key)
+    is_not_corrupted = jax.random.bernoulli(
+        mask_key, p=alpha_bcast, mode=self.mode
+    )
 
     # compute noise vector
-    noise = self.sample_from_invariant(key, data_spec=x0)
+    noise = self.sample_from_invariant(noise_key, data_spec=x0)
 
     # noise x0 with probability alpha
     xt = jnp.where(is_not_corrupted, x0, noise)  # is_not_corrupted = (xt == x0)
@@ -331,7 +334,7 @@ class CategoricalProcess(CorruptionProcess):
     return self.schedule.evaluate(time)
 
   ##############################################################################
-  # MARK: Factory methods
+  # MARK: Factory Methods
   ##############################################################################
 
   @classmethod

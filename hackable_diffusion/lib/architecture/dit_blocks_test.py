@@ -81,12 +81,6 @@ class DiTBlockAdaLNZeroTest(parameterized.TestCase):
                     'bias': (self.d * 2,),
                 },
             },
-            'ConditionalNorm': {
-                'Dense_0': {
-                    'kernel': (self.c, self.d * 2),
-                    'bias': (self.d * 2,),
-                },
-            },
             'MLP': {
                 'Dense_Hidden_0': {
                     'kernel': (self.d, mlp_hidden),

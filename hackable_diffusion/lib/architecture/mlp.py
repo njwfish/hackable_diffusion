@@ -20,7 +20,7 @@ We only recommend using this backbone for very simple datasets.
 from typing import Literal, Sequence
 from flax import linen as nn
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import mlp_blocks
 import jax.numpy as jnp
@@ -37,7 +37,7 @@ Float = hd_typing.Float
 DataArray = hd_typing.DataArray
 
 ConditionalBackbone = arch_typing.ConditionalBackbone
-ConditioningMechanism = arch_typing.ConditioningMechanism
+
 
 ################################################################################
 # MARK: ConditionalMLP
@@ -47,7 +47,7 @@ ConditioningMechanism = arch_typing.ConditioningMechanism
 class ConditionalMLP(nn.Module, ConditionalBackbone):
   """Conditional MLP backbone for diffusion models.
 
-  Receives `x`, rocess them first separately using `hidden_sizes_preprocess`
+  Receives `x`, processes them first separately using `hidden_sizes_preprocess`
   layers, producing `x_emb`. Then, it takes conditioning_embeddings and combines
   them with `x_emb`. After that, it feeds them into `hidden_sizes_postprocess`
   MLP blocks, and finally outputs the result.
@@ -68,7 +68,7 @@ class ConditionalMLP(nn.Module, ConditionalBackbone):
   zero_init_output: bool
   dropout_rate: float
   conditioning_mechanism: Literal[
-      ConditioningMechanism.SUM, ConditioningMechanism.CONCATENATE
+      'sum', 'concatenate'
   ]
   dtype: DType = jnp.float32
 
@@ -77,7 +77,7 @@ class ConditionalMLP(nn.Module, ConditionalBackbone):
   def __call__(
       self,
       x: DataArray,
-      conditioning_embeddings: dict[ConditioningMechanism, Float['batch ...']],
+      conditioning_embeddings: arch_typing.ConditioningEmbeddings,
       *,
       is_training: bool,
   ) -> DataArray:
@@ -100,7 +100,7 @@ class ConditionalMLP(nn.Module, ConditionalBackbone):
     c_emb = conditioning_embeddings.get(self.conditioning_mechanism)
     if c_emb is None:
       raise ValueError('Conditioning embeddings are not provided.')
-    if self.conditioning_mechanism == ConditioningMechanism.SUM:
+    if self.conditioning_mechanism == 'sum':
       # Since the conditioning embedding may not have the same dimension as
       # `x_emb`, we project it to the same size as `x_emb`.
       c_emb = nn.Dense(
@@ -109,7 +109,7 @@ class ConditionalMLP(nn.Module, ConditionalBackbone):
           name='Dense_Projection_Conditioning',
       )(c_emb)
       emb = c_emb + x_emb
-    elif self.conditioning_mechanism == ConditioningMechanism.CONCATENATE:
+    elif self.conditioning_mechanism == 'concatenate':
       emb = jnp.concatenate((c_emb, x_emb), axis=-1)
     else:
       raise ValueError(
@@ -129,5 +129,5 @@ class ConditionalMLP(nn.Module, ConditionalBackbone):
     )(emb, is_training=is_training)
 
     output = jnp.reshape(output, shape=x.shape)
-    output = utils.optional_bf16_to_fp32(output)
+    output = jax_helpers.optional_bf16_to_fp32(output)
     return output

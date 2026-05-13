@@ -27,7 +27,7 @@ import kauldron.ktyping as kt
 
 
 ################################################################################
-# MARK: Type aliases
+# MARK: Type Aliases
 ################################################################################
 
 Float = hd_typing.Float
@@ -45,7 +45,7 @@ SAFETY_EPSILON = 1e-6
 MASK_LOGITS_VALUE = -1e9
 
 ################################################################################
-# MARK: Attention utilities
+# MARK: Attention Utilities
 ################################################################################
 
 
@@ -111,8 +111,8 @@ def _stable_softmax(
     output = jax.nn.softmax(logits.astype(jnp.float32)).astype(jnp.bfloat16)
   else:
     warnings.warn(
-        "Softmax expects logits in float32 or bfloat16, but got %s",
-        logits.dtype,
+        "Softmax expects logits in float32 or bfloat16, but got"
+        f" {logits.dtype}",
     )
     logits = logits.astype(jnp.float32)
     output = jax.nn.softmax(logits)
@@ -184,7 +184,7 @@ def _dot_product_attention(
 
 
 ################################################################################
-# MARK: Multi-head attention
+# MARK: Multi-Head Attention
 ################################################################################
 
 

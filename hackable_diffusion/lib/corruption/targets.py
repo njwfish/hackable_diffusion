@@ -35,7 +35,7 @@ import dataclasses
 from typing import ClassVar
 
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import base
 import immutabledict
 import jax.numpy as jnp
@@ -215,11 +215,11 @@ CONVERTERS = immutabledict.immutabledict({
 
 def _alpha_sigma_and_der(schedule, time, ndim):
   """Return ``(alpha, sigma, alpha_der, sigma_der)`` broadcast to ``ndim``."""
-  time = utils.bcast_right(time, ndim)
+  time = jax_helpers.bcast_right(time, ndim)
   alpha = schedule.alpha(time)
   sigma = schedule.sigma(time)
-  alpha_der = utils.egrad(schedule.alpha)(time)
-  sigma_der = utils.egrad(schedule.sigma)(time)
+  alpha_der = jax_helpers.egrad(schedule.alpha)(time)
+  sigma_der = jax_helpers.egrad(schedule.sigma)(time)
   return alpha, sigma, alpha_der, sigma_der
 
 
@@ -252,7 +252,7 @@ class GaussianSourceTargets(TargetAdapter):
       interpolant,
   ) -> TargetInfoTree:
     del z, xt
-    time = utils.bcast_right(t, x0.ndim)
+    time = jax_helpers.bcast_right(t, x0.ndim)
     alpha = interpolant.schedule.alpha(time)
     sigma = interpolant.schedule.sigma(time)
     return {

@@ -35,7 +35,7 @@ import dataclasses
 
 from hackable_diffusion.lib import fast_random
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.corruption import simplicial
 from hackable_diffusion.lib.sampling import base
@@ -214,8 +214,8 @@ class SimplicialDDIMStep(SamplerStep):
     next_time = next_step_info.time
 
     # Broadcast time to match batch dimensions
-    time = utils.bcast_right(time, log_xt.ndim)
-    next_time = utils.bcast_right(next_time, log_xt.ndim)
+    time = jax_helpers.bcast_right(time, log_xt.ndim)
+    next_time = jax_helpers.bcast_right(next_time, log_xt.ndim)
     key = next_step_info.rng
 
     temperature = self.corruption_process.temperature
@@ -223,9 +223,9 @@ class SimplicialDDIMStep(SamplerStep):
 
     # Get model prediction (logits for P̂_0)
     logits = self.corruption_process.convert_predictions(
-        prediction,
-        log_xt,
-        time,
+        prediction=prediction,
+        xt=log_xt,
+        time=time,
     )['logits']
 
     # Schedule values

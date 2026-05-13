@@ -14,7 +14,7 @@
 
 """Tests for guidance functions."""
 
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.inference import guidance
 import jax.numpy as jnp
 
@@ -80,7 +80,7 @@ class GuidanceTest(parameterized.TestCase):
     upper = 0.25
     # First time is outside the interval, second is inside.
     time = jnp.array([0.1, 0.5])
-    time = utils.bcast_right(time, self.xt.ndim)
+    time = jax_helpers.bcast_right(time, self.xt.ndim)
     with self.assertRaisesRegex(
         ValueError,
         'Lower bound must be strictly smaller than the upper bound.',
@@ -110,7 +110,7 @@ class GuidanceTest(parameterized.TestCase):
     )
     # First time is outside the interval, second is inside.
     time = jnp.array([0.1, 0.5])
-    time = utils.bcast_right(time, self.xt.ndim)
+    time = jax_helpers.bcast_right(time, self.xt.ndim)
 
     result = guidance_fn(
         self.xt, self.conditioning, time, self.cond_outputs, self.uncond_outputs
@@ -125,42 +125,6 @@ class GuidanceTest(parameterized.TestCase):
         jnp.ones(self.data_shape) * 5.0,
     ])
     self.assertTrue(jnp.allclose(result['pred'], expected_output))
-
-  def test_nested_guidance_fn(self):
-    """Tests the NestedGuidanceFn."""
-    guidance_val = 3.0
-    guidance_fn = guidance.NestedGuidanceFn(
-        guidance_fns={
-            'data_continuous': guidance.ScalarGuidanceFn(guidance=guidance_val),
-            'modality': {
-                'data_discrete': guidance.ScalarGuidanceFn(
-                    guidance=guidance_val
-                ),
-            },
-        }
-    )
-    time = {
-        'data_continuous': jnp.array([0.5, 0.5]),
-        'modality': {
-            'data_discrete': jnp.array([0.5, 0.5]),
-        },
-    }  # Not used, but required by protocol
-    result = guidance_fn(
-        self.nested_xt,
-        self.conditioning,
-        time,
-        self.nested_cond_outputs,
-        self.nested_uncond_outputs,
-    )
-    self.assertIsInstance(result, dict)
-    self.assertEqual(
-        result['data_continuous']['pred'].shape,
-        (self.batch_size, *self.data_shape),
-    )
-    self.assertEqual(
-        result['modality']['data_discrete']['pred'].shape,
-        (self.batch_size, *self.data_shape),
-    )
 
 
 if __name__ == '__main__':

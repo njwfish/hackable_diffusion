@@ -34,7 +34,7 @@ from absl.testing import parameterized
 SamplerStep = base.SamplerStep
 
 ################################################################################
-# MARK: Helper functions
+# MARK: Helper Functions
 ################################################################################
 
 dummy_inference_fn = lambda xt, conditioning, time: {'x0': xt}
@@ -76,11 +76,11 @@ class DummyStep(SamplerStep):
 
 class DiffusionSamplingTest(parameterized.TestCase):
 
-  # MARK: Test for helper functions
+  # MARK: Test for Helper Functions
 
   def setUp(self):
     super().setUp()
-    self.time_schedule = time_scheduling.UniformTimeSchedule(safety_epsilon=0.0)
+    self.time_schedule = time_scheduling.UniformTimeSchedule()
     self.stepper = DummyStep()
     self.initial_noise = jnp.repeat(
         jnp.expand_dims(jnp.eye(4), axis=0), 2, axis=0

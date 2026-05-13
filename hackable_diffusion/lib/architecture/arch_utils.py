@@ -37,7 +37,7 @@ UpsampleType = arch_typing.UpsampleType
 SkipConnectionMethod = arch_typing.SkipConnectionMethod
 
 ################################################################################
-# MARK: Reusable NN components
+# MARK: Reusable NN Components
 ################################################################################
 
 kernel_init = nn.initializers.lecun_normal()

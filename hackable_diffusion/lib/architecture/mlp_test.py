@@ -29,7 +29,7 @@ from absl.testing import parameterized
 # MARK: Type Aliases
 ################################################################################
 
-ConditioningMechanism = arch_typing.ConditioningMechanism
+
 
 ################################################################################
 # MARK: Tests
@@ -49,12 +49,12 @@ class MLPTest(parameterized.TestCase):
     self.x = jnp.ones((self.batch_size, *self.shape))
     self.flatten_x = jnp.reshape(self.x, (self.batch_size, -1))
     self.concatenate_emb = {
-        ConditioningMechanism.CONCATENATE: jnp.ones(
+        'concatenate': jnp.ones(
             (self.batch_size, self.cond_dim)
         ),
     }
     self.sum_emb = {
-        ConditioningMechanism.SUM: jnp.ones((self.batch_size, self.cond_dim)),
+        'sum': jnp.ones((self.batch_size, self.cond_dim)),
     }
 
   # ConditionalMLP tests
@@ -67,7 +67,7 @@ class MLPTest(parameterized.TestCase):
         activation='relu',
         dropout_rate=0.0,
         zero_init_output=False,
-        conditioning_mechanism=ConditioningMechanism.CONCATENATE,
+        conditioning_mechanism='concatenate',
     )
     variables = mlp_module.init(
         self.key,
@@ -91,7 +91,7 @@ class MLPTest(parameterized.TestCase):
         activation='relu',
         dropout_rate=0.0,
         zero_init_output=True,
-        conditioning_mechanism=ConditioningMechanism.CONCATENATE,
+        conditioning_mechanism='concatenate',
     )
     variables = mlp_module.init(
         self.key,
@@ -125,7 +125,7 @@ class MLPTest(parameterized.TestCase):
         activation='relu',
         dropout_rate=0.0,
         zero_init_output=False,
-        conditioning_mechanism=ConditioningMechanism.CONCATENATE,
+        conditioning_mechanism='concatenate',
     )
     variables = mlp_module.init(
         self.key,
@@ -191,7 +191,7 @@ class MLPTest(parameterized.TestCase):
         activation='relu',
         dropout_rate=0.0,
         zero_init_output=False,
-        conditioning_mechanism=ConditioningMechanism.SUM,
+        conditioning_mechanism='sum',
     )
     variables = mlp_module.init(
         self.key,

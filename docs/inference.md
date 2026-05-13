@@ -163,3 +163,54 @@ inference_fn = GuidedDiffusionInferenceFn(
 # predicted_x0 = final_prediction['x0']
 # ... use predicted_x0 to compute x_t_minus_1
 ```
+
+## Inference Wrappers
+
+(`lib/inference/wrappers.py`)
+
+In practice, you need a concrete way to convert a trained model into an
+`InferenceFn`. The library provides two wrappers:
+
+### `FlaxLinenInferenceFn`
+
+Wraps a Flax `nn.Module` and its parameters into an `InferenceFn`. This is the
+most common wrapper for models defined with the Linen API.
+
+```python
+from hackable_diffusion.lib.inference.wrappers import FlaxLinenInferenceFn
+
+base_inference_fn = FlaxLinenInferenceFn(
+    network=my_diffusion_network,  # An nn.Module
+    params=restored_params,        # A pytree of model parameters
+)
+```
+
+### `FlaxNNXInferenceFn`
+
+Wraps an NNX module (converted from a Linen module) into an `InferenceFn`.
+
+```python
+from hackable_diffusion.lib.inference.wrappers import FlaxNNXInferenceFn
+
+base_inference_fn = FlaxNNXInferenceFn(
+    nnx_network=my_nnx_network,   # A ConvertedNNXDiffusionNetwork
+)
+```
+
+### `convert_flax_linen_module_with_params_to_nnx`
+
+A utility function to bridge a Linen module and its pre-trained parameters to
+an NNX module:
+
+```python
+from hackable_diffusion.lib.inference.wrappers import (
+    convert_flax_linen_module_with_params_to_nnx
+)
+
+nnx_model = convert_flax_linen_module_with_params_to_nnx(
+    linen_module=my_linen_module,
+    restored_linen_params=restored_params,
+    dummy_time, dummy_xt, dummy_conditioning, False,  # init args
+)
+```
+

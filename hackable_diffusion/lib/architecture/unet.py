@@ -17,7 +17,7 @@
 from typing import Sequence
 import flax.linen as nn
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import arch_utils
 from hackable_diffusion.lib.architecture import normalization
@@ -27,7 +27,7 @@ import jax.numpy as jnp
 import kauldron.ktyping as kt
 
 ################################################################################
-# MARK: Common types
+# MARK: Type Aliases
 ################################################################################
 
 DType = hd_typing.DType
@@ -38,7 +38,7 @@ UpsampleType = arch_typing.UpsampleType
 RoPEPositionType = arch_typing.RoPEPositionType
 SkipConnectionMethod = arch_typing.SkipConnectionMethod
 ConditionalBackbone = arch_typing.ConditionalBackbone
-ConditioningMechanism = arch_typing.ConditioningMechanism
+
 
 ################################################################################
 # MARK: Unet
@@ -63,7 +63,7 @@ class Unet(nn.Module, ConditionalBackbone):
     self_attention_bool: Sequence indicating if self-attention is used at each
       scale.
     cross_attention_bool: Sequence indicating if cross-attention is used at each
-      scale. In the middle blck, cross attention is used by default if
+      scale. In the middle block, cross attention is used by default if
       embeddings for cross attention is given.
     attention_num_heads: Number of attention heads. If set to INVALID_INT, it is
       inferred from head_dim and input channels.
@@ -163,21 +163,21 @@ class Unet(nn.Module, ConditionalBackbone):
   def __call__(
       self,
       x: Float["batch height width channels"],
-      conditioning_embeddings: dict[ConditioningMechanism, Float["batch ..."]],
+      conditioning_embeddings: arch_typing.ConditioningEmbeddings,
       *,
       is_training: bool,
   ) -> Float["batch height width output_channels"]:
 
     # Extract conditioning embeddings to use with adaptive normalization.
     adaptive_norm_emb = conditioning_embeddings.get(
-        ConditioningMechanism.ADAPTIVE_NORM
+        'adaptive_norm'
     )
     if adaptive_norm_emb is None:
       raise ValueError("adaptive_norm_emb must be provided.")
 
     # Extract conditioning embeddings to use with cross attention.
     cross_attention_emb = conditioning_embeddings.get(
-        ConditioningMechanism.CROSS_ATTENTION
+        'cross_attention'
     )
     if any(self.cross_attention_bool) and cross_attention_emb is None:
       raise ValueError(
@@ -340,5 +340,5 @@ class Unet(nn.Module, ConditionalBackbone):
         name="OutputBlock",
     )(x)
 
-    x = utils.optional_bf16_to_fp32(x)
+    x = jax_helpers.optional_bf16_to_fp32(x)
     return x

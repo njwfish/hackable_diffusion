@@ -24,7 +24,6 @@ These modules do not cover all possible usecases, but rather provide a reference
 from typing import Protocol, Sequence, cast
 import flax.linen as nn
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import mlp_blocks
 from hackable_diffusion.lib.architecture import sequence_embedders
@@ -39,13 +38,13 @@ import kauldron.ktyping as kt
 DType = hd_typing.DType
 Float = hd_typing.Float
 Num = hd_typing.Num
-PyTree = hd_typing.PyTree
 
-ConditioningMechanism = arch_typing.ConditioningMechanism
+
+
 EmbeddingMergeMethod = arch_typing.EmbeddingMergeMethod
 
 ################################################################################
-# MARK: Base classes
+# MARK: Base Classes
 ################################################################################
 
 
@@ -77,12 +76,12 @@ class BaseConditioningEncoder(Protocol):
       time: hd_typing.TimeArray,
       conditioning: hd_typing.Conditioning | None,
       is_training: bool,
-  ) -> dict[ConditioningMechanism, Float['batch ...']]:
+  ) -> arch_typing.ConditioningEmbeddings:
     ...
 
 
 ################################################################################
-# MARK: Time embedders
+# MARK: Time Embedders
 ################################################################################
 
 
@@ -162,28 +161,8 @@ class IdentityTimeEmbedder(nn.Module, BaseTimeEmbedder):
     return time
 
 
-class NestedTimeEmbedder(nn.Module, BaseTimeEmbedder):
-  """Wrapper for a pytree of time embedders mapped over the time tree."""
-
-  time_embedders: PyTree[BaseTimeEmbedder]
-
-  @nn.compact
-  @kt.typechecked
-  def __call__(self, time: hd_typing.TimeTree) -> Float['batch ...']:
-    # lenient alternative to jax.tree.map
-    t_emb_tree = utils.lenient_map(
-        lambda x, time_embedder: cast(nn.Module, time_embedder).copy()(x),
-        time,
-        self.time_embedders,
-    )
-    # Add all the time embeddings together.
-    leaves, _ = jax.tree_util.tree_flatten(t_emb_tree)
-    t_emb = jnp.sum(jnp.stack(leaves), axis=0)
-    return t_emb
-
-
 ################################################################################
-# MARK: Conditioning embedders
+# MARK: Conditioning Embedders
 ################################################################################
 
 
@@ -359,7 +338,7 @@ class FieldSelector(nn.Module, BaseEmbedder):
 
 
 ################################################################################
-# MARK: Process and combine time and conditioning signals
+# MARK: Process and Combine Time and Conditioning Signals
 ################################################################################
 
 
@@ -386,9 +365,9 @@ class ConditioningEncoder(nn.Module, BaseConditioningEncoder):
         ),
         embedding_merging_method=EmbeddingMergeMethod.SUM,
         conditioning_rules=dict(
-            label_foo =ConditioningMechanism.ADAPTIVE_NORM,
-            label_bar=ConditioningMechanism.CROSS_ATTENTION,
-            time=ConditioningMechanism.ADAPTIVE_NORM,
+            label_foo ='adaptive_norm',
+            label_bar='cross_attention',
+            time='adaptive_norm',
         ),
     )
     ```
@@ -413,7 +392,7 @@ class ConditioningEncoder(nn.Module, BaseConditioningEncoder):
   time_embedder: BaseTimeEmbedder
   conditioning_embedders: dict[str, BaseEmbedder]
   embedding_merging_method: EmbeddingMergeMethod
-  conditioning_rules: dict[str, ConditioningMechanism]
+  conditioning_rules: arch_typing.ConditioningEmbeddings
   conditioning_dropout_rate: float = 0.0
 
   def setup(self):
@@ -448,7 +427,7 @@ class ConditioningEncoder(nn.Module, BaseConditioningEncoder):
       time: hd_typing.TimeTree,
       conditioning: hd_typing.Conditioning | None,
       is_training: bool,
-  ) -> dict[ConditioningMechanism, Num['batch ...']]:
+  ) -> arch_typing.ConditioningEmbeddings:
     """Encodes and combines time and conditioning signals.
 
     The output is a dictionary where keys are the embedding mechanisms specified
@@ -467,7 +446,7 @@ class ConditioningEncoder(nn.Module, BaseConditioningEncoder):
     """
 
     # Embed time.
-    t_emb = cast(nn.Module, self.time_embedder).copy(name='TimeEmbedder')(time)
+    t_emb = self.time_embedder(time)
     batch_size = t_emb.shape[0]
 
     # Encode other conditioning info.
@@ -478,9 +457,7 @@ class ConditioningEncoder(nn.Module, BaseConditioningEncoder):
     if conditioning is not None:
       for embedder_name in self.embedders_names:
         embedder = self.conditioning_embedders[embedder_name]
-        cond_embs[embedder_name] = cast(nn.Module, embedder).copy(
-            name=f'Embedder_{embedder_name}'
-        )(conditioning)
+        cond_embs[embedder_name] = embedder(conditioning)
     else:
       for embedder_name in self.embedders_names:
         embedder = self.conditioning_embedders[embedder_name]

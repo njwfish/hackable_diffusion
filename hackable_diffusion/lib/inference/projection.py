@@ -27,8 +27,6 @@ import kauldron.ktyping as kt
 # MARK: Type Aliases
 ################################################################################
 
-PyTree = hd_typing.PyTree
-
 Conditioning = hd_typing.Conditioning
 DataArray = hd_typing.DataArray
 DataTree = hd_typing.DataTree
@@ -57,7 +55,7 @@ class ProjectionFn(Protocol):
 
 
 ################################################################################
-# MARK: Helper functions
+# MARK: Helper Functions
 ################################################################################
 
 
@@ -131,7 +129,7 @@ def _from_x0(
 
 
 ################################################################################
-# MARK: Projection functions
+# MARK: Projection Functions
 ################################################################################
 
 
@@ -192,7 +190,7 @@ class StaticThresholdProjectionFn(ProjectionFn):
 class DynamicThresholdProjectionFn(ProjectionFn):
   """Dynamic threshold projection function.
 
-  Thee implementation is based on https://arxiv.org/abs/2205.11487.
+  The implementation is based on https://arxiv.org/abs/2205.11487.
 
   Attributes:
     percentile: The percentile to use for the dynamic threshold. Must be between
@@ -230,37 +228,3 @@ class DynamicThresholdProjectionFn(ProjectionFn):
     prediction_type, x0_preds = _to_x0(outputs, xt, time, self.process)
     x0_preds = jax.tree.map(self._dynamic_threshold, x0_preds)
     return _from_x0(x0_preds, xt, time, self.process, prediction_type)
-
-
-#################################################################################
-# MARK: NestedProjectionFn
-################################################################################
-
-
-@dataclasses.dataclass(kw_only=True, frozen=True)
-class NestedProjectionFn(ProjectionFn):
-  """Nested projection function."""
-
-  projection_fns: PyTree[ProjectionFn]
-
-  @kt.typechecked
-  def __call__(
-      self,
-      xt: DataTree,
-      conditioning: Conditioning,
-      time: TimeTree,
-      outputs: TargetInfoTree,
-  ) -> TargetInfoTree:
-    """Nested projection function."""
-    return jax.tree.map(
-        lambda projection_fn, xt, time, output: projection_fn(
-            xt=xt,
-            conditioning=conditioning,
-            time=time,
-            outputs=output,
-        ),
-        self.projection_fns,
-        xt,
-        time,
-        outputs,
-    )
