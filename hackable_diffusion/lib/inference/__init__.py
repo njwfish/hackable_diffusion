@@ -17,7 +17,6 @@
 # pylint: disable=g-importing-member
 from hackable_diffusion.lib.inference.base import InferenceFn
 from hackable_diffusion.lib.inference.diffusion_inference import GuidedDiffusionInferenceFn
-from hackable_diffusion.lib.inference.distributional import DistributionalInferenceFn
 from hackable_diffusion.lib.inference.guidance import GuidanceFn
 from hackable_diffusion.lib.inference.guidance import LimitedIntervalGuidanceFn
 from hackable_diffusion.lib.inference.guidance import NestedGuidanceFn

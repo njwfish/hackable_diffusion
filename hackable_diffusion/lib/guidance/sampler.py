@@ -267,11 +267,10 @@ class ConditionalDiffusionSampler:
       return next_step, raw_outputs, outputs_corrected
 
     # Initial twist evaluation at (xt_0, t_0).  Stochastic inference fns
-    # (e.g. DistributionalInferenceFn) need an rng to draw their per-call
-    # noise; deterministic inference fns ignore it entirely.  Split only
-    # in the stochastic branch so the rng stream feeding the scan body is
-    # bit-identical to the pre-fix behaviour for every existing
-    # deterministic-inference-fn caller.
+    # need an rng to draw their per-call noise; deterministic inference
+    # fns ignore it entirely.  Split only in the stochastic branch so the
+    # rng stream feeding the scan body is bit-identical to the pre-fix
+    # behaviour for every existing deterministic-inference-fn caller.
     if uses_rng:
       rng, initial_twist_rng = jax.random.split(rng)
     else:

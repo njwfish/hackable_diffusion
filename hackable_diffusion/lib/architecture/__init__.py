@@ -41,7 +41,6 @@ from hackable_diffusion.lib.architecture.discrete import BaseTokenEmbedder
 from hackable_diffusion.lib.architecture.discrete import ConditionalDiscreteBackbone
 from hackable_diffusion.lib.architecture.discrete import DenseProjector
 from hackable_diffusion.lib.architecture.discrete import TokenEmbedder
-from hackable_diffusion.lib.architecture.distributional import NoiseTrimBackbone
 from hackable_diffusion.lib.architecture.dit import DiT
 from hackable_diffusion.lib.architecture.dit_blocks import DePatchify
 from hackable_diffusion.lib.architecture.dit_blocks import DiTBlockAdaLNZero
