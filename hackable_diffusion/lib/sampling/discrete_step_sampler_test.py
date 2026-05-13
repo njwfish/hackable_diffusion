@@ -249,6 +249,79 @@ class UnMaskingStepTest(absltest.TestCase):
     expected_xt = jnp.ones_like(self.initial_noise)
     chex.assert_trees_all_equal(final_step.xt, expected_xt)
 
+  def _reference_unmasking_routing_weights(
+      self, alpha_s, alpha_t, is_masked, sigma=0.0
+  ):
+    """Compute expected routing weights from the paper formulas."""
+    if is_masked:
+      p_clean = (alpha_s - (1.0 - sigma) * alpha_t) / (1.0 - alpha_t)
+      p_noise = sigma
+      p_stay = 1.0 - p_clean - p_noise
+    else:
+      p_clean = 0.0
+      p_noise = sigma
+      p_stay = 1.0 - sigma
+    return p_stay, p_noise, p_clean
+
+  def test_numerical_routing_early_masked(self):
+    """Verify routing weight formulas against independent computation."""
+    for alpha_s, alpha_t, is_masked, sigma in [
+        (0.9, 0.5, True, 0.0),
+        (0.6, 0.3, True, 0.0),
+        (0.2, 0.05, True, 0.0),
+        (0.9, 0.5, False, 0.0),
+        (0.8, 0.4, True, 0.1),
+        (0.8, 0.4, False, 0.1),
+    ]:
+      p_stay, p_noise, p_clean = self._reference_unmasking_routing_weights(
+          alpha_s, alpha_t, is_masked, sigma
+      )
+
+      # Reproduce the computation from UnMaskingStep.update
+      alpha_s_arr = jnp.array(alpha_s)
+      alpha_t_arr = jnp.array(alpha_t)
+      p_st = jnp.array(sigma)
+
+      if is_masked:
+        code_p_clean = (alpha_s_arr - (1.0 - p_st) * alpha_t_arr) / (
+            1.0 - alpha_t_arr
+        )
+        code_p_noise = p_st
+        code_p_stay = 1.0 - code_p_clean - code_p_noise
+      else:
+        code_p_stay = 1.0 - p_st
+        code_p_noise = p_st
+        code_p_clean = jnp.zeros_like(p_st)
+
+      chex.assert_trees_all_close(
+          jnp.array([code_p_stay, code_p_noise, code_p_clean]),
+          jnp.array([p_stay, p_noise, p_clean]),
+          atol=1e-7,
+      )
+
+  def test_numerical_full_unmask_gives_all_clean(self):
+    """At t->0 all masked positions should go clean (alpha_s=1, alpha_t<1)."""
+    # For LinearDiscreteSchedule: alpha(0) = 1.0, alpha(t) = 1 - t.
+    alpha_s = 1.0
+    alpha_t = 0.5  # alpha(0.5) for linear schedule
+
+    p_stay, p_noise, p_clean = self._reference_unmasking_routing_weights(
+        alpha_s, alpha_t, is_masked=True, sigma=0.0
+    )
+    # All probability should be on clean
+    self.assertAlmostEqual(p_clean, 1.0, places=6)
+    self.assertAlmostEqual(p_stay, 0.0, places=6)
+    self.assertAlmostEqual(p_noise, 0.0, places=6)
+
+  def test_numerical_no_unmask_gives_all_stay(self):
+    """When alpha_s == alpha_t (same time), everything stays."""
+    alpha = 0.5
+    p_stay, p_noise, p_clean = self._reference_unmasking_routing_weights(
+        alpha, alpha, is_masked=True, sigma=0.0
+    )
+    self.assertAlmostEqual(p_clean, 0.0, places=6)
+    self.assertAlmostEqual(p_stay, 1.0, places=6)
+
   def test_fail_for_masking_process(self):
     process = CategoricalProcess.uniform_process(
         schedule=self.schedule, num_categories=self.num_categories
@@ -398,6 +471,35 @@ class DiscreteDDIMStepTest(absltest.TestCase):
 
     expected_xt = jnp.ones_like(self.initial_noise)
     chex.assert_trees_all_close(final_step.xt, expected_xt)
+
+  def test_numerical_routing_weights_nonnegative(self):
+    """All routing weights should be non-negative for valid alpha pairs."""
+    for alpha_s in [0.1, 0.3, 0.5, 0.7, 0.9]:
+      for alpha_t in [0.01, 0.05, 0.1]:
+        if alpha_t >= alpha_s:
+          continue
+        ratio = alpha_t / alpha_s
+        pi_xt = 0.25
+        p_stay = ratio * (1.0 - alpha_s) * pi_xt
+        p_noise = (1.0 - ratio) * (1.0 - alpha_s) * pi_xt
+        p_clean = (1.0 - ratio) * alpha_s * pi_xt
+        self.assertGreaterEqual(p_stay, 0.0)
+        self.assertGreaterEqual(p_noise, 0.0)
+        self.assertGreaterEqual(p_clean, 0.0)
+
+  def test_numerical_weights_sum_to_one(self):
+    """Routing weights (stay + noise + clean) should always sum to 1."""
+    alpha_s, alpha_t = 0.7, 0.2
+    ratio = alpha_t / alpha_s
+    pi_xt = 0.25
+
+    p_stay = ratio * (1.0 - alpha_s) * pi_xt
+    p_noise = (1.0 - ratio) * (1.0 - alpha_s) * pi_xt
+    p_clean = (1.0 - ratio) * alpha_s * pi_xt
+    total = p_stay + p_noise + p_clean
+    self.assertAlmostEqual(
+        (p_stay + p_noise + p_clean) / total, 1.0, places=10
+    )
 
   def test_fail_for_masking_process(self):
     process = CategoricalProcess.masking_process(
@@ -567,6 +669,103 @@ class IntegratedDiscreteDDIMStepTest(absltest.TestCase):
     expected_xt = jnp.ones_like(self.initial_noise)
     chex.assert_trees_all_close(final_step.xt, expected_xt)
 
+  def _reference_integrated_posterior(
+      self, xt_val, alpha_s, alpha_t, p_x0_given_xt, invariant_probs
+  ):
+    """Compute p(x_s | x_t) independently using the marginalization formula."""
+    voc_size = len(invariant_probs)
+    pi_xt = invariant_probs[xt_val]
+    ratio = alpha_t / alpha_s
+
+    # Compute w(x_0, x_t) for each x_0
+    w = []
+    for x0 in range(voc_size):
+      q_xt_given_x0 = alpha_t * float(x0 == xt_val) + (
+          1.0 - alpha_t
+      ) * pi_xt
+      w.append(p_x0_given_xt[x0] / max(q_xt_given_x0, 1e-12))
+    w = jnp.array(w)
+    sum_w = jnp.sum(w)
+
+    # Compute p(x_s | x_t) for each x_s
+    p_xs = []
+    for xs in range(voc_size):
+      q_xt_given_xs = ratio * float(xs == xt_val) + (1.0 - ratio) * pi_xt
+      expected_xs = (
+          alpha_s * w[xs] + (1.0 - alpha_s) * sum_w * invariant_probs[xs]
+      )
+      p_xs.append(float(q_xt_given_xs * expected_xs))
+
+    p_xs = jnp.array(p_xs)
+    return p_xs / jnp.sum(p_xs)
+
+  def _code_integrated_posterior(
+      self, xt_val, alpha_s, alpha_t, p_x0_given_xt, invariant_probs
+  ):
+    """Reproduce the computation from IntegratedDiscreteDDIMStep.update."""
+    voc_size = len(invariant_probs)
+    pi = jnp.array(invariant_probs)
+    pi_xt = pi[xt_val]
+
+    xt_oh = jax.nn.one_hot(xt_val, num_classes=voc_size)
+    p_x0 = jnp.array(p_x0_given_xt)
+
+    ratio = alpha_t / alpha_s
+
+    q_xt_given_xs = ratio * xt_oh + (1.0 - ratio) * pi_xt
+    q_xt_given_x0 = alpha_t * xt_oh + (1.0 - alpha_t) * pi_xt
+
+    w_x0 = p_x0 / jnp.clip(q_xt_given_x0, min=1e-12)
+    sum_w = jnp.sum(w_x0)
+
+    expected_xs_given_x0 = alpha_s * w_x0 + (1.0 - alpha_s) * pi * sum_w
+    p_xs = q_xt_given_xs * expected_xs_given_x0
+    return p_xs / jnp.sum(p_xs)
+
+  def test_numerical_marginalized_posterior(self):
+    """Verify code posterior matches independently derived posterior."""
+    test_cases = [
+        (0, 0.8, 0.3, [0.25, 0.25, 0.25, 0.25], [0.25, 0.25, 0.25, 0.25]),
+        (1, 0.7, 0.2, [0.25, 0.25, 0.25, 0.25], [0.05, 0.8, 0.1, 0.05]),
+        (0, 0.6, 0.1, [0.5, 0.2, 0.2, 0.1], [0.4, 0.3, 0.2, 0.1]),
+        (2, 0.99, 0.01, [0.3, 0.3, 0.4], [0.1, 0.1, 0.8]),
+    ]
+    for xt_val, alpha_s, alpha_t, inv_probs, p_x0_probs in test_cases:
+      inv = jnp.array(inv_probs)
+      p_ref = self._reference_integrated_posterior(
+          xt_val, alpha_s, alpha_t, p_x0_probs, inv
+      )
+      p_code = self._code_integrated_posterior(
+          xt_val, alpha_s, alpha_t, p_x0_probs, inv
+      )
+      chex.assert_trees_all_close(p_ref, p_code, atol=1e-6)
+
+  def test_numerical_posterior_is_valid_distribution(self):
+    """The posterior should sum to 1 and have non-negative entries."""
+    invariant_probs = jnp.array([0.3, 0.3, 0.4])
+    p_x0 = jnp.array([0.2, 0.5, 0.3])
+
+    for xt_val in range(3):
+      p = self._reference_integrated_posterior(
+          xt_val, 0.7, 0.2, p_x0, invariant_probs
+      )
+      self.assertAlmostEqual(float(jnp.sum(p)), 1.0, places=6)
+      self.assertTrue(jnp.all(p >= -1e-12))
+
+  def test_numerical_posterior_at_same_time_is_identity(self):
+    """When alpha_s == alpha_t, the posterior should concentrate on x_t."""
+    invariant_probs = jnp.array([0.25, 0.25, 0.25, 0.25])
+    p_x0 = jnp.array([0.2, 0.3, 0.3, 0.2])
+    xt_val = 1
+    alpha = 0.5
+
+    p = self._reference_integrated_posterior(
+        xt_val, alpha, alpha, p_x0, invariant_probs
+    )
+    # When s == t, p(x_s | x_t) should be delta(x_t)
+    expected = jnp.zeros(4).at[xt_val].set(1.0)
+    chex.assert_trees_all_close(p, expected, atol=1e-6)
+
   def test_fail_for_masking_process(self):
     process = CategoricalProcess.masking_process(
         schedule=self.schedule, num_categories=self.num_categories
@@ -687,6 +886,99 @@ class DiscreteFlowMatchingStepTest(absltest.TestCase):
         next_step_info=next_step_info_no,
     )
     chex.assert_trees_all_equal(next_step_no.xt, initial_step.xt)
+
+  def _reference_dfm_routing(self, alpha_s, alpha_t, stoch_coeff=0.0):
+    """Compute expected routing weights from the paper formulas."""
+    p_clean_raw = (alpha_s - alpha_t) / max(1.0 - alpha_t, 1e-12) * (
+        1.0 + stoch_coeff
+    )
+    p_noise_raw = (
+        (alpha_s - alpha_t) / max(alpha_t, 1e-12) * stoch_coeff
+    )
+
+    p_clean_raw = max(p_clean_raw, 0.0)
+    p_noise_raw = max(p_noise_raw, 0.0)
+    scale = max(1.0, p_clean_raw + p_noise_raw)
+
+    p_clean = p_clean_raw / scale
+    p_noise = p_noise_raw / scale
+    p_stay = 1.0 - p_clean - p_noise
+    return p_stay, p_noise, p_clean
+
+  def test_numerical_routing_weights_match_reference(self):
+    """Verify routing weights match the independently derived formula."""
+    test_cases = [
+        (0.8, 0.5, 0.0),
+        (0.95, 0.9, 0.0),
+        (0.8, 0.5, 0.5),
+        (0.8, 0.5, 1.0),
+        (0.5, 0.5, 0.0),
+        (0.99, 0.01, 0.0),
+        (0.99, 0.01, 1.0),
+    ]
+    for alpha_s, alpha_t, stoch_coeff in test_cases:
+      ref_stay, ref_noise, ref_clean = self._reference_dfm_routing(
+          alpha_s, alpha_t, stoch_coeff
+      )
+
+      # Reproduce the computation from DiscreteFlowMatchingStep.update
+      alpha_s_arr = jnp.array(alpha_s)
+      alpha_t_arr = jnp.array(alpha_t)
+
+      p_clean_raw = (
+          (alpha_s_arr - alpha_t_arr)
+          / jnp.maximum(1.0 - alpha_t_arr, 1e-12)
+          * (1.0 + stoch_coeff)
+      )
+      p_noise_raw = (
+          (alpha_s_arr - alpha_t_arr)
+          / jnp.maximum(alpha_t_arr, 1e-12)
+          * stoch_coeff
+      )
+      p_clean_raw = jnp.maximum(p_clean_raw, 0.0)
+      p_noise_raw = jnp.maximum(p_noise_raw, 0.0)
+      scale = jnp.maximum(1.0, p_clean_raw + p_noise_raw)
+      code_p_clean = p_clean_raw / scale
+      code_p_noise = p_noise_raw / scale
+      code_p_stay = 1.0 - code_p_clean - code_p_noise
+
+      chex.assert_trees_all_close(
+          jnp.array([code_p_stay, code_p_noise, code_p_clean]),
+          jnp.array([ref_stay, ref_noise, ref_clean]),
+          atol=1e-7,
+      )
+
+  def test_numerical_deterministic_weights_sum_to_one(self):
+    """With gamma=0, p_stay + p_clean = 1 and p_noise = 0."""
+    for alpha_s in [0.3, 0.5, 0.7, 0.95]:
+      for alpha_t in [0.05, 0.1, 0.2]:
+        if alpha_t >= alpha_s:
+          continue
+        p_stay, p_noise, p_clean = self._reference_dfm_routing(
+            alpha_s, alpha_t, 0.0
+        )
+        self.assertAlmostEqual(p_stay + p_noise + p_clean, 1.0, places=10)
+        self.assertAlmostEqual(p_noise, 0.0, places=10)
+
+  def test_numerical_same_time_all_stay(self):
+    """When alpha_s == alpha_t, no denoising should occur."""
+    p_stay, p_noise, p_clean = self._reference_dfm_routing(0.5, 0.5, 0.0)
+    self.assertAlmostEqual(p_stay, 1.0, places=10)
+    self.assertAlmostEqual(p_clean, 0.0, places=10)
+
+  def test_numerical_weights_nonneg_after_clipping(self):
+    """All routing weights should be non-negative even with high gamma."""
+    for gamma in [0.0, 0.5, 1.0, 2.0, 5.0]:
+      for alpha_s in [0.3, 0.5, 0.8]:
+        for alpha_t in [0.05, 0.1, 0.2]:
+          if alpha_t >= alpha_s:
+            continue
+          p_stay, p_noise, p_clean = self._reference_dfm_routing(
+              alpha_s, alpha_t, gamma
+          )
+          self.assertGreaterEqual(p_stay, -1e-12)
+          self.assertGreaterEqual(p_noise, -1e-12)
+          self.assertGreaterEqual(p_clean, -1e-12)
 
   def test_update_with_gamma(self):
     num_samples = 10
@@ -910,12 +1202,13 @@ class DDIMRoutingEquivalenceTest(absltest.TestCase):
         chex.assert_trees_all_close(p_exact, p_route, atol=1e-6)
 
 
+
 class ApplyRoutingTest(absltest.TestCase):
   """Tests for the _sample_routing helper."""
 
   def test_deterministic_stay(self):
-    # routing_weights = [1, 0, 0] means stay.
-    routing_weights = discrete_step_sampler.RoutingWeights(
+    # weights = [1, 0, 0] means stay.
+    weights = discrete_step_sampler.Routing(
         stay=jnp.array([[[1.0], [1.0]]]),
         noise=jnp.array([[[0.0], [0.0]]]),
         clean=jnp.array([[[0.0], [0.0]]]),
@@ -926,17 +1219,17 @@ class ApplyRoutingTest(absltest.TestCase):
     key = jax.random.PRNGKey(0)
 
     new_xt = discrete_step_sampler._sample_routing(
-        routing_weights=routing_weights,
-        xt=xt,
-        x0=x0,
-        x_noise=x_noise,
         key=key,
+        weights=weights,
+        candidates=discrete_step_sampler.Routing(
+            stay=xt, noise=x_noise, clean=x0,
+        ),
     )
     chex.assert_trees_all_equal(new_xt, xt)
 
   def test_deterministic_clean(self):
-    # routing_weights = [0, 0, 1] means jump to x0.
-    routing_weights = discrete_step_sampler.RoutingWeights(
+    # weights = [0, 0, 1] means jump to x0.
+    weights = discrete_step_sampler.Routing(
         stay=jnp.array([[[0.0], [0.0]]]),
         noise=jnp.array([[[0.0], [0.0]]]),
         clean=jnp.array([[[1.0], [1.0]]]),
@@ -947,17 +1240,17 @@ class ApplyRoutingTest(absltest.TestCase):
     key = jax.random.PRNGKey(0)
 
     new_xt = discrete_step_sampler._sample_routing(
-        routing_weights=routing_weights,
-        xt=xt,
-        x0=x0,
-        x_noise=x_noise,
         key=key,
+        weights=weights,
+        candidates=discrete_step_sampler.Routing(
+            stay=xt, noise=x_noise, clean=x0,
+        ),
     )
     chex.assert_trees_all_equal(new_xt, x0)
 
   def test_deterministic_noise(self):
-    # routing_weights = [0, 1, 0] means jump to noise.
-    routing_weights = discrete_step_sampler.RoutingWeights(
+    # weights = [0, 1, 0] means jump to noise.
+    weights = discrete_step_sampler.Routing(
         stay=jnp.array([[[0.0], [0.0]]]),
         noise=jnp.array([[[1.0], [1.0]]]),
         clean=jnp.array([[[0.0], [0.0]]]),
@@ -968,17 +1261,17 @@ class ApplyRoutingTest(absltest.TestCase):
     key = jax.random.PRNGKey(0)
 
     new_xt = discrete_step_sampler._sample_routing(
-        routing_weights=routing_weights,
-        xt=xt,
-        x0=x0,
-        x_noise=x_noise,
         key=key,
+        weights=weights,
+        candidates=discrete_step_sampler.Routing(
+            stay=xt, noise=x_noise, clean=x0,
+        ),
     )
     chex.assert_trees_all_equal(new_xt, x_noise)
 
   def test_mixed_routing(self):
     # Position 0: deterministic stay, Position 1: deterministic clean.
-    routing_weights = discrete_step_sampler.RoutingWeights(
+    weights = discrete_step_sampler.Routing(
         stay=jnp.array([[[1.0], [0.0]]]),
         noise=jnp.array([[[0.0], [0.0]]]),
         clean=jnp.array([[[0.0], [1.0]]]),
@@ -989,18 +1282,18 @@ class ApplyRoutingTest(absltest.TestCase):
     key = jax.random.PRNGKey(0)
 
     new_xt = discrete_step_sampler._sample_routing(
-        routing_weights=routing_weights,
-        xt=xt,
-        x0=x0,
-        x_noise=x_noise,
         key=key,
+        weights=weights,
+        candidates=discrete_step_sampler.Routing(
+            stay=xt, noise=x_noise, clean=x0,
+        ),
     )
     expected = jnp.array([[[3], [1]]])
     chex.assert_trees_all_equal(new_xt, expected)
 
   def test_stochastic_routing(self):
     # 50/50 stay vs clean — results should vary across seeds.
-    routing_weights = discrete_step_sampler.RoutingWeights(
+    weights = discrete_step_sampler.Routing(
         stay=jnp.array([[[0.5]]]),
         noise=jnp.array([[[0.0]]]),
         clean=jnp.array([[[0.5]]]),
@@ -1012,22 +1305,17 @@ class ApplyRoutingTest(absltest.TestCase):
     results = set()
     for seed in range(50):
       new_xt = discrete_step_sampler._sample_routing(
-          routing_weights=routing_weights,
-          xt=xt,
-          x0=x0,
-          x_noise=x_noise,
           key=jax.random.PRNGKey(seed),
+          weights=weights,
+          candidates=discrete_step_sampler.Routing(
+              stay=xt, noise=x_noise, clean=x0,
+          ),
       )
       results.add(int(new_xt[0, 0, 0]))
 
     # Should see both stay (3) and clean (0).
     self.assertIn(3, results)
     self.assertIn(0, results)
-
-  def test_routing_constants(self):
-    self.assertEqual(discrete_step_sampler.RoutingAction.STAY, 0)
-    self.assertEqual(discrete_step_sampler.RoutingAction.NOISE, 1)
-    self.assertEqual(discrete_step_sampler.RoutingAction.CLEAN, 2)
 
 
 class PlannerProtocolTest(absltest.TestCase):
@@ -1040,7 +1328,7 @@ class PlannerProtocolTest(absltest.TestCase):
         return routing_weights
 
     planner = IdentityPlanner()
-    routing_weights = discrete_step_sampler.RoutingWeights(
+    routing_weights = discrete_step_sampler.Routing(
         stay=jnp.array([[[0.2]]]),
         noise=jnp.array([[[0.3]]]),
         clean=jnp.array([[[0.5]]]),
@@ -1057,37 +1345,39 @@ class PlannerProtocolTest(absltest.TestCase):
     chex.assert_trees_all_equal(out, routing_weights)
 
 
-class RoutingWeightsTest(absltest.TestCase):
-  """Tests for RoutingWeights shape validation."""
+class RoutingTest(absltest.TestCase):
+  """Tests for the Routing container."""
 
   def test_consistent_shapes_accepted(self):
-    """RoutingWeights with matching shapes should construct without error."""
-    w = discrete_step_sampler.RoutingWeights(
+    """Routing with matching shapes should construct without error."""
+    r = discrete_step_sampler.Routing(
         stay=jnp.ones((2, 4, 1)),
         noise=jnp.ones((2, 4, 1)),
         clean=jnp.ones((2, 4, 1)),
     )
-    self.assertEqual(w.stay.shape, (2, 4, 1))
+    self.assertEqual(r.stay.shape, (2, 4, 1))
 
-  def test_mismatched_shapes_raises(self):
-    """RoutingWeights with inconsistent shapes should raise ValueError."""
-    with self.assertRaisesRegex(
-        ValueError, 'RoutingWeights fields must all have the same shape'
-    ):
-      discrete_step_sampler.RoutingWeights(
-          stay=jnp.ones((1, 64, 64)),
-          noise=jnp.ones((1, 1)),
-          clean=jnp.ones((1, 64, 64)),
-      )
+  def test_to_stacked(self):
+    """to_stacked should produce a (..., 3) array."""
+    r = discrete_step_sampler.Routing(
+        stay=jnp.array([0.5]),
+        noise=jnp.array([0.3]),
+        clean=jnp.array([0.2]),
+    )
+    stacked = r.to_stacked()
+    self.assertEqual(stacked.shape, (1, 3))
+    chex.assert_trees_all_close(
+        stacked, jnp.array([[0.5, 0.3, 0.2]]),
+    )
 
   def test_scalar_accepted(self):
-    """Scalar routing weights are valid with jnp.stack."""
-    w = discrete_step_sampler.RoutingWeights(
+    """Scalar routing fields are valid with jnp.stack."""
+    r = discrete_step_sampler.Routing(
         stay=jnp.array(0.5),
         noise=jnp.array(0.3),
         clean=jnp.array(0.2),
     )
-    self.assertEqual(w.stay.shape, ())
+    self.assertEqual(r.stay.shape, ())
 
 
 class GreedyPlannerTest(absltest.TestCase):
@@ -1095,7 +1385,7 @@ class GreedyPlannerTest(absltest.TestCase):
   def test_greedy_planner_budget(self):
     planner = discrete_step_sampler.GreedyPlanner()
     # 1 batch, 4 seq len. Realistic routing: all eligible with stay/noise > 0.
-    routing_weights = discrete_step_sampler.RoutingWeights(
+    routing_weights = discrete_step_sampler.Routing(
         stay=jnp.full((1, 4, 1), 0.3),
         noise=jnp.full((1, 4, 1), 0.2),
         clean=jnp.full((1, 4, 1), 0.5),
@@ -1113,7 +1403,7 @@ class GreedyPlannerTest(absltest.TestCase):
 
     # Top 2 positions → force CLEAN (stay=0, noise=0, clean=1).
     # Non-selected → keep original stay/noise, zero out clean.
-    expected = discrete_step_sampler.RoutingWeights(
+    expected = discrete_step_sampler.Routing(
         stay=jnp.array([[[0.0], [0.0], [0.3], [0.3]]]),
         noise=jnp.array([[[0.0], [0.0], [0.2], [0.2]]]),
         clean=jnp.array([[[1.0], [1.0], [0.0], [0.0]]]),
@@ -1125,7 +1415,7 @@ class GreedyPlannerTest(absltest.TestCase):
   def test_greedy_planner_eligibility(self):
     planner = discrete_step_sampler.GreedyPlanner()
     # Position 0 is NOT eligible (p_clean = 0), has original stay=1.0.
-    routing_weights = discrete_step_sampler.RoutingWeights(
+    routing_weights = discrete_step_sampler.Routing(
         stay=jnp.array([[[1.0], [0.3], [0.3], [0.3]]]),
         noise=jnp.array([[[0.0], [0.2], [0.2], [0.2]]]),
         clean=jnp.array([[[0.0], [0.5], [0.5], [0.5]]]),
@@ -1145,7 +1435,7 @@ class GreedyPlannerTest(absltest.TestCase):
     # Budget = 3 * 0.5 = 1 (truncated to int).
     # Top 1 eligible position by confidence: Pos 1 → force CLEAN.
     # Non-selected (Pos 0, 2, 3) → keep original stay/noise, zero clean.
-    expected = discrete_step_sampler.RoutingWeights(
+    expected = discrete_step_sampler.Routing(
         stay=jnp.array([[[1.0], [0.0], [0.3], [0.3]]]),
         noise=jnp.array([[[0.0], [0.0], [0.2], [0.2]]]),
         clean=jnp.array([[[0.0], [1.0], [0.0], [0.0]]]),
@@ -1157,7 +1447,7 @@ class GreedyPlannerTest(absltest.TestCase):
   def test_greedy_planner_k_zero(self):
     """When clean weight is small, budget k=0. Keep original stay/noise."""
     planner = discrete_step_sampler.GreedyPlanner()
-    routing_weights = discrete_step_sampler.RoutingWeights(
+    routing_weights = discrete_step_sampler.Routing(
         stay=jnp.full((1, 4, 1), 0.7),
         noise=jnp.full((1, 4, 1), 0.2),
         clean=jnp.full((1, 4, 1), 0.1),
@@ -1172,7 +1462,7 @@ class GreedyPlannerTest(absltest.TestCase):
     out_probs = planner(routing_weights, logits, x0, xt, time, next_time, key)
 
     # k=0: no positions selected. All keep original stay/noise, clean zeroed.
-    expected = discrete_step_sampler.RoutingWeights(
+    expected = discrete_step_sampler.Routing(
         stay=jnp.full((1, 4, 1), 0.7),
         noise=jnp.full((1, 4, 1), 0.2),
         clean=jnp.zeros((1, 4, 1)),
@@ -1188,7 +1478,7 @@ class GreedyPlannerTest(absltest.TestCase):
     """
     planner = discrete_step_sampler.GreedyPlanner()
     # Shape (1, 3, 3, 1): batch=1, spatial=(3,3), vocab_trailing=1.
-    routing_weights = discrete_step_sampler.RoutingWeights(
+    routing_weights = discrete_step_sampler.Routing(
         stay=jnp.full((1, 3, 3, 1), 0.3),
         noise=jnp.full((1, 3, 3, 1), 0.2),
         clean=jnp.full((1, 3, 3, 1), 0.5),

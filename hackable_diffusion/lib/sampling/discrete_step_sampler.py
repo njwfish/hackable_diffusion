@@ -18,12 +18,14 @@ This module implements various discrete samplers (UnMasking, DDIM, Flow
 Matching) using a unified **routing** architecture.
 
 Core concepts:
+
 * **Routing**: Samplers decompose the transition probability into a mixture of
   three actions:
-  - STAY (0): Keep the current token `xt`.
-  - NOISE (1): Sample from the invariant distribution.
-  - CLEAN (2): Use the predicted clean token `x0`.
-* **RoutingWeightPlanner**: An optional transformation applied to routing
+  - Stay: Keep the current token `xt`.
+  - Noise: Sample from the invariant distribution.
+  - Clean: Use the predicted clean token `x0`.
+  
+* **RoutingStrategy**: An optional transformation applied to routing
   weights before they are sampled. This allows injecting custom selection
   strategies (e.g., greedy top-k) without modifying the sampler physics.
 
@@ -84,25 +86,29 @@ Standard interface for all samplers:
 
 This module also introduces the concepts of Routing and Planning for discrete
 diffusion:
-- Routing: Defines the transition probabilities at each position among the
-  three actions: stay at current token, sample from invariant distribution
-  (noise),
-  or use predicted clean token. Samplers compute these weights based on the
-  diffusion posterior.
-- Planning: An optional mechanism that intercepts and modifies these routing
-  weights before they are applied. For example, a planner might force the
-  most confident positions to go clean (budgeting) instead of sampling
-  stochastically.
+- ``Routing``: A lightweight container that groups three parallel arrays
+  (stay, noise, clean).  It is used in two roles:
+  1. **Weights**: the per-position transition probabilities among the three
+     actions (stay at current token, sample from noise, use predicted clean
+     token).
+  2. **Candidates**: the actual token values that correspond to each action
+     (xt, x_noise, x0).
+  Both roles share the same ``Routing`` type so that ``_sample_routing`` can
+  accept weights and candidates with a uniform interface.
+- Planning: An optional ``RoutingStrategy`` that intercepts and modifies the
+  routing *weights* before they are applied. For example, a planner might
+  force the most confident positions to go clean (budgeting) instead of
+  sampling stochastically.
 
 How they interact:
-Samplers first compute the default routing weights. If a planner is present,
-it transforms these weights (e.g., zeroing out some pathways, forcing others).
-Finally, `_sample_routing` samples the next state based on these (possibly
-modified) weights.
+Samplers first compute the default routing weights (a ``Routing`` of
+probabilities). If a planner is present, it transforms these weights
+(e.g., zeroing out some pathways, forcing others). Finally,
+``_sample_routing`` draws an action for each position from the weights
+and picks the corresponding token from the candidates ``Routing``.
 """
 
 import dataclasses
-import enum
 from typing import Protocol
 
 from hackable_diffusion.lib import hd_typing
@@ -302,9 +308,9 @@ class MaskValueCorruptedMaskFn(CorruptedMaskFn):
 ################################################################################
 
 # Almost all discrete samplers compute a 3-way routing for each token position:
-#   0 = stay at current token (xt)
-#   1 = sample from invariant distribution (noise)
-#   2 = use predicted clean token (x0)
+#   * stay at current token (xt)
+#   * sample from invariant distribution (noise)
+#   * use predicted clean token (x0)
 #
 # The routing weights (p_stay, p_noise, p_clean) are computed by each
 # sampler and applied via the shared `_sample_routing` helper.
@@ -312,45 +318,24 @@ class MaskValueCorruptedMaskFn(CorruptedMaskFn):
 # probabilities into the update rule.
 
 
-class RoutingAction(enum.IntEnum):
-  STAY = 0
-  NOISE = 1
-  CLEAN = 2
-
-
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class RoutingWeights:
-  """Per-position routing weights for the 3-way discrete diffusion update.
-
-  All three fields must have the same shape.
-
-  Attributes:
-    stay: Probability of staying at the current token.
-    noise: Probability of sampling from the invariant distribution.
-    clean: Probability of using the predicted clean token.
-  """
+class Routing:
+  """Container for 3-way routing components."""
 
   stay: Float['...']
   noise: Float['...']
   clean: Float['...']
 
-  def __post_init__(self):
-    if not (self.stay.shape == self.noise.shape == self.clean.shape):
-      raise ValueError(
-          'RoutingWeights fields must all have the same shape, got'
-          f' stay={self.stay.shape}, noise={self.noise.shape},'
-          f' clean={self.clean.shape}.'
-      )
+  def to_stacked(self, axis=-1) -> Float['... 3']:
+    """Stacks fields into a single array for vectorized operations."""
+    return jnp.stack([self.stay, self.noise, self.clean], axis=axis)
 
 
 def _sample_routing(
-    *,
-    routing_weights: RoutingWeights,
-    xt: DataArray,
-    x0: DataArray,
-    x_noise: DataArray,
     key: PRNGKey,
-) -> DataArray:
+    weights: Routing,
+    candidates: Routing
+    ) -> DataArray:
   """Apply 3-way routing to construct the next state.
 
   3-way routing determines the next state by sampling from a mixture of three
@@ -361,35 +346,25 @@ def _sample_routing(
 
   The computation operates by:
   1. Stacking the weights for stay, noise, and clean into a new last axis.
-  2. Sampling an action index (0, 1, or 2) for each position using
-     ``jax.random.categorical``.
-  3. Selecting the corresponding token (xt, x_noise, or x0) based on the
-     sampled action.
+  2. Sampling an action index (stay, noise or clean) for each position using
+     `jax.random.categorical`.
+  3. Selecting and combining the corresponding token (xt, x_noise, or x0) based
+     on the action (stay, noise or clean).
 
   Args:
-    routing_weights: Routing weights containing stay, noise, and clean arrays.
-      Each field has shape ``(*)``.
-    xt: Current state. Shape ``(*, 1)``.
-    x0: Predicted clean state. Shape ``(*, 1)``.
-    x_noise: Sample from invariant distribution. Shape ``(*, 1)``.
-    key: Random key for categorical sampling.
+    key: Random key for sampling.
+    weights: Routing weights (stay, noise, clean).
+    candidates: Candidate tokens (xt, x_noise, x0).
 
   Returns:
-    The new state ``new_xt``. Shape ``(*, 1)``.
+    The sampled token, a linear combination of the candidates weighted by the
+    sampled action.
   """
-  weights = jnp.stack(
-      [routing_weights.stay, routing_weights.noise, routing_weights.clean],
-      axis=-1,
-  )
-  action = jax.random.categorical(
-      key=key, logits=jnp.log(jnp.maximum(weights, 1e-12))
-  )
-  new_xt = jnp.where(
-      action == RoutingAction.CLEAN,
-      x0,
-      jnp.where(action == RoutingAction.NOISE, x_noise, xt),
-  )
-  return new_xt
+  logits = jnp.log(jnp.maximum(weights.to_stacked(), 1e-12))
+  indices = jax.random.categorical(key, logits)
+  masks = jax.nn.one_hot(indices, num_classes=3)  # stay, noise, clean
+  candidate_stack = candidates.to_stacked()
+  return jnp.sum(masks * candidate_stack, axis=-1).astype(candidate_stack.dtype)
 
 
 def _generate_candidates(
@@ -433,14 +408,14 @@ class RoutingStrategy(Protocol):
 
   def __call__(
       self,
-      routing_weights: RoutingWeights,
+      routing_weights: Routing,
       logits: Float['... M'],
       x0: DataArray,
       xt: DataArray,
       time: TimeArray,
       next_time: TimeArray,
       key: PRNGKey,
-  ) -> RoutingWeights:
+  ) -> Routing:
     """Transforms routing weights.
 
     Args:
@@ -487,14 +462,14 @@ class GreedyPlanner(RoutingStrategy):
   @kt.typechecked
   def __call__(
       self,
-      routing_weights: RoutingWeights,
+      routing_weights: Routing,
       logits: Float['... M'],
       x0: DataArray,
       xt: DataArray,
       time: TimeArray,
       next_time: TimeArray,
       key: PRNGKey,
-  ) -> RoutingWeights:
+  ) -> Routing:
     # Routing weights have shape (batch, *spatial, 1). We flatten all spatial
     # dims into a single "positions" dim so top-k selection works regardless
     # of whether the data is 1D (sequences) or 2D (adjacency matrices).
@@ -549,7 +524,7 @@ class GreedyPlanner(RoutingStrategy):
 
     # Non-selected positions have clean zeroed out; they can only stay or
     # re-noise according to the posterior.
-    return RoutingWeights(
+    return Routing(
         stay=jnp.where(to_update[..., None], 0.0, routing_weights.stay),
         noise=jnp.where(to_update[..., None], 0.0, routing_weights.noise),
         clean=jnp.where(to_update[..., None], 1.0, 0.0),
@@ -700,7 +675,7 @@ class UnMaskingStep(SamplerStep):
     p_noise = jnp.where(currently_masked, p_noise_masked, p_noise_unmasked)
     p_clean = jnp.where(currently_masked, p_clean_masked, p_clean_unmasked)
 
-    routing_weights = RoutingWeights(stay=p_stay, noise=p_noise, clean=p_clean)
+    routing_weights = Routing(stay=p_stay, noise=p_noise, clean=p_clean)
 
     # Apply planner transformation (if any)
     if self.planner:
@@ -710,10 +685,8 @@ class UnMaskingStep(SamplerStep):
 
     # xt ~ p(x_s|x_0, x_t) (with optional remasking and planning)
     new_xt = _sample_routing(
-        routing_weights=routing_weights,
-        xt=xt,
-        x0=x0,
-        x_noise=x_noise,
+        weights=routing_weights,
+        candidates=Routing(stay=xt, noise=x_noise, clean=x0),
         key=route_key,
     )
 
@@ -906,7 +879,7 @@ class DiscreteDDIMStep(SamplerStep):
     p_stay = p_stay + x0_eq_xt * (ratio * alpha_s + p_clean)
     p_clean = (1.0 - x0_eq_xt) * p_clean
 
-    routing_weights = RoutingWeights(stay=p_stay, noise=p_noise, clean=p_clean)
+    routing_weights = Routing(stay=p_stay, noise=p_noise, clean=p_clean)
 
     # Apply planner transformation (if any)
     if self.planner:
@@ -917,10 +890,8 @@ class DiscreteDDIMStep(SamplerStep):
     # xt ~ p(x_s|x_0, x_t)
     # This is the new state after sampling using the routing weights.
     new_xt = _sample_routing(
-        routing_weights=routing_weights,
-        xt=xt,
-        x0=x0,
-        x_noise=x_noise,
+        weights=routing_weights,
+        candidates=Routing(stay=xt, noise=x_noise, clean=x0),
         key=route_key,
     )
 
@@ -1057,7 +1028,7 @@ class DiscreteFlowMatchingStep(SamplerStep):
     p_noise = p_noise_raw / scale_factor
     p_stay = 1.0 - p_clean - p_noise
 
-    routing_weights = RoutingWeights(stay=p_stay, noise=p_noise, clean=p_clean)
+    routing_weights = Routing(stay=p_stay, noise=p_noise, clean=p_clean)
 
     # Apply planner transformation (if any)
     if self.planner:
@@ -1068,10 +1039,8 @@ class DiscreteFlowMatchingStep(SamplerStep):
     # xt ~ p(x_s|x_0, x_t)
     # This is the new state after sampling using the routing weights.
     new_xt = _sample_routing(
-        routing_weights=routing_weights,
-        xt=xt,
-        x0=x0,
-        x_noise=x_noise,
+        weights=routing_weights,
+        candidates=Routing(stay=xt, noise=x_noise, clean=x0),
         key=route_key,
     )
     new_xt = self.corruption_process.post_corruption_fn(new_xt)
