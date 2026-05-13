@@ -203,7 +203,7 @@ class DiffusionSamplingTest(parameterized.TestCase):
         time_schedule=self.time_schedule,
         stepper=self.stepper,
         num_steps=5,
-        return_trajectory=False,
+        store_trajectory=False,
     )
     last_step, all_steps = sample_fn(
         inference_fn=self.dummy_inference_fn,

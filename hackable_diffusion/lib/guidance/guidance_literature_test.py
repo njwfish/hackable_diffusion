@@ -192,7 +192,7 @@ class AnalyticGaussianPosteriorTest(unittest.TestCase):
         time_schedule=UniformTimeSchedule(),
         stepper=DDIMStep(corruption_process=corruption, stoch_coeff=0.0),
         num_steps=self.num_steps,
-        return_trajectory=False,
+        store_trajectory=False,
     )
     inference_fn = _gaussian_tweedie_inference_fn(prior_covariance, schedule)
 
@@ -304,7 +304,7 @@ class AnalyticGaussianPosteriorTest(unittest.TestCase):
         time_schedule=UniformTimeSchedule(),
         stepper=DDIMStep(corruption_process=corruption, stoch_coeff=0.0),
         num_steps=self.num_steps,
-        return_trajectory=False,
+        store_trajectory=False,
     )
     inference_fn = _gaussian_tweedie_inference_fn(prior_covariance, schedule)
     forward_fn = SubsampleForwardFn(indices=jnp.asarray(indices))
@@ -378,7 +378,7 @@ class CleanEndpointInpaintingTest(unittest.TestCase):
         time_schedule=UniformTimeSchedule(),
         stepper=DDIMStep(corruption_process=corruption, stoch_coeff=0.0),
         num_steps=self.num_steps,
-        return_trajectory=False,
+        store_trajectory=False,
     )
     inference_fn = _gaussian_tweedie_inference_fn(
         np.eye(self.n, dtype=np.float64), schedule,
@@ -508,7 +508,7 @@ class WienerDeconvolutionTest(unittest.TestCase):
         time_schedule=UniformTimeSchedule(),
         stepper=DDIMStep(corruption_process=corruption, stoch_coeff=0.0),
         num_steps=self.num_steps,
-        return_trajectory=False,
+        store_trajectory=False,
     )
     inference_fn = _gaussian_tweedie_inference_fn(prior_covariance, schedule)
     forward_fn = LinearForwardFn(
@@ -609,7 +609,7 @@ class TDSGaussianConsistencyTest(unittest.TestCase):
         # Stochastic DDIM so the proposal ratio is non-trivial.
         stepper=DDIMStep(corruption_process=corruption, stoch_coeff=0.5),
         num_steps=self.num_steps,
-        return_trajectory=False,
+        store_trajectory=False,
     )
     inference_fn = _gaussian_tweedie_inference_fn(prior_covariance, schedule)
     forward_fn = SubsampleForwardFn(indices=jnp.asarray(indices))

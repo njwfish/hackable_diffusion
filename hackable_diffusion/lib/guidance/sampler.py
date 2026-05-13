@@ -121,7 +121,7 @@ class ConditionalDiffusionSampler:
   base sampler's ``(final_step, trajectory_or_none)`` 2-tuple).
 
   Otherwise returns ``(final_step, trajectory_or_none, log_w_final)``,
-  where ``trajectory_or_none`` mirrors ``base_sampler.return_trajectory``:
+  where ``trajectory_or_none`` mirrors ``base_sampler.store_trajectory``:
   a stacked :class:`DiffusionStepTree` over all ``num_steps`` steps when
   trajectory return is on, and ``None`` otherwise.  The intermediate
   steps emitted into the stack are post-resample, so the trajectory
@@ -129,7 +129,7 @@ class ConditionalDiffusionSampler:
 
   Attributes:
     base_sampler: the underlying :class:`DiffusionSampler`.  Its
-      ``return_trajectory`` flag controls whether this sampler emits a
+      ``store_trajectory`` flag controls whether this sampler emits a
       stacked trajectory (the SMC-loop path mirrors the base sampler's
       behaviour).
     corruption_process: the corruption process; used to build per-step
@@ -222,7 +222,7 @@ class ConditionalDiffusionSampler:
     stepper = self.base_sampler.stepper
     time_schedule = self.base_sampler.time_schedule
     num_steps = self.base_sampler.num_steps
-    return_trajectory = bool(self.base_sampler.return_trajectory)
+    store_trajectory = bool(self.base_sampler.store_trajectory)
     correction_identity = self.correction_fn is None
     uses_rng = accepts_rng_kwarg(inference_fn)
 
@@ -337,7 +337,7 @@ class ConditionalDiffusionSampler:
       )
       # Emit the post-resample step into the stacked trajectory so it
       # reflects the particles actually carried forward.
-      scan_emit = next_step_after if return_trajectory else None
+      scan_emit = next_step_after if store_trajectory else None
       return new_carry, scan_emit
 
     # Reserve a separate rng tree for the final stepper.finalize call;
@@ -384,6 +384,6 @@ class ConditionalDiffusionSampler:
 
     trajectory = (
         _concat_pytree(first_step, intermediate_steps, final_step)
-        if return_trajectory else None
+        if store_trajectory else None
     )
     return final_step, trajectory, log_w_final

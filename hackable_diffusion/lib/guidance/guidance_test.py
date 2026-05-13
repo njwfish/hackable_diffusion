@@ -152,7 +152,7 @@ def _gaussian_pieces(eta: float = 0.0, num_steps: int = 8):
       time_schedule=UniformTimeSchedule(),
       stepper=stepper,
       num_steps=num_steps,
-      return_trajectory=False,
+      store_trajectory=False,
   )
   return schedule, corruption, base_sampler
 
@@ -1369,7 +1369,7 @@ class VelocityProposalRatioTest(unittest.TestCase):
   def test_deterministic_epsilon_returns_zero(self):
     schedule = schedules.CosineSchedule()
     corruption = GaussianProcess(schedule=schedule)
-    stepper = VelocityStep(corruption_process=corruption, epsilon=0.0)
+    stepper = VelocityStep(corruption_process=corruption, stoch_coeff=0.0)
     xt = jnp.ones((3, 8), dtype=jnp.float64)
     ratio = _proposal_log_ratio_for(
         stepper, corruption,
@@ -1382,7 +1382,7 @@ class VelocityProposalRatioTest(unittest.TestCase):
   def test_stochastic_epsilon_finite_and_nonzero(self):
     schedule = schedules.CosineSchedule()
     corruption = GaussianProcess(schedule=schedule)
-    stepper = VelocityStep(corruption_process=corruption, epsilon=0.5)
+    stepper = VelocityStep(corruption_process=corruption, stoch_coeff=0.5)
     xt = jnp.ones((2, 4), dtype=jnp.float64)
     ratio = _proposal_log_ratio_for(
         stepper, corruption,

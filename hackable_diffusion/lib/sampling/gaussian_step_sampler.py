@@ -664,7 +664,7 @@ class VelocityStep(SamplerStep):
     and ``score = (alpha xhat_0 - xt) / sigma^2``.  Schedule derivatives
     are obtained with ``jax.grad``.
 
-    ODE limit ``epsilon = 0``: ``sigma_step = 0``.
+    ODE limit ``stoch_coeff = 0``: ``sigma_step = 0``.
     """
     schedule = self.corruption_process.schedule
     alpha = _scalar(time_prev, schedule.alpha)
@@ -689,9 +689,9 @@ class VelocityStep(SamplerStep):
     s_x0 = alpha / sigma2_safe
     s_xt = -1.0 / sigma2_safe
 
-    coeff_x0 = dt * (-v_x0 + 0.5 * self.epsilon ** 2 * g_t ** 2 * s_x0)
-    coeff_xt = 1.0 + dt * (-v_xt + 0.5 * self.epsilon ** 2 * g_t ** 2 * s_xt)
-    sigma_step = jnp.sqrt(dt) * g_t * self.epsilon
+    coeff_x0 = dt * (-v_x0 + 0.5 * self.stoch_coeff ** 2 * g_t ** 2 * s_x0)
+    coeff_xt = 1.0 + dt * (-v_xt + 0.5 * self.stoch_coeff ** 2 * g_t ** 2 * s_xt)
+    sigma_step = jnp.sqrt(dt) * g_t * self.stoch_coeff
 
     return GaussianStepKernel(
         coeff_x0=coeff_x0, coeff_xt=coeff_xt, sigma_step=sigma_step,
