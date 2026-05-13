@@ -150,7 +150,7 @@ opt in.  This patch is only needed because we prefer the primary path
 `hackable_diffusion/lib/corruption/gaussian.py`,
 `hackable_diffusion/lib/corruption/riemannian.py`,
 `hackable_diffusion/lib/corruption/interpolant_parity_test.py` (new),
-`hackable_diffusion/lib/loss/gaussian.py`,
+`hackable_diffusion/lib/training/gaussian_loss.py`,
 `hackable_diffusion/lib/sampling/gaussian_step_sampler.py`,
 `hackable_diffusion/lib/diffusion_network.py` (docstrings).
 
@@ -222,9 +222,9 @@ surfaces:
   ``gaussian.py``): source and target parameterisation names
   ``epsilon`` -> ``x1``.  Callers of ``process.convert_predictions``
   passing ``{"epsilon": value}`` must update to ``{"x1": value}``.
-- ``lib/loss/gaussian.py``: ``GaussianPredictionType`` literal, the
-  scaling-function conversion table, and the internal ``_*_to_*``
-  function names.
+- ``lib/training/gaussian_loss.py``: ``GaussianPredictionType``
+  literal, the scaling-function conversion table, and the internal
+  ``_*_to_*`` function names.
 - ``lib/sampling/gaussian_step_sampler.py``: ``AdjustedDDIMStep``
   reads ``prediction_dict["x1"]`` instead of ``["epsilon"]``.
 - ``lib/diffusion_network.py``: docstring parameterisation examples.
