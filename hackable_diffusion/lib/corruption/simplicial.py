@@ -22,7 +22,7 @@ from typing import Protocol, Sequence
 
 from hackable_diffusion.lib import fast_random
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import base
 from hackable_diffusion.lib.corruption import schedules
 import jax
@@ -68,7 +68,7 @@ class SamplingPrecisionMode(enum.StrEnum):
 
 
 ################################################################################
-# MARK: Post-corruption functions
+# MARK: Post-Corruption Functions
 ################################################################################
 
 
@@ -322,7 +322,7 @@ class SimplicialProcess(CorruptionProcess):
       unused_mask = None
       x0_oh = x0
 
-    time = utils.bcast_right(time, x0_oh.ndim)
+    time = jax_helpers.bcast_right(time, x0_oh.ndim)
 
     # compute Dirichlet parameters
     dirichlet_param = self.invariant_probs_vec + self.h(time) * x0_oh
@@ -371,7 +371,7 @@ class SimplicialProcess(CorruptionProcess):
     return self.schedule.evaluate(time)
 
   ##############################################################################
-  # MARK: Factory methods
+  # MARK: Factory Methods
   ##############################################################################
 
   @classmethod

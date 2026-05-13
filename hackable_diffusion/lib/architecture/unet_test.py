@@ -34,7 +34,7 @@ DownsampleType = arch_typing.DownsampleType
 UpsampleType = arch_typing.UpsampleType
 SkipConnectionMethod = arch_typing.SkipConnectionMethod
 INVALID_INT = arch_typing.INVALID_INT
-ConditioningMechanism = arch_typing.ConditioningMechanism
+
 
 ################################################################################
 # MARK: Tests
@@ -102,8 +102,8 @@ class UnetTest(parameterized.TestCase):
     """Tests Unet output shape."""
     x_shape = (2, 16, 16, 3)
     conditioning_embeddings = {
-        ConditioningMechanism.ADAPTIVE_NORM: jnp.ones((2, 32)),
-        ConditioningMechanism.CROSS_ATTENTION: jnp.ones((2, 16, 32)),
+        'adaptive_norm': jnp.ones((2, 32)),
+        'cross_attention': jnp.ones((2, 16, 32)),
     }
     x = jnp.ones(x_shape)
     model = unet.Unet(**dataclasses.asdict(config), dtype=jnp.float32)
@@ -130,8 +130,8 @@ class UnetTest(parameterized.TestCase):
     num_input_channels = 3
     x_shape = (2, 16, 16, num_input_channels)
     conditioning_embeddings = {
-        ConditioningMechanism.ADAPTIVE_NORM: jnp.ones((2, 32)),
-        ConditioningMechanism.CROSS_ATTENTION: jnp.ones((2, 16, 32)),
+        'adaptive_norm': jnp.ones((2, 32)),
+        'cross_attention': jnp.ones((2, 16, 32)),
     }
     x = jnp.ones(x_shape)
     model = unet.Unet(

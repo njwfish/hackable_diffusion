@@ -40,7 +40,7 @@ from typing import Protocol
 import einops
 from flax import linen as nn
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import discrete
 import jax
@@ -56,7 +56,7 @@ Float = hd_typing.Float
 Int = hd_typing.Int
 
 ConditionalBackbone = arch_typing.ConditionalBackbone
-ConditioningMechanism = arch_typing.ConditioningMechanism
+
 
 BaseProjector = discrete.BaseProjector
 
@@ -80,6 +80,7 @@ class DenseEmbedder(nn.Module, BaseLogitEmbedder):
   """Probability embedder that uses a dense layer.
 
   Attributes:
+    embedding_dim: The embedding dimension of the probability embedder.
     adapt_to_image_like_data: Whether to adapt the simplex model to image-like
       data. If True, the input data is expected to have the shape <B, H, W, C,
       V>, which is embedded via `logit_embedder` in <B, H, W, C, F>, and then
@@ -92,7 +93,7 @@ class DenseEmbedder(nn.Module, BaseLogitEmbedder):
     dtype: The dtype to use for the simplex model.
   """
 
-  embedding_dim: int = 64
+  embedding_dim: int
   adapt_to_image_like_data: bool = False
   dtype: DType = jnp.float32
 
@@ -137,7 +138,7 @@ class ConditionalSimplicialBackbone(nn.Module, ConditionalBackbone):
 
   Attributes:
     base_backbone: The base backbone to use for the simplicial model. Can be any
-      conditionl backbone such as MLP or UNet.
+      conditional backbone such as MLP or UNet.
     logit_embedder: The probability embedder to use for the simplicial model.
     logit_projector: The probability projector to use for the simplicial model.
   """
@@ -161,7 +162,7 @@ class ConditionalSimplicialBackbone(nn.Module, ConditionalBackbone):
   def __call__(
       self,
       x: Float['batch *other V'],
-      conditioning_embeddings: dict[ConditioningMechanism, Float['batch ...']],
+      conditioning_embeddings: arch_typing.ConditioningEmbeddings,
       is_training: bool,
   ) -> Float['batch *other K']:
 
@@ -177,5 +178,5 @@ class ConditionalSimplicialBackbone(nn.Module, ConditionalBackbone):
 
     output = self.logit_projector(backbone_outputs, is_training=is_training)
 
-    output = utils.optional_bf16_to_fp32(output)
+    output = jax_helpers.optional_bf16_to_fp32(output)
     return output

@@ -25,7 +25,7 @@ import jax.numpy as jnp
 import kauldron.ktyping as kt
 
 ################################################################################
-# MARK: Common types and aliases
+# MARK: Type Aliases
 ################################################################################
 
 DType = hd_typing.DType
@@ -49,7 +49,7 @@ UpsampleOutput = Float["batch height*2 width*2 output_channels"]
 DownsampleOutput = Float["batch height/2 width/2 output_channels"]
 
 ################################################################################
-# MARK: Input and Output blocks
+# MARK: Input and Output Blocks
 ################################################################################
 
 
@@ -121,7 +121,7 @@ class OutputConvBlock(nn.Module):
 
 
 ################################################################################
-# MARK: Residual block with optional resampling
+# MARK: Residual Block With Optional Resampling
 ################################################################################
 
 
@@ -218,7 +218,7 @@ class ConvResidualBlock(nn.Module):
 
 
 ################################################################################
-# MARK: Attention residual block
+# MARK: Attention Residual Block
 ################################################################################
 
 

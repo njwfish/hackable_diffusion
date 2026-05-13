@@ -26,7 +26,7 @@ from absl.testing import parameterized
 ################################################################################
 
 EmbeddingMergeMethod = arch_typing.EmbeddingMergeMethod
-ConditioningMechanism = arch_typing.ConditioningMechanism
+
 
 ################################################################################
 # MARK: Tests
@@ -39,13 +39,13 @@ class EncodeConditioningTest(parameterized.TestCase):
       (
           'test1',
           EmbeddingMergeMethod.SUM,
-          ConditioningMechanism.ADAPTIVE_NORM,
+          'adaptive_norm',
           True,
       ),
       (
           'test2',
           EmbeddingMergeMethod.CONCAT,
-          ConditioningMechanism.CROSS_ATTENTION,
+          'cross_attention',
           False,
       ),
   )
@@ -107,66 +107,16 @@ class EncodeConditioningTest(parameterized.TestCase):
     self.assertEqual(conditional_embedding.shape, expected_shape)
 
   @parameterized.named_parameters(
-      ('dict', 'dict'),
-      ('tuple', 'tuple'),
-      ('list', 'list'),
-  )
-  def test_nested_time_embedder_with_dict(self, input_type: str):
-    num_features = 32
-    batch_size = 4
-
-    time_encoder_1 = conditioning_encoder.SinusoidalTimeEmbedder(
-        activation='silu',
-        embedding_dim=5,
-        num_features=num_features,
-    )
-    time_encoder_2 = conditioning_encoder.SinusoidalTimeEmbedder(
-        activation='silu',
-        embedding_dim=5,
-        num_features=num_features,
-    )
-    if input_type == 'dict':
-      time_encoder = conditioning_encoder.NestedTimeEmbedder(
-          time_embedders={'data_1': time_encoder_1, 'data_2': time_encoder_2},
-      )
-      time = {
-          'data_1': jnp.ones((batch_size,)),
-          'data_2': jnp.ones((batch_size,)),
-      }
-    elif input_type == 'tuple':
-      time_encoder = conditioning_encoder.NestedTimeEmbedder(
-          time_embedders=(time_encoder_1, time_encoder_2),
-      )
-      time = (jnp.ones((batch_size,)), jnp.ones((batch_size,)))
-    elif input_type == 'list':
-      time_encoder = conditioning_encoder.NestedTimeEmbedder(
-          time_embedders=[time_encoder_1, time_encoder_2],
-      )
-      time = [jnp.ones((batch_size,)), jnp.ones((batch_size,))]
-    else:
-      raise ValueError(f'Unknown input type {input_type}')
-
-    rng = jax.random.PRNGKey(0)
-    params = time_encoder.init(rng, time)['params']
-
-    # Jit the apply function
-    jitted_apply = jax.jit(time_encoder.apply, static_argnames=['is_training'])
-
-    output = jitted_apply({'params': params}, time, rngs={'dropout': rng})
-
-    self.assertEqual(output.shape, (batch_size, num_features))
-
-  @parameterized.named_parameters(
       (
           'test1',
           EmbeddingMergeMethod.SUM,
-          ConditioningMechanism.ADAPTIVE_NORM,
+          'adaptive_norm',
           True,
       ),
       (
           'test2',
           EmbeddingMergeMethod.CONCAT,
-          ConditioningMechanism.CROSS_ATTENTION,
+          'cross_attention',
           False,
       ),
   )
@@ -232,13 +182,13 @@ class EncodeConditioningTest(parameterized.TestCase):
       (
           'test1',
           EmbeddingMergeMethod.SUM,
-          ConditioningMechanism.ADAPTIVE_NORM,
+          'adaptive_norm',
           True,
       ),
       (
           'test2',
           EmbeddingMergeMethod.CONCAT,
-          ConditioningMechanism.CROSS_ATTENTION,
+          'cross_attention',
           False,
       ),
   )
@@ -307,13 +257,13 @@ class EncodeConditioningTest(parameterized.TestCase):
       (
           'test1',
           EmbeddingMergeMethod.SUM,
-          ConditioningMechanism.ADAPTIVE_NORM,
+          'adaptive_norm',
           True,
       ),
       (
           'test2',
           EmbeddingMergeMethod.CONCAT,
-          ConditioningMechanism.CROSS_ATTENTION,
+          'cross_attention',
           False,
       ),
   )
@@ -380,8 +330,8 @@ class EncodeConditioningTest(parameterized.TestCase):
     )
     conditioning_encoders = {'image': image_selector}
     conditioning_rules = {
-        'time': ConditioningMechanism.ADAPTIVE_NORM,
-        'image': ConditioningMechanism.CROSS_ATTENTION,
+        'time': 'adaptive_norm',
+        'image': 'cross_attention',
     }
     embedding_merging_method = EmbeddingMergeMethod.CONCAT
 
@@ -403,18 +353,18 @@ class EncodeConditioningTest(parameterized.TestCase):
         {'params': params}, t, c, is_training=False, rngs={'dropout': rng}
     )
 
-    self.assertIn(ConditioningMechanism.CROSS_ATTENTION, output)
+    self.assertIn('cross_attention', output)
     self.assertEqual(
-        output[ConditioningMechanism.CROSS_ATTENTION].shape,
+        output['cross_attention'].shape,
         (batch_size,) + image_shape,
     )
     self.assertTrue(
-        jnp.all(output[ConditioningMechanism.CROSS_ATTENTION] == c['image'])
+        jnp.all(output['cross_attention'] == c['image'])
     )
 
-    self.assertIn(ConditioningMechanism.ADAPTIVE_NORM, output)
+    self.assertIn('adaptive_norm', output)
     self.assertEqual(
-        output[ConditioningMechanism.ADAPTIVE_NORM].shape,
+        output['adaptive_norm'].shape,
         (batch_size, num_features),
     )
 
@@ -434,8 +384,8 @@ class EncodeConditioningTest(parameterized.TestCase):
     )
     conditioning_encoders = {'image': image_selector}
     conditioning_rules = {
-        'time': ConditioningMechanism.ADAPTIVE_NORM,
-        'image': ConditioningMechanism.CROSS_ATTENTION,
+        'time': 'adaptive_norm',
+        'image': 'cross_attention',
     }
     embedding_merging_method = EmbeddingMergeMethod.CONCAT
 
@@ -461,7 +411,7 @@ class EncodeConditioningTest(parameterized.TestCase):
       (
           'test1',
           EmbeddingMergeMethod.CONCAT,
-          ConditioningMechanism.CROSS_ATTENTION,
+          'cross_attention',
           8,
           16,
           False,
@@ -525,7 +475,7 @@ class EncodeConditioningTest(parameterized.TestCase):
       (
           'test1',
           EmbeddingMergeMethod.CONCAT,
-          ConditioningMechanism.CROSS_ATTENTION,
+          'cross_attention',
           8,
           9,
           10,
@@ -534,7 +484,7 @@ class EncodeConditioningTest(parameterized.TestCase):
       (
           'test2',
           EmbeddingMergeMethod.CONCAT,
-          ConditioningMechanism.CROSS_ATTENTION,
+          'cross_attention',
           8,
           9,
           10,
@@ -617,7 +567,7 @@ class EncodeConditioningTest(parameterized.TestCase):
       (
           'test1',
           EmbeddingMergeMethod.CONCAT,
-          ConditioningMechanism.CROSS_ATTENTION,
+          'cross_attention',
           8,
           9,
           10,
@@ -626,7 +576,7 @@ class EncodeConditioningTest(parameterized.TestCase):
       (
           'test2',
           EmbeddingMergeMethod.CONCAT,
-          ConditioningMechanism.CROSS_ATTENTION,
+          'cross_attention',
           8,
           9,
           10,
@@ -718,8 +668,8 @@ class EncodeConditioningTest(parameterized.TestCase):
         conditioning_embedders=conditioning_encoders,
         embedding_merging_method=EmbeddingMergeMethod.SUM,
         conditioning_rules={
-            'time': ConditioningMechanism.ADAPTIVE_NORM,
-            'label': ConditioningMechanism.ADAPTIVE_NORM,
+            'time': 'adaptive_norm',
+            'label': 'adaptive_norm',
         },
         conditioning_dropout_rate=1.0,  # Drop all conditioning
     )
@@ -735,7 +685,7 @@ class EncodeConditioningTest(parameterized.TestCase):
         {'params': params}, t, c, is_training=True, rngs={'dropout': rng}
     )
     time_embedding_train = time_encoder.apply(
-        {'params': params['TimeEmbedder']}, t
+        {'params': params['time_embedder']}, t
     )
     self.assertTrue(
         jnp.all(output_train['adaptive_norm'] == time_embedding_train)

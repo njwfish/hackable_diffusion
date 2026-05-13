@@ -16,8 +16,8 @@
 
 - :class:`GaussianSourceTargets`: emits ``{x0, x1, score, velocity, v}``.
   Owns the ``CONVERTERS`` table of bidirectional parameterisation
-  conversions.  Valid only when the coupling's source is
-  ``StandardNormalSource``.
+  conversions.  Valid only when ``x_1`` is Gaussian (i.e. the process's
+  prior is :class:`GaussianPrior`).
 - :class:`VelocityOnlyTargets`: emits ``{x0, x1, velocity}`` for any
   interpolant / source.  Threads ``z`` into ``interpolant.eval`` so it
   works unchanged for :class:`GeodesicInterpolant` (``z`` is ``None``
@@ -35,7 +35,7 @@ import dataclasses
 from typing import ClassVar
 
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import base
 import immutabledict
 import jax.numpy as jnp
@@ -215,11 +215,11 @@ CONVERTERS = immutabledict.immutabledict({
 
 def _alpha_sigma_and_der(schedule, time, ndim):
   """Return ``(alpha, sigma, alpha_der, sigma_der)`` broadcast to ``ndim``."""
-  time = utils.bcast_right(time, ndim)
+  time = jax_helpers.bcast_right(time, ndim)
   alpha = schedule.alpha(time)
   sigma = schedule.sigma(time)
-  alpha_der = utils.egrad(schedule.alpha)(time)
-  sigma_der = utils.egrad(schedule.sigma)(time)
+  alpha_der = jax_helpers.egrad(schedule.alpha)(time)
+  sigma_der = jax_helpers.egrad(schedule.sigma)(time)
   return alpha, sigma, alpha_der, sigma_der
 
 
@@ -229,7 +229,7 @@ class GaussianSourceTargets(TargetAdapter):
 
   Byte-equivalent to legacy ``GaussianProcess.corrupt``'s ``target_info``
   dict when composed with :class:`LinearInterpolant` and a
-  :class:`StandardNormalSource`.  The identities
+  :class:`GaussianPrior`.  The identities
   ``score = -x1/sigma`` and ``v = alpha*x1 - sigma*x0`` only hold when
   ``x_1 ~ N(0, I)``; composing this adapter with a non-Gaussian source
   produces incorrect target dicts.  Construction-time checks in
@@ -252,7 +252,7 @@ class GaussianSourceTargets(TargetAdapter):
       interpolant,
   ) -> TargetInfoTree:
     del z, xt
-    time = utils.bcast_right(t, x0.ndim)
+    time = jax_helpers.bcast_right(t, x0.ndim)
     alpha = interpolant.schedule.alpha(time)
     sigma = interpolant.schedule.sigma(time)
     return {
@@ -341,5 +341,5 @@ class VelocityOnlyTargets(TargetAdapter):
     raise NotImplementedError(
         'VelocityOnlyTargets only supports velocity predictions.  For '
         'other parameterisations, use GaussianSourceTargets (requires '
-        'a StandardNormalSource).'
+        'a GaussianPrior).'
     )

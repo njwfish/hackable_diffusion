@@ -84,6 +84,9 @@ Implementations for **Gaussian** processes include:
 *   **`DDIMStep`**: Implements the popular Denoising Diffusion Implicit Models
     sampler. It can be deterministic (`stoch_coeff=0.0`) or stochastic
     (`stoch_coeff > 0.0`).
+*   **`AdjustedDDIMStep`**: An improved DDIM variant from
+    <https://arxiv.org/abs/2403.06807> that adjusts the update with an
+    estimated covariance term to reduce sampling error.
 *   **`SdeStep`**: A stochastic sampler based on discretizing the reverse-time
     Stochastic Differential Equation (SDE).
 *   **`VelocityStep`**: A sampler that operates using the velocity prediction
@@ -330,18 +333,25 @@ Riemannian-specific components.
 ```python
 from hackable_diffusion.lib import manifolds
 from hackable_diffusion.lib.corruption.riemannian import RiemannianProcess
+from hackable_diffusion.lib.corruption.schedules import LinearRiemannianSchedule
 from hackable_diffusion.lib.sampling.riemannian_sampling import RiemannianFlowSamplerStep
+from hackable_diffusion.lib.sampling.time_scheduling import UniformTimeSchedule
 
 # 1. Define manifold and process
 manifold = manifolds.Sphere()
-process = RiemannianProcess(manifold=manifold)
+process = RiemannianProcess(
+    
+    manifold=manifold,
+    schedule=LinearRiemannianSchedule(),
+, schedule=LinearRiemannianSchedule()
+)
 
 # 2. Configure Sampler Step
 stepper = RiemannianFlowSamplerStep(corruption_process=process)
 
 # 3. Create the sampler
 sampler = DiffusionSampler(
-    time_schedule=UniformTimeSchedule(), # or EDM
+    time_schedule=UniformTimeSchedule(),
     stepper=stepper,
     num_steps=50,
 )

@@ -43,7 +43,7 @@ import jax.numpy as jnp
 import numpy as np
 
 from hackable_diffusion.lib.corruption import base
-from hackable_diffusion.lib.corruption import couplings
+from hackable_diffusion.lib.corruption import priors
 from hackable_diffusion.lib.corruption import interpolants
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.corruption import targets
@@ -134,10 +134,10 @@ class StochasticInterpolantTest(unittest.TestCase):
     self.assertIs(si.schedule, si)
 
   def test_interpolant_process_end_to_end(self):
-    # InterpolantProcess(SI, StandardNormalSource, VelocityOnlyTargets):
+    # InterpolantProcess(SI, GaussianPrior, VelocityOnlyTargets):
     # corrupt emits {x0, x1, velocity}.
     process = base.InterpolantProcess(
-        coupling=couplings.StandardNormalSource(),
+        prior=priors.GaussianPrior(),
         interpolant=interpolants.StochasticInterpolant(
             alpha=lambda t: 1.0 - t,
             beta=lambda t: t,
@@ -166,7 +166,7 @@ class StochasticInterpolantTest(unittest.TestCase):
         gamma=interpolants.canonical_gamma,
     )
     process = base.InterpolantProcess(
-        coupling=couplings.StandardNormalSource(),
+        prior=priors.GaussianPrior(),
         interpolant=si,
         targets=targets.VelocityOnlyTargets(),
     )

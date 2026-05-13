@@ -24,7 +24,7 @@ The main components are:
     continuous data (e.g., images), `CategoricalProcess` for discrete data
     (e.g., labels, tokens), `SimplicialProcess` for simplex-valued categorical
     data (e.g., graph edges with Dirichlet noise), and `RiemannianProcess` for
-    data on Riemannian manifolds..
+    data on Riemannian manifolds.
 
 ## `CorruptionProcess` Protocol
 
@@ -45,6 +45,8 @@ processes must implement. It defines the following key methods:
     time.
 
 ### `NestedProcess`
+
+(`lib/multimodal.py`)
 
 For handling complex data structures (pytrees), `NestedProcess` is a wrapper
 that applies different corruption processes to different leaves of the pytree.
@@ -365,9 +367,13 @@ The torus is a flat space with periodic boundary conditions.
 ### Example Usage
 
 ```python
+import jax
+import jax.numpy as jnp
 from hackable_diffusion.lib import manifolds
 from hackable_diffusion.lib.corruption.riemannian import RiemannianProcess
 from hackable_diffusion.lib.corruption.schedules import LinearRiemannianSchedule
+
+key = jax.random.PRNGKey(0)
 
 # 1. Define manifold and process
 manifold = manifolds.Sphere()
@@ -377,6 +383,7 @@ process = RiemannianProcess(manifold=manifold, schedule=schedule)
 # 2. Corrupt data
 x0 = jnp.array([[1.0, 0.0, 0.0]]) # Point on S2
 time = jnp.array([0.5])
+key, subkey = jax.random.split(key)
 xt, target_info = process.corrupt(subkey, x0, time)
 
 # target_info['velocity'] is the regression target u_t

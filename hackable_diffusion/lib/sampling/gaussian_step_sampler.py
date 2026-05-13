@@ -34,7 +34,7 @@ relevant representation, for instance score, velocity, etc.
 import dataclasses
 
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import gaussian
 from hackable_diffusion.lib.sampling import base
 from hackable_diffusion.lib.sampling import time_scheduling
@@ -162,7 +162,7 @@ class SdeStep(SamplerStep):
     )
 
   @kt.typechecked
-  def update(
+  def _update(
       self,
       prediction: TargetInfo,
       current_step: DiffusionStep,
@@ -174,8 +174,8 @@ class SdeStep(SamplerStep):
 
     time = current_step_info.time
     next_time = next_step_info.time
-    time = utils.bcast_right(time, xt.ndim)
-    next_time = utils.bcast_right(next_time, xt.ndim)
+    time = jax_helpers.bcast_right(time, xt.ndim)
+    next_time = jax_helpers.bcast_right(next_time, xt.ndim)
 
     f = self.corruption_process.schedule.f(time)
     g = self.corruption_process.schedule.g(time)
@@ -210,13 +210,27 @@ class SdeStep(SamplerStep):
     )
 
   @kt.typechecked
+  def update(
+      self,
+      prediction: TargetInfo,
+      current_step: DiffusionStep,
+      next_step_info: StepInfo,
+  ) -> DiffusionStep:
+    return self._update(
+        prediction,
+        current_step,
+        next_step_info,
+        stochastic=True,
+    )
+
+  @kt.typechecked
   def finalize(
       self,
       prediction: TargetInfo,
       current_step: DiffusionStep,
       last_step_info: StepInfo,
   ) -> DiffusionStep:
-    return self.update(
+    return self._update(
         prediction,
         current_step,
         last_step_info,
@@ -306,8 +320,8 @@ class AdjustedDDIMStep(SamplerStep):
 
     time = current_step_info.time
     next_time = next_step_info.time
-    time = utils.bcast_right(time, xt.ndim)
-    next_time = utils.bcast_right(next_time, xt.ndim)
+    time = jax_helpers.bcast_right(time, xt.ndim)
+    next_time = jax_helpers.bcast_right(next_time, xt.ndim)
 
     alpha = self.corruption_process.schedule.alpha(time)
     sigma = self.corruption_process.schedule.sigma(time)
@@ -424,8 +438,8 @@ class DDIMStep(SamplerStep):
 
     time = current_step_info.time
     next_time = next_step_info.time
-    time = utils.bcast_right(time, xt.ndim)
-    next_time = utils.bcast_right(next_time, xt.ndim)
+    time = jax_helpers.bcast_right(time, xt.ndim)
+    next_time = jax_helpers.bcast_right(next_time, xt.ndim)
 
     x0 = self.corruption_process.convert_predictions(
         prediction=prediction,
@@ -536,12 +550,19 @@ class DDIMStep(SamplerStep):
 class VelocityStep(SamplerStep):
   """DDIM sampler from https://arxiv.org/abs/2010.02502.
 
-  epsilon controls the interpolation between DDIM and DDPM:
-  epsilon = 0.0 gives (deterministic) DDIM and epsilon = 1.0 gives DDPM.
+  stoch_coeff controls the interpolation between DDIM and DDPM:
+  stoch_coeff = 0.0 gives the discretisation of an ODE (as in Flow Matching) and
+  stoch_coeff = 1.0 gives the discretisation of an SDE.
+
+  Attributes:
+    corruption_process: The corruption process to use.
+    stoch_coeff: The interpolation parameter between DDIM and DDPM.
+    stochastic_last_step: Whether the last step is stochastic.
   """
 
   corruption_process: GaussianProcess
-  epsilon: float
+  stoch_coeff: float
+  stochastic_last_step: bool = False
 
   @kt.typechecked
   def initialize(
@@ -556,7 +577,7 @@ class VelocityStep(SamplerStep):
     )
 
   @kt.typechecked
-  def update(
+  def _update(
       self,
       prediction: TargetInfo,
       current_step: DiffusionStep,
@@ -568,8 +589,8 @@ class VelocityStep(SamplerStep):
 
     time = current_step_info.time
     next_time = next_step_info.time
-    time = utils.bcast_right(time, xt.ndim)
-    next_time = utils.bcast_right(next_time, xt.ndim)
+    time = jax_helpers.bcast_right(time, xt.ndim)
+    next_time = jax_helpers.bcast_right(next_time, xt.ndim)
 
     g = self.corruption_process.schedule.g(time)
 
@@ -584,9 +605,9 @@ class VelocityStep(SamplerStep):
     score = prediction_dict["score"]
     z = jax.random.normal(key=next_step_info.rng, shape=xt.shape)
 
-    delta = -velocity + 0.5 * self.epsilon**2 * g**2 * score
+    delta = -velocity + 0.5 * self.stoch_coeff**2 * g**2 * score
     new_mean = xt + delta * dt
-    volatility = jnp.sqrt(dt) * g * self.epsilon
+    volatility = jnp.sqrt(dt) * g * self.stoch_coeff
 
     if stochastic:
       new_xt = new_mean + volatility * z
@@ -600,17 +621,31 @@ class VelocityStep(SamplerStep):
     )
 
   @kt.typechecked
+  def update(
+      self,
+      prediction: TargetInfo,
+      current_step: DiffusionStep,
+      next_step_info: StepInfo,
+  ) -> DiffusionStep:
+    return self._update(
+        prediction,
+        current_step,
+        next_step_info,
+        stochastic=True,
+    )
+
+  @kt.typechecked
   def finalize(
       self,
       prediction: TargetInfo,
       current_step: DiffusionStep,
       last_step_info: StepInfo,
   ) -> DiffusionStep:
-    return self.update(
+    return self._update(
         prediction,
         current_step,
         last_step_info,
-        stochastic=False,
+        stochastic=self.stochastic_last_step,
     )
 
   def kernel(
@@ -629,7 +664,7 @@ class VelocityStep(SamplerStep):
     and ``score = (alpha xhat_0 - xt) / sigma^2``.  Schedule derivatives
     are obtained with ``jax.grad``.
 
-    ODE limit ``epsilon = 0``: ``sigma_step = 0``.
+    ODE limit ``stoch_coeff = 0``: ``sigma_step = 0``.
     """
     schedule = self.corruption_process.schedule
     alpha = _scalar(time_prev, schedule.alpha)
@@ -654,9 +689,9 @@ class VelocityStep(SamplerStep):
     s_x0 = alpha / sigma2_safe
     s_xt = -1.0 / sigma2_safe
 
-    coeff_x0 = dt * (-v_x0 + 0.5 * self.epsilon ** 2 * g_t ** 2 * s_x0)
-    coeff_xt = 1.0 + dt * (-v_xt + 0.5 * self.epsilon ** 2 * g_t ** 2 * s_xt)
-    sigma_step = jnp.sqrt(dt) * g_t * self.epsilon
+    coeff_x0 = dt * (-v_x0 + 0.5 * self.stoch_coeff ** 2 * g_t ** 2 * s_x0)
+    coeff_xt = 1.0 + dt * (-v_xt + 0.5 * self.stoch_coeff ** 2 * g_t ** 2 * s_xt)
+    sigma_step = jnp.sqrt(dt) * g_t * self.stoch_coeff
 
     return GaussianStepKernel(
         coeff_x0=coeff_x0, coeff_xt=coeff_xt, sigma_step=sigma_step,
@@ -799,8 +834,8 @@ class HeunStep(SamplerStep):
 
     time = current_step_info.time
     next_next_time = next_next_step_info.time
-    time = utils.bcast_right(time, xt.ndim)
-    next_next_time = utils.bcast_right(next_next_time, xt.ndim)
+    time = jax_helpers.bcast_right(time, xt.ndim)
+    next_next_time = jax_helpers.bcast_right(next_next_time, xt.ndim)
 
     # Perform the intermediate step.
     dt = time - next_next_time
@@ -811,24 +846,19 @@ class HeunStep(SamplerStep):
     )["velocity"]
     new_xt = xt - dt * velocity
 
-    aux = current_step.aux
-    # Update the internal counter and current_velocity_step_one.
     internal_counter = jnp.mod(
-        aux["internal_counter"] + 1, self.num_internal_steps
-    )
-    current_velocity_step_one = velocity
-    aux.update(
-        dict(
-            internal_counter=internal_counter,
-            current_velocity_step_one=current_velocity_step_one,
-        )
+        current_step.aux["internal_counter"] + 1, self.num_internal_steps
     )
 
     # Note that we output next_next_step_info and not next_step_info.
     return DiffusionStep(
         xt=new_xt,
         step_info=next_next_step_info,
-        aux=aux,
+        aux=dict(
+            internal_counter=internal_counter,
+            current_update=current_step.aux["current_update"],
+            current_velocity_step_one=velocity,
+        ),
     )
 
   @kt.typechecked
@@ -838,7 +868,7 @@ class HeunStep(SamplerStep):
       current_step: DiffusionStep,
       next_step_info: StepInfo,
   ) -> DiffusionStep:
-    """First step of the Heun sampler.
+    """Second step of the Heun sampler.
 
     This is the second internal step. It should be called when the internal
     counter is 1.
@@ -851,16 +881,15 @@ class HeunStep(SamplerStep):
     Returns:
       The next step.
     """
-    aux = current_step.aux
     xt = current_step.xt
 
-    current_update = aux["current_update"]
-    old_time = current_update.step_info.time
+    prev_update = current_step.aux["current_update"]
+    old_time = prev_update.step_info.time
     next_time = next_step_info.time
-    old_time = utils.bcast_right(old_time, xt.ndim)
-    next_time = utils.bcast_right(next_time, xt.ndim)
+    old_time = jax_helpers.bcast_right(old_time, xt.ndim)
+    next_time = jax_helpers.bcast_right(next_time, xt.ndim)
 
-    old_velocity = aux["current_velocity_step_one"]
+    old_velocity = current_step.aux["current_velocity_step_one"]
     intermediate_velocity = self.corruption_process.convert_predictions(
         prediction=prediction,
         xt=xt,
@@ -871,30 +900,28 @@ class HeunStep(SamplerStep):
 
     # Perform the final step.
 
-    old_xt = current_update.xt
+    old_xt = prev_update.xt
     dt = old_time - next_time
     new_xt = old_xt - dt * (old_velocity + intermediate_velocity) / 2
 
-    # Update the internal counter and the current_update
     internal_counter = jnp.mod(
-        aux["internal_counter"] + 1, self.num_internal_steps
-    )
-    current_update = DiffusionStep(
-        xt=new_xt,
-        step_info=next_step_info,
-        aux=dict(),
-    )
-    aux.update(
-        dict(
-            internal_counter=internal_counter,
-            current_update=current_update,
-        )
+        current_step.aux["internal_counter"] + 1, self.num_internal_steps
     )
 
     return DiffusionStep(
         xt=new_xt,
         step_info=next_step_info,
-        aux=aux,
+        aux=dict(
+            internal_counter=internal_counter,
+            current_update=DiffusionStep(
+                xt=new_xt,
+                step_info=next_step_info,
+                aux=dict(),
+            ),
+            current_velocity_step_one=current_step.aux[
+                "current_velocity_step_one"
+            ],
+        ),
     )
 
   @kt.typechecked

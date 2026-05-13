@@ -23,7 +23,7 @@ Implements the following methods:
 import einops
 import flax.linen as nn
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.architecture import arch_typing
 import jax.numpy as jnp
 import kauldron.ktyping as kt
@@ -179,8 +179,8 @@ class NormalizationLayer(nn.Module):
       scale, shift = jnp.split(scale_and_shift, 2, axis=-1)  # (B, ch) each.
 
       x = einops.rearrange(x, "b ... c -> b c ...")  # (B, ch, ...).
-      scale = utils.bcast_right(scale, x.ndim)
-      shift = utils.bcast_right(shift, x.ndim)
+      scale = jax_helpers.bcast_right(scale, x.ndim)
+      shift = jax_helpers.bcast_right(shift, x.ndim)
       x = (1.0 + scale) * x + shift
       x = einops.rearrange(x, "b c ... -> b ... c")
 

@@ -26,7 +26,7 @@ import numpy as np
 
 
 ################################################################################
-# MARK: Type aliases
+# MARK: Type Aliases
 ################################################################################
 
 Float = hd_typing.Float
@@ -36,7 +36,7 @@ Num = hd_typing.Num
 RoPEPositionType = arch_typing.RoPEPositionType
 
 ################################################################################
-# MARK: Sequence embedding modules
+# MARK: Sequence Embedding Modules
 ################################################################################
 
 

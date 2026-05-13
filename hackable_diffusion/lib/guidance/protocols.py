@@ -87,7 +87,7 @@ class PosteriorCloudFn(Protocol):
 
   Output shape contract: ``(B, R, *x0_shape)`` -- the ``R`` axis is at
   position 1, matching :func:`hackable_diffusion.lib.posterior.posterior_cloud_apply`
-  at training time and :class:`hackable_diffusion.lib.loss.EnergyScoreLoss`'s
+  at training time and :class:`hackable_diffusion.lib.training.EnergyScoreLoss`'s
   expected input.
   """
 

@@ -36,7 +36,7 @@ import jax.numpy as jnp
 
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import manifolds
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import base
 from hackable_diffusion.lib.corruption import schedules
 
@@ -69,11 +69,11 @@ class LinearInterpolant(Interpolant):
       z: DataTree | None = None,
   ) -> tuple[DataTree, DataTree]:
     del z
-    t_b = utils.bcast_right(t, x0.ndim)
+    t_b = jax_helpers.bcast_right(t, x0.ndim)
     alpha = self.schedule.alpha(t_b)
     sigma = self.schedule.sigma(t_b)
-    alpha_der = utils.egrad(self.schedule.alpha)(t_b)
-    sigma_der = utils.egrad(self.schedule.sigma)(t_b)
+    alpha_der = jax_helpers.egrad(self.schedule.alpha)(t_b)
+    sigma_der = jax_helpers.egrad(self.schedule.sigma)(t_b)
     xt = alpha * x0 + sigma * x1
     dxt_dt = alpha_der * x0 + sigma_der * x1
     return xt, dxt_dt
@@ -100,8 +100,8 @@ class GeodesicInterpolant(Interpolant):
       z: DataTree | None = None,
   ) -> tuple[DataTree, DataTree]:
     del z
-    alpha_t = utils.bcast_right(self.schedule.alpha(t), x0.ndim)
-    alpha_dot_t = utils.bcast_right(self.schedule.alpha_dot(t), x0.ndim)
+    alpha_t = jax_helpers.bcast_right(self.schedule.alpha(t), x0.ndim)
+    alpha_dot_t = jax_helpers.bcast_right(self.schedule.alpha_dot(t), x0.ndim)
     xt = manifolds.geodesic(self.manifold, x=x1, y=x0, t=alpha_t)
     dxt_dt = alpha_dot_t * self.manifold.velocity(x=x1, y=x0, t=alpha_t)
     return xt, dxt_dt
@@ -162,13 +162,13 @@ class StochasticInterpolant(Interpolant):
           'StochasticInterpolant.eval requires ``z`` '
           '(drawn by ``InterpolantProcess`` when ``needs_noise = True``).'
       )
-    t_b = utils.bcast_right(t, x0.ndim)
+    t_b = jax_helpers.bcast_right(t, x0.ndim)
     alpha = self.alpha(t_b)
     beta = self.beta(t_b)
     gamma = self.gamma(t_b)
-    alpha_der = utils.egrad(self.alpha)(t_b)
-    beta_der = utils.egrad(self.beta)(t_b)
-    gamma_der = utils.egrad(self.gamma)(t_b)
+    alpha_der = jax_helpers.egrad(self.alpha)(t_b)
+    beta_der = jax_helpers.egrad(self.beta)(t_b)
+    gamma_der = jax_helpers.egrad(self.gamma)(t_b)
     xt = alpha * x0 + beta * x1 + gamma * z
     dxt_dt = alpha_der * x0 + beta_der * x1 + gamma_der * z
     return xt, dxt_dt

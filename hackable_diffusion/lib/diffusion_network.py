@@ -18,7 +18,7 @@ import dataclasses
 from typing import Callable, Protocol, cast
 import flax.linen as nn
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import conditioning_encoder
 from hackable_diffusion.lib.corruption import discrete
@@ -132,13 +132,13 @@ class DiffusionNetwork(nn.Module, BaseDiffusionNetwork):
       is_training: bool = False,
   ) -> PyTree:
     """Initializes the variables of the model from shapes."""
-    dummy_xt = utils.get_dummy_batch_fixed_dtype(
+    dummy_xt = jax_helpers.get_dummy_batch_fixed_dtype(
         input_shape, dtype=self.data_dtype
     )
-    dummy_conditioning = utils.get_dummy_batch_fixed_dtype(
+    dummy_conditioning = jax_helpers.get_dummy_batch_fixed_dtype(
         conditioning_shape, dtype=jnp.float32
     )
-    dummy_time = utils.get_dummy_batch_fixed_dtype(
+    dummy_time = jax_helpers.get_dummy_batch_fixed_dtype(
         input_shape, only_first_axis=True, dtype=jnp.float32
     )
 
@@ -173,17 +173,13 @@ class DiffusionNetwork(nn.Module, BaseDiffusionNetwork):
 
     # Encode conditioning.
 
-    conditioning_embeddings = cast(nn.Module, self.conditioning_encoder).copy(
-        name='ConditioningEncoder'
-    )(
+    conditioning_embeddings = self.conditioning_encoder(
         time=time_rescaled,
         conditioning=conditioning,
         is_training=is_training,
     )
     # Run backbone.
-    backbone_outputs = cast(nn.Module, self.backbone_network).copy(
-        name='Backbone'
-    )(
+    backbone_outputs = self.backbone_network(
         x=xt_rescaled,
         conditioning_embeddings=conditioning_embeddings,
         is_training=is_training,
@@ -262,13 +258,13 @@ class SelfConditioningDiffusionNetwork(nn.Module, BaseDiffusionNetwork):
       is_training: bool = False,
   ) -> PyTree:
     """Initializes the variables of the model from shapes."""
-    dummy_xt = utils.get_dummy_batch_fixed_dtype(
+    dummy_xt = jax_helpers.get_dummy_batch_fixed_dtype(
         input_shape, dtype=self.data_dtype
     )
-    dummy_conditioning = utils.get_dummy_batch_fixed_dtype(
+    dummy_conditioning = jax_helpers.get_dummy_batch_fixed_dtype(
         conditioning_shape, dtype=jnp.float32
     )
-    dummy_time = utils.get_dummy_batch_fixed_dtype(
+    dummy_time = jax_helpers.get_dummy_batch_fixed_dtype(
         input_shape, only_first_axis=True, dtype=jnp.float32
     )
 
@@ -303,9 +299,7 @@ class SelfConditioningDiffusionNetwork(nn.Module, BaseDiffusionNetwork):
         self.input_rescaler(time, xt) if self.input_rescaler is not None else xt
     )
 
-    conditioning_embeddings = cast(nn.Module, self.conditioning_encoder).copy(
-        name='ConditioningEncoder'
-    )(
+    conditioning_embeddings = self.conditioning_encoder(
         time=time_rescaled,
         conditioning=conditioning,
         is_training=is_training,
@@ -319,9 +313,7 @@ class SelfConditioningDiffusionNetwork(nn.Module, BaseDiffusionNetwork):
     # First pass: run with zero logits to get initial predictions.
     xt_with_zeros = jnp.concatenate([xt_rescaled, zero_logits], axis=-1)
 
-    backbone_module = cast(nn.Module, self.backbone_network).copy(
-        name='Backbone'
-    )
+    backbone_module = self.backbone_network
     first_output = backbone_module(
         x=xt_with_zeros,
         conditioning_embeddings=conditioning_embeddings,
@@ -376,52 +368,6 @@ class MultiModalDiffusionNetwork(nn.Module, BaseDiffusionNetwork):
   `data_dtype`, `input_rescaler`, and `time_rescaler` are the same as `xt` and
   `time`.
 
-  Example usage:
-
-    backbone = ...
-
-    ConditioningMechanism = arch_typing.ConditioningMechanism
-
-    conditioning_embedders = {
-        'label': conditioning_encoder.LabelEmbedder(
-            num_classes=10,
-            num_features=256,
-            conditioning_key='label',
-        )
-    }
-
-    time_embedder_continuous = conditioning_encoder.SinusoidalTimeEmbedder(
-            activation='gelu', embedding_dim=256, num_features=256
-        )
-    time_embedder_discrete = conditioning_encoder.SinusoidalTimeEmbedder(
-            activation='gelu', embedding_dim=256, num_features=256
-        )
-    time_embedders = {
-        'data_continuous': time_embedder_continuous,
-        'data_discrete': time_embedder_discrete,
-    }
-    time_embedder =
-    conditioning_encoder.NestedTimeEmbedder(time_embedders=time_embedders)
-
-    encoder = conditioning_encoder.ConditioningEncoder(
-        time_embedder=time_embedder,
-        conditioning_embedders=conditioning_embedders,
-        embedding_merging_method=arch_typing.EmbeddingMergeMethod.SUM,
-        conditioning_rules={
-            'time': ConditioningMechanism.ADAPTIVE_NORM,
-            'label': ConditioningMechanism.ADAPTIVE_NORM,
-        },
-    )
-
-    network = hd.diffusion_network.MultiModalDiffusionNetwork(
-        backbone_network=backbone,
-        conditioning_encoder=encoder,
-        prediction_type={'data_continuous': 'x0', 'data_discrete': 'logits'},
-        data_dtype={'data_continuous': jnp.float32, 'data_discrete': jnp.int32},
-        input_rescaler=None,
-        time_rescaler=None,
-        )
-
   Attributes:
     backbone_network: The backbone network to use for the diffusion model.
     conditioning_encoder: The conditioning encoder to use for the diffusion
@@ -450,11 +396,11 @@ class MultiModalDiffusionNetwork(nn.Module, BaseDiffusionNetwork):
       key: PRNGKey,
       is_training: bool = False,
   ) -> PyTree:
-    dummy_xt = utils.get_dummy_batch(input_shape, dtype=self.data_dtype)
-    dummy_conditioning = utils.get_dummy_batch_fixed_dtype(
+    dummy_xt = jax_helpers.get_dummy_batch(input_shape, dtype=self.data_dtype)
+    dummy_conditioning = jax_helpers.get_dummy_batch_fixed_dtype(
         conditioning_shape, dtype=jnp.float32
     )
-    dummy_time = utils.get_dummy_batch_fixed_dtype(
+    dummy_time = jax_helpers.get_dummy_batch_fixed_dtype(
         input_shape, only_first_axis=True, dtype=jnp.float32
     )
 
@@ -471,16 +417,13 @@ class MultiModalDiffusionNetwork(nn.Module, BaseDiffusionNetwork):
   @kt.typechecked
   def __call__(
       self,
-      xt: DataTree,
       time: TimeTree,
+      xt: DataTree,
       conditioning: Conditioning | None,
       is_training: bool,
-  ):
-    # Rescale time and input.
-
+  ) -> TargetInfoTree:
     if self.time_rescaler is not None:
-      # lenient alternative to jax.tree.map
-      time_rescaled = utils.lenient_map(
+      time_rescaled = jax_helpers.lenient_map(
           lambda time, time_rescaler: time_rescaler(time)
           if time_rescaler is not None
           else time,
@@ -491,8 +434,7 @@ class MultiModalDiffusionNetwork(nn.Module, BaseDiffusionNetwork):
       time_rescaled = time
 
     if self.input_rescaler is not None:
-      # lenient alternative to jax.tree.map
-      xt_rescaled = utils.lenient_map(
+      xt_rescaled = jax_helpers.lenient_map(
           lambda time, xt, input_rescaler: input_rescaler(time, xt)
           if input_rescaler is not None
           else xt,
@@ -503,27 +445,19 @@ class MultiModalDiffusionNetwork(nn.Module, BaseDiffusionNetwork):
     else:
       xt_rescaled = xt
 
-    # Encode conditioning.
-
-    conditioning_embeddings = cast(nn.Module, self.conditioning_encoder).copy(
-        name='ConditioningEncoder'
-    )(
+    conditioning_embeddings = self.conditioning_encoder(
         time=time_rescaled,
         conditioning=conditioning,
         is_training=is_training,
     )
 
-    # Run backbone.
-    backbone_outputs = cast(nn.Module, self.backbone_network).copy(
-        name='Backbone'
-    )(
+    backbone_outputs = self.backbone_network(
         x=xt_rescaled,
         conditioning_embeddings=conditioning_embeddings,
         is_training=is_training,
     )
 
-    # lenient alternative to jax.tree.map
-    outputs = utils.lenient_map(
+    outputs = jax_helpers.lenient_map(
         lambda backbone_output, prediction_type: {
             prediction_type: backbone_output
         },
@@ -571,7 +505,7 @@ class MagnitudeScheduleInputRescaler(InputRescaler):
     """Returns the inputs rescaled by the magnitude of the schedule."""
     alpha_t = self.schedule.alpha(time)
     sigma_t = self.schedule.sigma(time)
-    alpha_t = utils.bcast_right(alpha_t, inputs.ndim)
-    sigma_t = utils.bcast_right(sigma_t, inputs.ndim)
+    alpha_t = jax_helpers.bcast_right(alpha_t, inputs.ndim)
+    sigma_t = jax_helpers.bcast_right(sigma_t, inputs.ndim)
     magnitude = jnp.sqrt(jnp.square(alpha_t) + jnp.square(sigma_t))
     return inputs / magnitude

@@ -48,6 +48,7 @@ StepInfoTree = base.StepInfoTree
 
 InferenceFn = inference_base.InferenceFn
 TimeSchedule = time_scheduling.TimeSchedule
+UpdateConditioningFn = base.UpdateConditioningFn
 
 ################################################################################
 # MARK: Protocols
@@ -68,7 +69,7 @@ class SampleFn(Protocol):
 
 
 ################################################################################
-# MARK: Helper functions
+# MARK: Helper Functions
 ################################################################################
 
 
@@ -176,15 +177,19 @@ class DiffusionSampler(SampleFn):
     time_schedule: Defines the sequence of time steps for the process.
     stepper: The sampling algorithm (e.g., DDIM) that updates the state.
     num_steps: The total number of denoising steps.
-    return_trajectory: Whether to materialize and return the full diffusion
-      trajectory. Disable this when only the final sample is needed to avoid
-      carrying the entire step history in memory.
+    store_trajectory: If True (default), returns the full trajectory of all
+      intermediate steps. If False, only returns the final step and None for the
+      trajectory, significantly reducing memory usage for high-resolution or
+      many-step sampling.
+    update_conditioning_fn: An optional function to update the conditioning at
+      each step.
   """
 
   time_schedule: TimeSchedule
   stepper: SamplerStep
   num_steps: int
-  return_trajectory: bool = True
+  store_trajectory: bool = True
+  update_conditioning_fn: UpdateConditioningFn | None = None
 
   @kt.typechecked
   def __call__(
@@ -209,7 +214,7 @@ class DiffusionSampler(SampleFn):
       A tuple containing:
         - The final `DiffusionStepTree` of the sampling process.
         - A `DiffusionStepTree` PyTree containing the full trajectory of all
-        steps, or `None` when `return_trajectory=False`.
+        steps, or None if `store_trajectory` is False.
     """
     if self.num_steps < 2:
       raise ValueError(
@@ -235,11 +240,16 @@ class DiffusionSampler(SampleFn):
         else (lambda carry: {})
     )
 
-    def scan_body(step_carry: DiffusionStepTree, next_step_info: StepInfoTree):
+    def _step(step_carry: DiffusionStepTree, next_step_info: StepInfoTree):
       xt, time = _get_input_inference_fn(step_carry)
+      updated_conditioning = conditioning
+      if self.update_conditioning_fn is not None:
+        updated_conditioning = self.update_conditioning_fn(
+            conditioning, step_carry
+        )
       prediction = inference_fn(
           xt=xt,
-          conditioning=conditioning,
+          conditioning=updated_conditioning,
           time=time,
           **rng_kwargs_fn(step_carry),
       )
@@ -248,9 +258,11 @@ class DiffusionSampler(SampleFn):
           step_carry,
           next_step_info,
       )
-      if self.return_trajectory:
-        return next_step, next_step  # ('carryover', 'accumulated')
-      return next_step, None
+      return next_step
+
+    def scan_body(step_carry, next_step_info):
+      next_step = _step(step_carry, next_step_info)
+      return next_step, next_step  # ('carryover', 'accumulated')
 
     next_step_leaves = jax.tree.leaves(next_step_infos)
     num_intermediate_steps = (
@@ -258,14 +270,14 @@ class DiffusionSampler(SampleFn):
     )
     if num_intermediate_steps == 0:
       before_last_step = first_step
-      if self.return_trajectory:
+      if self.store_trajectory:
         intermediate_steps = jax.tree.map(
             lambda x: jnp.expand_dims(x, 0)[:0],
             first_step,
         )
       else:
         intermediate_steps = None
-    elif self.return_trajectory:
+    elif self.store_trajectory:
       before_last_step, intermediate_steps = jax.lax.scan(
           scan_body, first_step, next_step_infos
       )
@@ -276,9 +288,14 @@ class DiffusionSampler(SampleFn):
       intermediate_steps = None
 
     xt, time = _get_input_inference_fn(before_last_step)
+    last_conditioning = conditioning
+    if self.update_conditioning_fn is not None:
+      last_conditioning = self.update_conditioning_fn(
+          conditioning, before_last_step
+      )
     last_prediction = inference_fn(
         xt=xt,
-        conditioning=conditioning,
+        conditioning=last_conditioning,
         time=time,
         **rng_kwargs_fn(before_last_step),
     )
@@ -289,8 +306,8 @@ class DiffusionSampler(SampleFn):
         last_step_info,
     )
 
-    if not self.return_trajectory:
-      return last_step, None
-
-    all_steps = _concat_pytree(first_step, intermediate_steps, last_step)
+    if self.store_trajectory:
+      all_steps = _concat_pytree(first_step, intermediate_steps, last_step)
+    else:
+      all_steps = None
     return last_step, all_steps

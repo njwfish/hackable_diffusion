@@ -32,16 +32,16 @@ to standardize the architecture's configuration.
 
 ### `ConditioningMechanism`
 
-This enum specifies how a conditioning signal is injected into the backbone.
+This string specifies how a conditioning signal is injected into the backbone.
 
-  * `ADAPTIVE_NORM`: The conditioning embedding is used to modulate the scale
+  * `adaptative_norm`: The conditioning embedding is used to modulate the scale
     and shift in an adaptive normalization layer (e.g., AdaLN).
-  * `CROSS_ATTENTION`: The conditioning embedding is used as the key and value
+  * `cross_attention`: The conditioning embedding is used as the key and value
     in a cross-attention layer, with the model's intermediate representation as
     the query.
-  * `CONCATENATE`: The conditioning is concatenated to the input of a layer or
+  * `concatenate`: The conditioning is concatenated to the input of a layer or
     module.
-  * `SUM`: The conditioning is added to the input of a layer or module.
+  * `sum`: The conditioning is added to the input of a layer or module.
 
 ### `EmbeddingMergeMethod`
 
@@ -105,8 +105,8 @@ adaptive_norm_emb = jnp.ones((1, 128))
 cross_attention_emb = jnp.ones((1, 10, 256)) # 10 tokens, 256 dim
 
 conditioning_embeddings = {
-    ConditioningMechanism.ADAPTIVE_NORM: adaptive_norm_emb,
-    ConditioningMechanism.CROSS_ATTENTION: cross_attention_emb,
+    'adaptive_norm': adaptive_norm_emb,
+    'cross_attention': cross_attention_emb,
 }
 
 unet = Unet(
@@ -133,6 +133,50 @@ output = unet.apply(variables, x, conditioning_embeddings, is_training=False)
 print(f"Output shape: {output.shape}")
 # Output shape: (1, 64, 64, 3)
 ```
+
+### `DiT`
+
+(`lib/architecture/dit.py`)
+
+The `DiT` class implements a **Diffusion Transformer** backbone based on
+<https://arxiv.org/abs/2212.09748>. It uses adaptive layer norm zero
+(adaLN-Zero) as the conditioning mechanism. The architecture consists of
+repeated transformer blocks with optional encoder/decoder and absolute
+positional encoding.
+
+Key parameters:
+
+  * `num_blocks`: Number of DiT blocks.
+  * `block`: A DiT block module (e.g., `DiTBlockAdaLNZero`).
+  * `encoder`: Optional encoder (e.g., `Patchify` for image inputs).
+  * `decoder`: Optional decoder (e.g., `DePatchify` for image outputs).
+  * `absolute_posenc`: Optional positional encoding module.
+  * `use_padding_mask`: Whether to mask out padding tokens (for tokenized
+    inputs).
+
+The `DiT` expects an `ADAPTIVE_NORM` conditioning embedding. The `mnist_dit`
+notebook demonstrates its usage.
+
+## Diffusion Network
+
+(`lib/diffusion_network.py`)
+
+The **`DiffusionNetwork`** class is the primary entry point for constructing a
+complete diffusion model. It composes a backbone (e.g., `Unet` or `DiT`) with a
+`ConditioningEncoder` into a single Flax module that conforms to the
+`BaseDiffusionNetwork` protocol.
+
+  * **`DiffusionNetwork`**: Single-modal model. Takes `(time, xt,
+    conditioning)` and internally runs the conditioning encoder, applies any
+    input/time rescaling, and calls the backbone.
+  * **`MultiModalDiffusionNetwork`**: Generalizes `DiffusionNetwork` to
+    multi-modal PyTree data, allowing different prediction types and data
+    dtypes per leaf.
+  * **`SelfConditioningDiffusionNetwork`**: Adds self-conditioning, where the
+    model receives its own previous prediction as an additional input.
+
+These classes also support `InputRescaler` and `TimeRescaler` for
+schedule-dependent input preprocessing (e.g., EDM preconditioning).
 
 ### `ConditionalMLP`
 
@@ -273,9 +317,9 @@ conditioning_encoder = ConditioningEncoder(
     },
     embedding_merging_method=EmbeddingMergeMethod.SUM,
     conditioning_rules={
-        'time': ConditioningMechanism.ADAPTIVE_NORM,
-        'label_adanorm': ConditioningMechanism.ADAPTIVE_NORM,
-        'label_xattn': ConditioningMechanism.CROSS_ATTENTION,
+        'time': 'adaptive_norm',
+        'label_adanorm': 'adaptive_norm',
+        'label_xattn': 'cross_attention',
     },
     conditioning_dropout_rate=0.1,
 )
@@ -295,8 +339,8 @@ output_embeddings = conditioning_encoder.apply(
 )
 
 # 5. Inspect the output
-adanorm_emb = output_embeddings[ConditioningMechanism.ADAPTIVE_NORM]
-xattn_emb = output_embeddings[ConditioningMechanism.CROSS_ATTENTION]
+adanorm_emb = output_embeddings['adaptive_norm']
+xattn_emb = output_embeddings['cross_attention']
 
 # The adanorm embedding is the sum of time and label_adanorm embeddings
 print(f"Adaptive Norm embedding shape: {adanorm_emb.shape}")

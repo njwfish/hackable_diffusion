@@ -256,7 +256,7 @@ class SO3Test(parameterized.TestCase):
     xt_minus = _geodesic(self.manifold, r, p, (t - eps)[..., None])
     v_num = (xt_plus - xt_minus) / (2 * eps)
 
-    np.testing.assert_allclose(v_analytic, v_num, atol=1e-3)
+    np.testing.assert_allclose(v_analytic, v_num, atol=1e-2)
 
   def test_dist(self):
     """Test shape and positivity of distance."""

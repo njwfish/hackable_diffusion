@@ -42,7 +42,7 @@ The returned predictions pytree has an extra axis of size ``M`` at
 position 1 of every leaf (``[B, M, *data]``) -- the same shape as
 :func:`hackable_diffusion.lib.guidance.make_posterior_cloud_fn`'s
 sampling-time output, ready for
-:class:`hackable_diffusion.lib.loss.EnergyScoreLoss` or any
+:class:`hackable_diffusion.lib.training.EnergyScoreLoss` or any
 posterior-aware downstream consumer.
 """
 

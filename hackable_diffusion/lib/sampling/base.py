@@ -60,13 +60,11 @@ The `InferenceFn` (pure update function) is visible from the `SamplerStep`
  At the end of the sampling loop for the last step, the `SamplerStep.finalize()`
  is called to produce the final clean output sample.
 """
-import dataclasses
+
 from typing import Protocol
 import flax.struct
-from hackable_diffusion.lib import hd_typing
 import jax
-import kauldron.ktyping as kt
-
+from hackable_diffusion.lib import hd_typing
 
 #################################################################################
 # MARK: Type Aliases
@@ -78,6 +76,7 @@ PyTree = hd_typing.PyTree
 
 DataArray = hd_typing.DataArray
 DataTree = hd_typing.DataTree
+Conditioning = hd_typing.Conditioning
 TargetInfoTree = hd_typing.TargetInfoTree
 TimeArray = hd_typing.TimeArray
 
@@ -115,7 +114,6 @@ class DiffusionStep:
 
   Attributes:
     xt: The noisy data at the current step.
-    conditioning: The conditioning data from the prediction model.
     step_info: The `StepInfo` used to compute the current step.
     aux: Additional data computed by the sampler.
   """
@@ -126,6 +124,7 @@ class DiffusionStep:
 
 
 DiffusionStepTree = PyTree[DiffusionStep]
+
 
 ################################################################################
 # MARK: Protocols
@@ -192,67 +191,26 @@ class SamplerStep(Protocol):
     ...
 
 
-################################################################################
-# MARK: Nested wrappers
-################################################################################
+class UpdateConditioningFn(Protocol):
+  """Protocol for updating conditioning during the sampling loop.
 
+  This allows injecting step-dependent information back into the conditioning
+  dict between sampling steps (e.g. self-conditioning logits from the
+  previous prediction).
+  """
 
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class NestedSamplerStep(SamplerStep):
-  """A protocol defining the nested diffusion sampling algorithm."""
-
-  sampler_steps: PyTree[SamplerStep]
-
-  @kt.typechecked
-  def initialize(
+  def __call__(
       self,
-      initial_noise: DataTree,
-      initial_step_info: StepInfoTree,
-  ) -> DiffusionStepTree:
-    return jax.tree.map(
-        lambda stepper, init_noise, init_step_info: stepper.initialize(
-            initial_noise=init_noise,
-            initial_step_info=init_step_info,
-        ),
-        self.sampler_steps,
-        initial_noise,
-        initial_step_info,
-    )
+      conditioning: Conditioning,
+      step_carry: DiffusionStepTree,
+  ) -> Conditioning:
+    """Update conditioning based on the current diffusion step.
 
-  @kt.typechecked
-  def update(
-      self,
-      prediction: TargetInfoTree,
-      current_step: DiffusionStepTree,
-      next_step_info: StepInfoTree,
-  ) -> DiffusionStepTree:
-    return jax.tree.map(
-        lambda stepper, pred, current, next_info: stepper.update(
-            prediction=pred,
-            current_step=current,
-            next_step_info=next_info,
-        ),
-        self.sampler_steps,
-        prediction,
-        current_step,
-        next_step_info,
-    )
+    Args:
+      conditioning: The current conditioning dict.
+      step_carry: The current diffusion step state.
 
-  @kt.typechecked
-  def finalize(
-      self,
-      prediction: TargetInfoTree,
-      current_step: DiffusionStepTree,
-      last_step_info: StepInfoTree,
-  ) -> DiffusionStepTree:
-    return jax.tree.map(
-        lambda stepper, pred, current, last_info: stepper.finalize(
-            prediction=pred,
-            current_step=current,
-            last_step_info=last_info,
-        ),
-        self.sampler_steps,
-        prediction,
-        current_step,
-        last_step_info,
-    )
+    Returns:
+      The updated conditioning dict.
+    """
+    ...

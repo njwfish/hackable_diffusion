@@ -19,7 +19,7 @@ definitions of the components.
 """
 
 import enum
-from typing import Callable, Protocol
+from typing import Any, Callable, Protocol
 from hackable_diffusion.lib import hd_typing
 import jax
 
@@ -48,17 +48,6 @@ class EmbeddingMergeMethod(enum.StrEnum):
 
   SUM = "sum"
   CONCAT = "concat"
-
-
-class ConditioningMechanism(enum.StrEnum):
-  """Types of conditioning mechanisms."""
-
-  ADAPTIVE_NORM = "adaptive_norm"
-  CROSS_ATTENTION = "cross_attention"
-  CONCATENATE = "concatenate"
-  SUM = "sum"
-  SELF_CONDITIONING = "self_conditioning"
-  CUSTOM = "custom"
 
 
 class RoPEPositionType(enum.StrEnum):
@@ -96,6 +85,22 @@ class SkipConnectionMethod(enum.StrEnum):
 
 
 ################################################################################
+# MARK: Conditioning Mechanism
+################################################################################
+
+
+# Conditioning embeddings corresponds to a dictionary with keys corresponding to
+# the specification of a conditioning mechanism.
+# Example of common conditioning mechanisms:
+#    - adaptive_norm
+#    - cross_attention
+#    - concatenate
+#    - sum
+#    - self_conditioning
+#
+ConditioningEmbeddings = dict[str, Any]
+
+################################################################################
 # MARK: Types and protocols
 ################################################################################
 
@@ -108,7 +113,7 @@ class ConditionalBackbone(Protocol):
   def __call__(
       self,
       x: DataTree,
-      conditioning_embeddings: dict[ConditioningMechanism, Float["batch ..."]],
+      conditioning_embeddings: ConditioningEmbeddings,
       is_training: bool,
   ) -> DataTree:
     ...

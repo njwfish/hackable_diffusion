@@ -2,3 +2,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 *.egg-info/
+
+# Local-only artifacts.
+.claude/
+posterior_bridges_tex/

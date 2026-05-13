@@ -34,7 +34,7 @@ class RiemannianArchitectureTest(absltest.TestCase):
         activation='relu',
         zero_init_output=True,
         dropout_rate=0.0,
-        conditioning_mechanism=mlp.ConditioningMechanism.CONCATENATE,
+        conditioning_mechanism='concatenate',
     )
     model = riemannian.RiemannianConditionalBackbone(
         backbone=backbone,
@@ -45,9 +45,8 @@ class RiemannianArchitectureTest(absltest.TestCase):
     xt = manifold.random_uniform(key, (4, 3))
     time_emb = jnp.array([[0.5], [0.5], [0.5], [0.5]])
 
-    # conditioning_embeddings must be a dict keyed by ConditioningMechanism.
     conditioning_embeddings = {
-        arch_typing.ConditioningMechanism.CONCATENATE: time_emb,
+        'concatenate': time_emb,
     }
 
     variables = model.init(key, xt, conditioning_embeddings, is_training=False)
@@ -69,7 +68,7 @@ class RiemannianArchitectureTest(absltest.TestCase):
         activation='relu',
         zero_init_output=True,
         dropout_rate=0.0,
-        conditioning_mechanism=mlp.ConditioningMechanism.CONCATENATE,
+        conditioning_mechanism='concatenate',
     )
     model = riemannian.RiemannianConditionalBackbone(
         backbone=backbone,
@@ -80,7 +79,7 @@ class RiemannianArchitectureTest(absltest.TestCase):
     xt = manifold.random_uniform(key, (4, 3))
     time_emb = jnp.array([[0.5], [0.5], [0.5], [0.5]])
     conditioning_embeddings = {
-        arch_typing.ConditioningMechanism.CONCATENATE: time_emb,
+        'concatenate': time_emb,
     }
 
     variables = model.init(key, xt, conditioning_embeddings, is_training=False)

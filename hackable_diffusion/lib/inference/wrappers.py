@@ -99,9 +99,16 @@ class ConvertedNNXDiffusionNetwork(Protocol):
 
 @dataclasses.dataclass(kw_only=True, frozen=True)
 class FlaxNNXInferenceFn(InferenceFn):
-  """Inference function protocol with a diffusion network given by nn.Module."""
+  """Inference function protocol with a diffusion network given by nn.Module.
+
+  Note: ``inference_seed`` is used for any stochastic layers (e.g., dropout)
+  that remain active at inference time. Since ``is_training=False`` is always
+  passed, dropout layers are typically disabled and this seed has no effect.
+  If you need stochastic inference (e.g., MC dropout), provide different seeds.
+  """
 
   nnx_network: ConvertedNNXDiffusionNetwork
+  inference_seed: int = 0
 
   @kt.typechecked
   def __call__(
@@ -119,7 +126,7 @@ class FlaxNNXInferenceFn(InferenceFn):
         xt=xt,
         conditioning=conditioning,
         is_training=False,
-        rngs=nnx.Rngs(0),
+        rngs=nnx.Rngs(self.inference_seed),
     )
 
 

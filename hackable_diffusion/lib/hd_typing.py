@@ -14,6 +14,7 @@
 
 """Common typing definitions."""
 
+from typing import Any
 from collections.abc import Mapping  # pylint: disable=g-multiple-import,g-importing-member
 import kauldron.ktyping as kt
 # pylint: disable=g-multiple-import,g-importing-member, unused-import
@@ -89,7 +90,7 @@ TargetInfoTree = PyTree[Array['batch *_data_shape']]
 
 # Conditioning structures.
 ConditioningKey = str  # e.g. 'label', 'text', 'image', ...
-Conditioning = Mapping[ConditioningKey, Array['batch *cond_shape']]
+Conditioning = Mapping[ConditioningKey, Any]
 
 # Shape related structures.
 Shape = tuple[int, ...]

@@ -116,7 +116,7 @@ class StochasticInferenceFnRngTest(unittest.TestCase):
         time_schedule=UniformTimeSchedule(),
         stepper=DDIMStep(corruption_process=corruption, stoch_coeff=1.0),
         num_steps=self.num_steps,
-        return_trajectory=False,
+        store_trajectory=False,
     )
 
     rng = np.random.default_rng(self.rng_seed)

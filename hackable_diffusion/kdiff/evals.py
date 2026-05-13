@@ -26,7 +26,7 @@ import kauldron.data.utils as data_utils
 
 
 ################################################################################
-# MARK: Type aliases
+# MARK: Type Aliases
 ################################################################################
 
 Array = hd_typing.Array

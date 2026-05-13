@@ -27,8 +27,7 @@ import dataclasses
 from typing import Protocol
 
 from hackable_diffusion.lib import hd_typing
-from hackable_diffusion.lib import time_sampling
-from hackable_diffusion.lib import utils
+from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.sampling import base as sampling_base
 import jax
 import jax.numpy as jnp
@@ -81,31 +80,18 @@ class TimeSchedule(Protocol):
     ...
 
 
-@dataclasses.dataclass(frozen=True, kw_only=True)
-class TimeScheduleBaseClass(TimeSchedule):
-  """Base class for time schedules."""
-  # Creates a time schedule in
-  # [min_time + safety_epsilon, max_time-safety_epsilon].
-  min_time: float = 0.0
-  max_time: float = 1.0
-  safety_epsilon: float = 1e-6
-  span: tuple[float, float] = dataclasses.field(init=False)
-
-  def __post_init__(self):
-    span = time_sampling.get_sampling_time_interval(
-        (self.min_time, self.max_time), self.safety_epsilon
-    )
-    object.__setattr__(self, "span", span)
-
-
 ################################################################################
 # MARK: Uniform Time Schedule
 ################################################################################
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class UniformTimeSchedule(TimeScheduleBaseClass):
+class UniformTimeSchedule(TimeSchedule):
   """Creates a schedule with uniformly spaced time steps in [ε, 1-ε]."""
+
+  span: jax_helpers.SafeSpan = jax_helpers.SafeSpan(
+      _minval=0.0, _maxval=1.0, safety_epsilon=1e-6
+  )
 
   @kt.typechecked
   def all_step_infos(
@@ -114,7 +100,7 @@ class UniformTimeSchedule(TimeScheduleBaseClass):
     bsz, *data_shape = data_spec.shape
     stop, start = self.span
     steps = jnp.linspace(start, stop, num_steps)
-    steps = utils.bcast_right(steps, data_spec.ndim + 1)
+    steps = jax_helpers.bcast_right(steps, data_spec.ndim + 1)
     steps = jnp.repeat(steps, bsz, axis=1)
 
     expected_steps_shape = (
@@ -141,7 +127,7 @@ class UniformTimeSchedule(TimeScheduleBaseClass):
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class EDMTimeSchedule(TimeScheduleBaseClass):
+class EDMTimeSchedule(TimeSchedule):
   """Creates a schedule with non-uniformly spaced time steps in [ε, 1-ε].
 
   The implementation is based on https://arxiv.org/abs/2206.00364.
@@ -154,7 +140,17 @@ class EDMTimeSchedule(TimeScheduleBaseClass):
   uniform.
   """
 
+  span: jax_helpers.SafeSpan = jax_helpers.SafeSpan(
+      _minval=0.0, _maxval=1.0, safety_epsilon=1e-6
+  )
   rho: float = 1.0
+
+  def __post_init__(self):
+    if self.rho <= 0:
+      raise ValueError(
+          f"rho must be positive, got {self.rho}. rho=0 causes division by"
+          " zero in the schedule computation."
+      )
 
   @kt.typechecked
   def all_step_infos(
@@ -166,7 +162,7 @@ class EDMTimeSchedule(TimeScheduleBaseClass):
     stop_inv_rho = stop ** (1.0 / self.rho)
     steps = jnp.linspace(start_inv_rho, stop_inv_rho, num_steps)
     steps = steps**self.rho
-    steps = utils.bcast_right(steps, data_spec.ndim + 1)
+    steps = jax_helpers.bcast_right(steps, data_spec.ndim + 1)
     steps = jnp.repeat(steps, bsz, axis=1)
 
     expected_steps_shape = (num_steps, bsz) + (1,) * len(data_shape)
@@ -179,47 +175,4 @@ class EDMTimeSchedule(TimeScheduleBaseClass):
         step=jnp.arange(num_steps),
         time=steps,
         rng=jax.random.split(rng, num_steps),
-    )
-
-
-################################################################################
-# MARK: Nested Time Schedule
-################################################################################
-
-
-@dataclasses.dataclass(kw_only=True, frozen=True)
-class NestedTimeSchedule(TimeSchedule):
-  """Wrapper to support a nested pytree of time schedules.
-
-  The structure of the time schedule should match the structure of the data.
-
-  Usage Example:
-    ```
-    time_schedule = NestedTimeSchedule(
-        time_schedules={
-            "image": UniformTimeSchedule(),
-            "label": EDMTimeSchedule(rho=2.0),
-        }
-    )
-    ```
-
-  Attributes:
-    time_schedules: A pytree of time schedules matching the structure of the
-      data.
-  """
-
-  time_schedules: PyTree[TimeSchedule]
-
-  @kt.typechecked
-  def all_step_infos(
-      self,
-      rng: PRNGKey,
-      num_steps: int,
-      data_spec: DataTree,
-  ) -> StepInfoTree:
-    def _call_schedule(rng, time_schedule, data_spec):
-      return time_schedule.all_step_infos(rng, num_steps, data_spec)
-
-    return utils.tree_map_with_key(
-        _call_schedule, rng, self.time_schedules, data_spec
     )
