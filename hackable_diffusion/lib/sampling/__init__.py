@@ -44,6 +44,7 @@ from hackable_diffusion.lib.sampling.riemannian_sampling import RiemannianFlowSa
 from hackable_diffusion.lib.sampling.sampling import DiffusionSampler
 from hackable_diffusion.lib.sampling.sampling import SampleFn
 from hackable_diffusion.lib.sampling.simplicial_step_sampler import SimplicialDDIMStep
+from hackable_diffusion.lib.sampling.soft_simplicial_step_sampler import SoftSimplicialDDIMStep
 from hackable_diffusion.lib.sampling.time_scheduling import EDMTimeSchedule
 from hackable_diffusion.lib.sampling.time_scheduling import TimeSchedule
 from hackable_diffusion.lib.sampling.time_scheduling import UniformTimeSchedule
