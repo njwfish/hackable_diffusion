@@ -139,7 +139,9 @@ class ConditionalDiffusionSampler:
     resampler_fn: particle resampler (defaults to :class:`NoResamplerFn`).
       The SMC population size is ``initial_noise.shape[0]``; with no
       correction / twist / non-identity resampler the call short-circuits
-      to ``base_sampler``.
+      to ``base_sampler``.  For per-logical-sample SMC (B groups of K
+      particles), pre-repeat ``initial_noise`` + ``conditioning`` to
+      ``(B*K, ...)`` and wrap the resampler in :class:`PerGroupResamplerFn`.
     resample_until_step_frac: fraction of the trajectory after which
       ``resampler_fn`` is replaced by the identity (``NoResamplerFn``).
       ``1.0`` (default) resamples for the entire trajectory; ``0.8``
@@ -171,16 +173,12 @@ class ConditionalDiffusionSampler:
         and isinstance(self.resampler_fn, NoResamplerFn)
     ):
       return self.base_sampler(
-          inference_fn=inference_fn,
-          rng=rng,
-          initial_noise=initial_noise,
-          conditioning=conditioning,
+          inference_fn=inference_fn, rng=rng,
+          initial_noise=initial_noise, conditioning=conditioning,
       )
     return self._run_loop(
-        inference_fn=inference_fn,
-        rng=rng,
-        initial_noise=initial_noise,
-        conditioning=conditioning,
+        inference_fn=inference_fn, rng=rng,
+        initial_noise=initial_noise, conditioning=conditioning,
     )
 
   def _apply_correction(
@@ -204,9 +202,9 @@ class ConditionalDiffusionSampler:
       time: jax.Array,
       denoiser_fn: DenoiserFn,
   ) -> jax.Array:
-    """``twist_fn(xt, time, denoiser_fn=...)``, zero if None."""
+    """``twist_fn(xt, time, denoiser_fn=...)``, zero (float32) if None."""
     if self.twist_fn is None:
-      return jnp.zeros(xt.shape[0], dtype=xt.dtype)
+      return jnp.zeros(xt.shape[0], dtype=jnp.float32)
     return self.twist_fn(xt, time, denoiser_fn=denoiser_fn)
 
   def _run_loop(

@@ -83,6 +83,7 @@ from hackable_diffusion.lib.guidance.resamplers import (
     ESSThresholdedResamplerFn,
     MultinomialResamplerFn,
     NoResamplerFn,
+    PerGroupResamplerFn,
     SystematicResamplerFn,
     normalised_weights,
 )
@@ -142,6 +143,7 @@ __all__ = [
     "NoResamplerFn",
     "NormResidualTwistFn",
     "PCAPosteriorCovarianceFn",
+    "PerGroupResamplerFn",
     "PosteriorCovarianceFn",
     "PosteriorPredictiveGaussianTwistFn",
     "ResamplerFn",

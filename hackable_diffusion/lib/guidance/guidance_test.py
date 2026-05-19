@@ -81,6 +81,7 @@ from hackable_diffusion.lib.guidance.resamplers import (
     ESSThresholdedResamplerFn,
     MultinomialResamplerFn,
     NoResamplerFn,
+    PerGroupResamplerFn,
     SystematicResamplerFn,
     normalised_weights,
 )
@@ -539,6 +540,54 @@ class SamplerBackwardCompatTest(unittest.TestCase):
     final_base = base_out[0] if isinstance(base_out, tuple) else base_out
     final_cond = cond_out[0] if isinstance(cond_out, tuple) else cond_out
     self.assertTrue(jnp.allclose(final_base.xt, final_cond.xt, atol=1e-12))
+
+
+class PerGroupResamplerFnTest(unittest.TestCase):
+  """``PerGroupResamplerFn`` runs ``base`` independently on each B-group
+  of K particles in a flattened ``(B*K,)`` log-weight vector, returning
+  global indices into the same flat axis."""
+
+  def test_global_indices_stay_within_their_group(self):
+    num_groups, num_particles = 4, 6
+    # Group b strongly prefers local particle (b % K).
+    log_w = jnp.full((num_groups, num_particles), -1e6)
+    for b in range(num_groups):
+      log_w = log_w.at[b, b % num_particles].set(0.0)
+    resampler = PerGroupResamplerFn(
+        base=MultinomialResamplerFn(), num_particles=num_particles,
+    )
+    indices, _ = resampler(log_w.reshape(-1), rng=jax.random.PRNGKey(0))
+    indices_per_group = indices.reshape(num_groups, num_particles)
+    for b in range(num_groups):
+      preferred_global = b * num_particles + (b % num_particles)
+      self.assertTrue(bool(jnp.all(indices_per_group[b] == preferred_global)))
+
+  def test_log_weight_shape_preserved(self):
+    num_groups, num_particles = 3, 5
+    log_w = jnp.zeros(num_groups * num_particles)
+    resampler = PerGroupResamplerFn(
+        base=SystematicResamplerFn(), num_particles=num_particles,
+    )
+    indices, log_w_res = resampler(log_w, rng=jax.random.PRNGKey(0))
+    self.assertEqual(indices.shape, (num_groups * num_particles,))
+    self.assertEqual(log_w_res.shape, (num_groups * num_particles,))
+
+  def test_composes_with_ess_threshold(self):
+    """ESS-thresholded resampling composes inside per-group."""
+    num_groups, num_particles = 2, 4
+    # Uniform within each group → ESS = K, normalised ESS = 1, above threshold.
+    log_w = jnp.zeros(num_groups * num_particles)
+    resampler = PerGroupResamplerFn(
+        base=ESSThresholdedResamplerFn(
+            base=SystematicResamplerFn(), threshold=0.5,
+        ),
+        num_particles=num_particles,
+    )
+    indices, _ = resampler(log_w, rng=jax.random.PRNGKey(0))
+    # Above threshold → identity per group → global identity.
+    self.assertTrue(jnp.array_equal(
+        indices, jnp.arange(num_groups * num_particles, dtype=indices.dtype),
+    ))
 
 
 ################################################################################
