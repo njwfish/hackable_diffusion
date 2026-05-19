@@ -19,6 +19,7 @@ from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import jax_helpers
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.training import base
+import jax
 import jax.numpy as jnp
 import kauldron.ktyping as kt
 import optax
@@ -147,6 +148,139 @@ class NoWeightDiscreteLoss(base.DiffusionLoss):
         preds=preds,
         targets=targets,
         time=time,
+        schedule=None,
+        use_mask=self.use_mask,
+        mask_key=self.mask_key,
+        weight_fn=None,
+        normalize_by_mask=self.normalize_by_mask,
+    )
+
+
+################################################################################
+# MARK: Soft-target variant
+################################################################################
+
+
+@kt.typechecked
+def compute_soft_discrete_diffusion_loss(
+    preds: TargetInfo,
+    targets: TargetInfo,
+    time: TimeArray,
+    *,
+    target_key: str = 'logits',
+    schedule: DiscreteSchedule | None = None,
+    use_mask: bool = False,
+    mask_key: str = 'is_corrupted',
+    weight_fn: base.WeightFn | None = None,
+    normalize_by_mask: bool = True,
+) -> LossOutput:
+  """Discrete diffusion loss against soft probability targets.
+
+  Generalises ``compute_discrete_diffusion_loss``: ``targets[target_key]`` is a
+  probability distribution over the last axis (same shape as the predicted
+  logits) instead of an integer label. When the target is one-hot the result
+  is identical to the integer-label version.
+
+  The last axis is treated as the categorical / normalised axis; all other
+  non-batch axes are reduced (summed and optionally normalised by the mask
+  count). Inputs are otherwise free in rank — e.g. ``(B, V)``, ``(B, seq, V)``,
+  ``(B, H, W, V)``.
+
+  Args:
+    preds: Dict with ``'logits'`` of shape ``(B, ..., V)``.
+    targets: Dict containing ``targets[target_key]`` of shape ``(B, ..., V)``,
+      summing to 1 along the last axis.
+    time: Time array, broadcastable on the right to the target tensor.
+    target_key: Key for the soft-target tensor in ``targets``.
+    schedule: Optional schedule, forwarded to ``weight_fn``.
+    use_mask: If True, restrict the loss to positions where
+      ``targets[mask_key]`` (after squeezing the trailing axis) is true.
+    mask_key: Key into ``targets`` carrying the mask.
+    weight_fn: Optional schedule-dependent weight applied per-batch.
+    normalize_by_mask: If True, divide the per-batch sum by the number of
+      included positions; otherwise divide by the total number of positions.
+
+  Returns:
+    Loss tensor of shape ``(B,)``.
+  """
+  logits = preds['logits']
+  target_probs = targets[target_key]
+  if target_probs.shape != logits.shape:
+    raise ValueError(
+        f'target shape {target_probs.shape} must match logits shape '
+        f'{logits.shape}.'
+    )
+
+  time = jax_helpers.bcast_right(time, target_probs.ndim)
+  bsz = time.shape[0]
+
+  log_likelihood = jnp.sum(
+      target_probs * jax.nn.log_softmax(logits, axis=-1),
+      axis=-1,
+  )
+
+  if use_mask:
+    if mask_key not in targets:
+      raise ValueError(
+          f'Mask key {mask_key} not found in targets: {targets.keys()=}'
+      )
+    mask = jnp.squeeze(targets[mask_key], axis=-1).astype(jnp.bool_)
+  else:
+    mask = jnp.ones_like(log_likelihood, dtype=jnp.bool_)
+
+  log_likelihood = jnp.where(mask, log_likelihood, 0.0)
+
+  reduce_axes = tuple(range(1, log_likelihood.ndim))
+  if normalize_by_mask:
+    denominator = jnp.sum(mask, axis=reduce_axes, keepdims=True)
+  else:
+    denominator = jnp.sum(
+        jnp.ones_like(log_likelihood), axis=reduce_axes, keepdims=True,
+    )
+  log_likelihood = jnp.sum(log_likelihood, axis=reduce_axes, keepdims=True)
+  log_likelihood = log_likelihood / jnp.clip(denominator, min=1e-8)
+  log_likelihood = jax_helpers.flatten_non_batch_dims(log_likelihood)
+
+  if weight_fn is not None:
+    weight = weight_fn(
+        schedule=schedule, preds=preds, targets=targets, time=time,
+    )
+    weight = jax_helpers.flatten_non_batch_dims(weight)
+  else:
+    weight = 1.0
+
+  weighted_loss = -1.0 * weight * log_likelihood
+  weighted_loss = jnp.squeeze(weighted_loss, axis=-1)
+
+  if weighted_loss.shape != (bsz,):
+    raise ValueError(
+        f'weighted_loss should have shape ({bsz},), got {weighted_loss.shape}'
+    )
+  return weighted_loss
+
+
+@dataclasses.dataclass(frozen=True, kw_only=True)
+class NoWeightSoftDiscreteLoss(base.DiffusionLoss):
+  """Soft-target discrete loss without weighting."""
+
+  target_key: str = 'logits'
+  use_mask: bool = False
+  mask_key: str = 'is_corrupted'
+  normalize_by_mask: bool = True
+
+  @kt.typechecked
+  def __call__(
+      self,
+      preds: TargetInfo,
+      targets: TargetInfo,
+      time: TimeArray,
+  ) -> LossOutput:
+
+    return compute_soft_discrete_diffusion_loss(
+        preds=preds,
+        targets=targets,
+        time=time,
+        target_key=self.target_key,
         schedule=None,
         use_mask=self.use_mask,
         mask_key=self.mask_key,

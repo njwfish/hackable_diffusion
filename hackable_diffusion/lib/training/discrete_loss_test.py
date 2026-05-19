@@ -234,5 +234,102 @@ class DiscreteLossTest(parameterized.TestCase):
       chex.assert_trees_all_close(res, jnp.array([exp_loss]))
 
 
+class SoftDiscreteLossTest(parameterized.TestCase):
+
+  def setUp(self):
+    super().setUp()
+    self.bsz = 4
+    self.seq_len = 16
+    self.vocab_size = 8
+    self.key = jax.random.PRNGKey(7)
+
+    key_logits, key_target = jax.random.split(self.key)
+    logits = jax.random.uniform(
+        key_logits, (self.bsz, self.seq_len, self.vocab_size)
+    )
+    raw_target = jax.random.uniform(
+        key_target, (self.bsz, self.seq_len, self.vocab_size)
+    )
+    target_probs = raw_target / jnp.sum(raw_target, axis=-1, keepdims=True)
+
+    self.time = jnp.linspace(0.1, 0.9, self.bsz)
+    self.preds = {'logits': logits}
+    self.targets = {'logits': target_probs}
+    self.schedule = schedules.LinearDiscreteSchedule()
+
+  def test_matches_manual_soft_cross_entropy(self):
+    loss = discrete_loss.NoWeightSoftDiscreteLoss()
+    actual = loss(preds=self.preds, targets=self.targets, time=self.time)
+
+    expected_per_position = -jnp.sum(
+        self.targets['logits'] * jax.nn.log_softmax(self.preds['logits'], axis=-1),
+        axis=-1,
+    )
+    expected = jnp.mean(expected_per_position, axis=-1)
+
+    chex.assert_trees_all_close(actual, expected, atol=1e-6)
+    self.assertEqual(actual.shape, (self.bsz,))
+
+  def test_one_hot_target_matches_integer_label_loss(self):
+    key_labels = jax.random.PRNGKey(11)
+    labels = jax.random.randint(
+        key_labels, (self.bsz, self.seq_len), 0, self.vocab_size
+    )
+    one_hot = jax.nn.one_hot(labels, self.vocab_size, dtype=jnp.float32)
+
+    soft_loss = discrete_loss.NoWeightSoftDiscreteLoss()
+    actual_soft = soft_loss(
+        preds=self.preds,
+        targets={'logits': one_hot},
+        time=self.time,
+    )
+
+    integer_loss = discrete_loss.NoWeightDiscreteLoss()
+    actual_integer = integer_loss(
+        preds=self.preds,
+        targets={'x0': labels[..., None]},
+        time=self.time,
+    )
+
+    chex.assert_trees_all_close(actual_soft, actual_integer, atol=1e-6)
+
+  @parameterized.named_parameters(
+      ('normalize_by_mask', True),
+      ('do_not_normalize_by_mask', False),
+  )
+  def test_mask_selects_positions(self, normalize_by_mask: bool):
+    pa = jnp.array([0.8, 0.2])
+    pb = jnp.array([0.3, 0.7])
+    target = jnp.array([[pa, pb, pa]])
+    logits = jnp.array([[[0.3, 0.7], [0.3, 0.7], [0.3, 0.7]]])
+
+    mask_1 = jnp.array([[[1], [0], [0]]])
+    mask_2 = jnp.array([[[0], [1], [0]]])
+    mask_3 = jnp.array([[[1], [1], [1]]])
+    masks = [mask_1, mask_2, mask_3]
+
+    time = jnp.array([0.5])
+
+    log_softmax = jax.nn.log_softmax(jnp.array([0.3, 0.7]))
+    ce_a = -float(jnp.sum(pa * log_softmax))
+    ce_b = -float(jnp.sum(pb * log_softmax))
+
+    if normalize_by_mask:
+      expected = [ce_a, ce_b, (2.0 * ce_a + ce_b) / 3.0]
+    else:
+      expected = [ce_a / 3.0, ce_b / 3.0, (2.0 * ce_a + ce_b) / 3.0]
+
+    loss = discrete_loss.NoWeightSoftDiscreteLoss(
+        use_mask=True, mask_key='m', normalize_by_mask=normalize_by_mask,
+    )
+    for exp, mask in zip(expected, masks):
+      res = loss(
+          preds={'logits': logits},
+          targets={'logits': target, 'm': mask},
+          time=time,
+      )
+      chex.assert_trees_all_close(res, jnp.array([exp]), atol=1e-6)
+
+
 if __name__ == '__main__':
   absltest.main()
