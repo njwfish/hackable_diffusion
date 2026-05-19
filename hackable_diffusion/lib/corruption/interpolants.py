@@ -122,11 +122,18 @@ class StochasticInterpolant(Interpolant):
   ``evaluate(t)`` yields ``{alpha, beta, gamma}``.  A stochastic
   sampler can query ``gamma(t)`` off ``corruption_process.schedule``
   without any new plumbing.
+
+  ``sigma`` is an optional scalar noise scale -- callers building a
+  parameterised stochastic interpolant (e.g. ``gamma(t) = sigma *
+  sqrt(t(1-t))`` for a Brownian bridge) set it so downstream samplers
+  with closed-form posterior steps can read it directly.  Generic
+  interpolants leave it ``None``.
   """
 
   alpha: Callable[[jax.Array], jax.Array]
   beta: Callable[[jax.Array], jax.Array]
   gamma: Callable[[jax.Array], jax.Array]
+  sigma: float | None = None
   needs_noise: ClassVar[bool] = True
   _gamma_tol: ClassVar[float] = 1e-5
 
