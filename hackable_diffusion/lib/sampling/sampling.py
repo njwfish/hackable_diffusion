@@ -259,32 +259,42 @@ class DiffusionSampler(SampleFn):
       )
       return next_step
 
-    def scan_body(step_carry, next_step_info):
-      next_step = _step(step_carry, next_step_info)
-      return next_step, next_step  # ('carryover', 'accumulated')
-
     next_step_leaves = jax.tree.leaves(next_step_infos)
     num_intermediate_steps = (
         0 if not next_step_leaves else int(next_step_leaves[0].shape[0])
     )
     if num_intermediate_steps == 0:
       before_last_step = first_step
-      if self.store_trajectory:
-        intermediate_steps = jax.tree.map(
-            lambda x: jnp.expand_dims(x, 0)[:0],
-            first_step,
-        )
-      else:
-        intermediate_steps = None
-    elif self.store_trajectory:
-      before_last_step, intermediate_steps = jax.lax.scan(
-          scan_body, first_step, next_step_infos
+      intermediate_steps = (
+          jax.tree.map(lambda x: jnp.expand_dims(x, 0)[:0], first_step)
+          if self.store_trajectory
+          else None
       )
     else:
-      before_last_step, _ = jax.lax.scan(
-          scan_body, first_step, next_step_infos
+      # Python loop over a once-compiled per-step kernel.  Each iteration
+      # after the first is a JIT cache hit on the same ``_step``.  This
+      # avoids the giant-HLO codegen wedge that ``lax.scan`` triggers when
+      # the body inlines a full U-Net forward + correction graph -- XLA's
+      # optimization passes don't terminate in reasonable time on the
+      # resulting fused trajectory kernel.  Per-step latency is identical
+      # to scan after the first compile; the loop overhead is Python-side
+      # and negligible against the inference fn cost.
+      step_jit = jax.jit(_step)
+      carry = first_step
+      accumulated = [] if self.store_trajectory else None
+      for i in range(num_intermediate_steps):
+        next_step_info_i = jax.tree.map(
+            lambda x, i=i: x[i], next_step_infos
+        )
+        carry = step_jit(carry, next_step_info_i)
+        if self.store_trajectory:
+          accumulated.append(carry)
+      before_last_step = carry
+      intermediate_steps = (
+          jax.tree.map(lambda *xs: jnp.stack(xs, axis=0), *accumulated)
+          if self.store_trajectory
+          else None
       )
-      intermediate_steps = None
 
     xt, time = _get_input_inference_fn(before_last_step)
     last_conditioning = conditioning
