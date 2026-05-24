@@ -31,6 +31,11 @@ and ``solver="pinv"``.  Setting the posterior covariance to
 See :mod:`docs.composable_guidance` for a worked inpainting recipe.
 """
 
+from hackable_diffusion.lib.guidance.correction_schedules import (
+    IntervalSchedule,
+    LinearRampSchedule,
+    TimeBlendedCorrectionFn,
+)
 from hackable_diffusion.lib.guidance.corrections import (
     CategoricalProjectionCorrectionFn,
     GradientCorrectionFn,
@@ -132,11 +137,13 @@ __all__ = [
     "GaussianStepKernel",
     "GradientCorrectionFn",
     "InpaintingForwardFn",
+    "IntervalSchedule",
     "IsotropicPosteriorCovarianceFn",
     "IteratedCorrectionFn",
     "KalmanCorrectionFn",
     "LinearBlendDenoiserFn",
     "LinearForwardFn",
+    "LinearRampSchedule",
     "LogProbFn",
     "LowRankTweediePosteriorCovarianceFn",
     "MultinomialResamplerFn",
@@ -152,6 +159,7 @@ __all__ = [
     "StepKernel",
     "SubsampleForwardFn",
     "SystematicResamplerFn",
+    "TimeBlendedCorrectionFn",
     "TweediePosteriorCovarianceFn",
     "TwistFn",
     "accepts_rng_kwarg",
