@@ -24,6 +24,11 @@ by :func:`linear_adjoint` via ``jax.vjp``.
 - :class:`InpaintingForwardFn`: select observed pixels under a mask.
 - :class:`ConvForwardFn`: linear convolution via ``lax.conv_general_dilated``.
 - :class:`ComposeForwardFn`: compose two linear forwards ``f2 o f1``.
+- :class:`StackForwardFn`: stack N forwards vertically into one block
+  operator ``y = [f_1 x ; f_2 x ; ...]``.  The natural combinator for
+  applying multiple independent linear constraints inside a single Kalman
+  update -- each component sees the same ``x``, and the concatenated
+  output pairs with a concatenated observation.
 
 All operate on a leading batch axis ``(B, *spatial)``.
 """
@@ -135,3 +140,33 @@ class ComposeForwardFn(ForwardFn):
 
   def forward(self, x: jax.Array) -> jax.Array:
     return self.second.forward(self.first.forward(x))
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class StackForwardFn(ForwardFn):
+  """Stack ``N`` independent forwards into one block operator.
+
+      forward(x) = concat([c.forward(x) for c in components], axis=-1)
+
+  Each ``component`` sees the same input ``x`` and produces its own
+  observation; outputs are flattened to ``(B, *)`` and concatenated along
+  the last axis.  Paired with a concatenated observation, this lets a
+  single :class:`KalmanCorrectionFn` apply multiple independent linear
+  constraints in one update -- the natural composition rule for
+  ``A x = y`` when ``A`` is block-stacked.
+
+  The adjoint is auto-derived via ``jax.vjp`` and decomposes as
+  ``sum_i c_i^T (slice_i of cotangent))``, matching the standard
+  block-stack adjoint.
+
+  All components must produce outputs whose leading axis is the batch
+  dim ``B``; any tail shape is fine and gets flattened before
+  concatenation.
+  """
+
+  components: tuple[ForwardFn, ...]
+
+  def forward(self, x: jax.Array) -> jax.Array:
+    pieces = [c.forward(x) for c in self.components]
+    flat = [p.reshape(p.shape[0], -1) for p in pieces]
+    return jnp.concatenate(flat, axis=-1)

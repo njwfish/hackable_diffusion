@@ -53,6 +53,7 @@ from hackable_diffusion.lib.guidance.forward_ops import (
     ConvForwardFn,
     InpaintingForwardFn,
     LinearForwardFn,
+    StackForwardFn,
     SubsampleForwardFn,
 )
 from hackable_diffusion.lib.guidance.gaussian_conditioning import (
@@ -156,6 +157,7 @@ __all__ = [
     "ResamplerFn",
     "ScaleFn",
     "SimplicialStepKernel",
+    "StackForwardFn",
     "StepKernel",
     "SubsampleForwardFn",
     "SystematicResamplerFn",
