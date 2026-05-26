@@ -41,6 +41,7 @@ from hackable_diffusion.lib.guidance.corrections import (
     GradientCorrectionFn,
     IteratedCorrectionFn,
     KalmanCorrectionFn,
+    ReplaceCorrectionFn,
 )
 from hackable_diffusion.lib.guidance.denoisers import (
     LinearBlendDenoiserFn,
@@ -154,6 +155,7 @@ __all__ = [
     "PerGroupResamplerFn",
     "PosteriorCovarianceFn",
     "PosteriorPredictiveGaussianTwistFn",
+    "ReplaceCorrectionFn",
     "ResamplerFn",
     "ScaleFn",
     "SimplicialStepKernel",
