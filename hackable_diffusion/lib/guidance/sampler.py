@@ -223,6 +223,18 @@ class ConditionalDiffusionSampler:
     store_trajectory = bool(self.base_sampler.store_trajectory)
     correction_identity = self.correction_fn is None
     uses_rng = accepts_rng_kwarg(inference_fn)
+    # SMC bookkeeping (per-step importance weight ratio, twist log-density,
+    # resampling) is only meaningful when there's a twist to weight by OR
+    # a non-trivial resampler.  Without those, ``log_w`` is never read --
+    # the proposal-ratio kernel call would be wasted work, and for some
+    # discrete steppers (e.g. SimplicialDDIMStep with ``churn>0``) it
+    # raises ``NotImplementedError`` because the inverse Dirichlet
+    # shrinkage kernel isn't derived.  Compute once here; the static
+    # bool gates the scan body so only one branch gets traced.
+    needs_smc = (
+        self.twist_fn is not None
+        or not isinstance(self.resampler_fn, NoResamplerFn)
+    )
 
     all_infos = time_schedule.all_step_infos(rng, num_steps, initial_noise)
     first_info, next_infos, last_info = _split_first_middle_last(all_infos)
@@ -298,6 +310,15 @@ class ConditionalDiffusionSampler:
           advance_fn=lambda outputs, cur: stepper.update(outputs, cur, next_info),
           rng_or_none=step_rng_or_none,
       )
+
+      if not needs_smc:
+        # Correction-only path: the per-step Kalman / projection update is
+        # already baked into ``next_step``; nothing else to compute or
+        # resample on.
+        new_carry = (next_step, log_w, log_psi_old, rng_state, step_idx + 1)
+        scan_emit = next_step if store_trajectory else None
+        return new_carry, scan_emit
+
       xt_new, time_new = _xt_time(next_step)
 
       log_proposal_ratio = proposal_log_ratio(
