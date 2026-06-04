@@ -21,6 +21,7 @@ from hackable_diffusion.lib.sampling.base import SamplerStep
 from hackable_diffusion.lib.sampling.base import StepInfo
 from hackable_diffusion.lib.sampling.base import StepInfoTree
 from hackable_diffusion.lib.sampling.base import UpdateConditioningFn
+from hackable_diffusion.lib.sampling.bridge_step_sampler import BridgeStep
 from hackable_diffusion.lib.sampling.discrete_step_sampler import AllCorruptedMaskFn
 from hackable_diffusion.lib.sampling.discrete_step_sampler import CorruptedMaskFn
 from hackable_diffusion.lib.sampling.discrete_step_sampler import DiscreteDDIMStep

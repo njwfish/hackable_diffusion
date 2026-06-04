@@ -22,6 +22,73 @@ The `notebooks/` directory contains several tutorials to get you started:
 *   **`mnist_discrete.ipynb`**: An example of discrete diffusion.
 *   **`mnist_multimodal.ipynb`**: A showcase of the multimodal capabilities, generating images and labels jointly.
 
+## Sampling with distributional (posterior) models
+
+A standard diffusion sampler turns a *point* denoiser estimate into a
+transition via a score/velocity SDE or ODE update (`DDIMStep`, `SdeStep`,
+`VelocityStep`, ...).  A **distributional** model is different: at a state
+`x_t` it produces a *sample* from the clean-endpoint posterior
+`p(x_0 | x_t)`, and the finite step is then just the fixed two-endpoint
+bridge of the corruption geometry:
+
+1.  draw `x_0 ~ p(x_0 | x_t)` from the model;
+2.  apply `x_s ~ K(x_s | x_0, x_t)` -- the interpolant's bridge step.
+
+There is no score or velocity in between.  This is implemented by
+`BridgeStep` (in `lib.sampling`), which reads the endpoint sample from the
+model's `x0` output and delegates the move to `Interpolant.bridge_step`.
+It is a drop-in `SamplerStep`, so running a distributional model is a
+one-line stepper swap:
+
+```python
+from hackable_diffusion.lib.corruption.gaussian import GaussianProcess
+from hackable_diffusion.lib.corruption.schedules import RFSchedule
+from hackable_diffusion.lib.inference.posterior_sampler import (
+    PosteriorSamplerInferenceFn,
+)
+from hackable_diffusion.lib.sampling.bridge_step_sampler import BridgeStep
+from hackable_diffusion.lib.sampling.sampling import DiffusionSampler
+from hackable_diffusion.lib.sampling.time_scheduling import UniformTimeSchedule
+
+process = GaussianProcess(schedule=RFSchedule())          # exposes `.interpolant`
+inference_fn = PosteriorSamplerInferenceFn(               # emits {"x0": sample}
+    network=net, params=params,
+)
+
+sampler = DiffusionSampler(
+    time_schedule=UniformTimeSchedule(),
+    stepper=BridgeStep(corruption_process=process),       # <- the only change vs DDIM/SDE
+    num_steps=num_steps,
+)
+last_step, trajectory = sampler(
+    inference_fn=inference_fn,
+    rng=key,
+    initial_noise=process.sample_from_invariant(key, data_spec),
+    conditioning=conditioning,
+)
+```
+
+`BridgeStep` works across the continuous geometries through one interface:
+
+*   **Gaussian / flow** (`LinearInterpolant`): the deterministic affine bridge
+    -- equivalently the ODE-limit DDIM update.
+*   **Stochastic interpolant** (`StochasticInterpolant`): the Brownian-bridge
+    step, with bridge noise drawn from the per-step rng.
+*   **Riemannian** (`GeodesicInterpolant`): the geodesic bridge.
+
+Guidance composes for free: a `CorrectionFn` shifts `x_0`, then the
+*unchanged* bridge step applies, and `BridgeStep.kernel(...)` supplies the
+SMC proposal ratio -- so it slots into `ConditionalDiffusionSampler` like
+any other stepper.
+
+For the **categorical** and **Dirichlet (simplicial)** models the posterior
+view is already native: the network predicts a *distribution* over the clean
+endpoint (logits / Dirichlet parameters), and the dedicated steppers
+(`UnMaskingStep`, `DiscreteDDIMStep`, `DiscreteFlowMatchingStep`,
+`SimplicialDDIMStep`) sample the endpoint and apply the modality's
+two-endpoint bridge in a single `update`.  Use those steppers directly --
+no separate posterior-sampler inference fn is required.
+
 ## Installation
 
 To install the necessary dependencies, you can use pip with the provided

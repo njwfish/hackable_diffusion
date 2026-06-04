@@ -193,6 +193,22 @@ class Interpolant(Protocol):
   ``eval`` returns ``(x_t, dx_t/dt)`` as a tuple -- shared-work shortcut
   for interpolants whose path and velocity reuse schedule evaluations.
   ``TargetAdapter``s pull ``dx_t/dt`` from the second element.
+
+  ``bridge_step`` is the *two-endpoint bridge* ``K_{s|0,t}(. | x_0, x_t)``
+  of the posterior-bridge calculus (Posterior Bridges, Assumption 1): the
+  conditional law of the state at an earlier time ``s < t`` given the
+  clean endpoint ``x_0`` and the current state ``x_t``.  It is the
+  *defining geometry object* the theory pairs with a clean-endpoint
+  posterior, and -- crucially -- it is **not** recoverable from the
+  one-time marginals ``eval`` produces (a VP Gaussian-Markov bridge and a
+  Brownian-bridge stochastic interpolant share marginals but step
+  differently).  Each concrete interpolant therefore declares its own
+  ``bridge_step``.
+
+  A distributional / posterior sampler draws ``x_0 ~ p_{0|t}(. | x_t)``
+  and then applies ``bridge_step`` directly -- there is no score / velocity
+  reverse-time update in between.  See
+  :class:`hackable_diffusion.lib.sampling.bridge_step_sampler.BridgeStep`.
   """
 
   schedule: object
@@ -205,6 +221,36 @@ class Interpolant(Protocol):
       t: TimeTree,
       z: DataTree | None = None,
   ) -> tuple[DataTree, DataTree]: ...
+
+  def bridge_step(
+      self,
+      *,
+      x0: DataTree,
+      xt: DataTree,
+      t: TimeTree,
+      s: TimeTree,
+      key: PRNGKey | None = None,
+  ) -> DataTree:
+    """Sample ``x_s ~ K_{s|0,t}(. | x_0, x_t)`` for ``0 <= s < t``.
+
+    The two-endpoint bridge step of the posterior-bridge sampler
+    (Algorithm 2).  At ``s = 0`` the bridge collapses to the clean
+    endpoint (``K_{0|0,t} = delta_{x_0}``), so a final step to ``s = 0``
+    returns ``x_0``.
+
+    Args:
+      x0: A clean-endpoint sample drawn from the posterior ``p_{0|t}``.
+      xt: The current state at time ``t``.
+      t: The current time.
+      s: The earlier target time, ``s < t``.
+      key: Optional rng.  Deterministic bridges (``LinearInterpolant``,
+        geodesic) ignore it; stochastic bridges
+        (``StochasticInterpolant``) draw their bridge noise from it.
+
+    Returns:
+      A sample ``x_s`` from the two-endpoint bridge step.
+    """
+    ...
 
 
 class TargetAdapter(Protocol):

@@ -75,6 +75,11 @@ class GaussianProcess(base.CorruptionProcess):
         ),
     )
 
+  @property
+  def interpolant(self):
+    """The underlying :class:`LinearInterpolant` (exposes ``bridge_step``)."""
+    return self._process.interpolant
+
   def corrupt(self, key, x0, time):
     return self._process.corrupt(key, x0, time)
 
