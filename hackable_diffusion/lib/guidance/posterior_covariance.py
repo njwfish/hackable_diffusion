@@ -67,7 +67,10 @@ import jax.numpy as jnp
 
 from hackable_diffusion.lib.guidance.linalg import randomized_svd_jvp
 from hackable_diffusion.lib.guidance.protocols import PosteriorCovarianceFn
-from hackable_diffusion.lib.guidance.utils import scalar_alpha_sigma
+from hackable_diffusion.lib.guidance.utils import (
+    scalar_alpha,
+    scalar_alpha_sigma,
+)
 
 
 # Signature of a scalar schedule -> scale callable used by the isotropic
@@ -113,7 +116,23 @@ class IsotropicPosteriorCovarianceFn(PosteriorCovarianceFn):
 
   def __call__(self, *, xt, time, schedule, denoiser_fn=None):
     del xt, denoiser_fn  # state-independent
-    alpha, sigma = scalar_alpha_sigma(schedule, time)
+    # Most ``scale_fn`` choices (Miyasawa, fixed-strength) need both
+    # ``alpha_t`` and ``sigma_t`` -- those live on a Gaussian-forward
+    # schedule.  Discrete schedules only expose ``alpha`` (e.g. the
+    # SimplicialProcess + LinearDiscreteSchedule combo this codebase
+    # uses for phage / categorical diffusion).  Hand ``sigma_fn`` a
+    # zero of the right shape when the schedule has no ``sigma`` --
+    # safe for the clean-endpoint recipes (``unit_scale``) where
+    # ``sigma`` is discarded, and the natural Miyasawa limit
+    # (``sigma^2 / alpha`` -> 0) for sigma-using ``scale_fn``s on
+    # discrete schedules.
+    alpha = scalar_alpha(schedule, time)
+    sigma_method = getattr(schedule, "sigma", None)
+    if sigma_method is None:
+      sigma = jnp.zeros_like(alpha)
+    else:
+      t = jnp.atleast_1d(time).reshape(-1)[0:1]
+      sigma = sigma_method(t).reshape(())
     scale = self.scale_fn(alpha, sigma)
     return lambda v: scale * v
 

@@ -14,6 +14,7 @@
 
 """Attention layers and utils."""
 
+import math
 from typing import Callable, Literal
 import warnings
 
@@ -127,7 +128,7 @@ def _dot_product_attention(
     q: Float["batch head sequence_query dim"],
     k: Float["batch head sequence_key dim"],
     v: Float["batch head sequence_key dim"],
-    rescale: Float["..."],
+    rescale: Float["..."] | float,
     *,
     mask: Bool["batch sequence_key"] | None = None,
     dropout_rate: float = 0.0,
@@ -340,7 +341,7 @@ class MultiHeadAttention(nn.Module):
       if self.qk_norm_method == "rms_norm":
         q = nn.RMSNorm(name="RMSNorm_Q")(q)
         k = nn.RMSNorm(name="RMSNorm_K")(k)
-        scale = 1.0 / jnp.sqrt(jnp.float32(head_d))
+        scale = 1.0 / math.sqrt(head_d)
       # QK L2 normalization: https://arxiv.org/abs/2010.04245
       elif self.qk_norm_method == "l2":
         scale = self.param(
@@ -360,7 +361,11 @@ class MultiHeadAttention(nn.Module):
             f"Unsupported QK normalization method: {self.qk_norm_method}."
         )
     else:
-      scale = 1.0 / jnp.sqrt(jnp.float32(head_d))
+      # Python ``math.sqrt`` so ``scale`` stays a Python float -- a JAX
+      # array would force the flash-attention branch of
+      # ``_dot_product_attention`` to call ``rescale.item()`` inside JIT,
+      # which raises ``ConcretizationTypeError``.
+      scale = 1.0 / math.sqrt(head_d)
 
     # RoPE: https://arxiv.org/abs/2104.09864
     if self.use_rope:

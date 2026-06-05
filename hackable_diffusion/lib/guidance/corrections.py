@@ -320,6 +320,63 @@ class IteratedCorrectionFn(CorrectionFn):
 
 
 ################################################################################
+# MARK: Exact replace correction (hard linear observation, closed form)
+################################################################################
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class ReplaceCorrectionFn(CorrectionFn):
+  """Closed-form hard-replace update for projector-style forwards.
+
+      x_0_new = x_0 + A^T (y - A x_0)
+
+  Identical to :class:`KalmanCorrectionFn` with
+  :class:`IsotropicPosteriorCovarianceFn` (``scale_fn=unit_scale``),
+  ``observation_noise = 0``, and ``solver="pinv"`` whenever ``A`` is an
+  orthogonal projector -- i.e. ``A^T A = A`` on the observed subspace.
+  The two most common cases:
+
+  - :class:`InpaintingForwardFn` (``A = diag(mask)``): the update
+    collapses to ``mask * observation + (1 - mask) * x_0`` -- a direct
+    per-position replace.
+  - :class:`SubsampleForwardFn` (``A = select(indices)``): the update
+    rewrites the selected positions to the observed values and leaves
+    everything else untouched.
+
+  Use this instead of the Kalman pinv path when the constraint is hard
+  and the forward is a projector.  Kalman's pinv materialises an
+  ``M x M`` observation-covariance matrix whose memory cost scales with
+  the full output dim of ``A`` (per batch and per fold axis) -- on
+  inpainting it OOMs at moderate scales (~275 GB for an
+  8192-position-times-32-fold mask).  ``ReplaceCorrectionFn`` does the
+  same math with zero matrix materialisation: one forward, one adjoint,
+  one residual.
+
+  Not appropriate when the constraint is soft (``observation_noise >
+  0``) or the forward isn't a projector -- those genuinely need the
+  Kalman update.
+  """
+
+  observation: jax.Array
+  forward_fn: ForwardFn
+
+  def __call__(
+      self,
+      x0: jax.Array,
+      xt: jax.Array,
+      time: jax.Array,
+      *,
+      denoiser_fn: DenoiserFn,
+      schedule: Any,
+  ) -> jax.Array:
+    del xt, time, denoiser_fn, schedule  # closed-form update, no schedule needed
+    predicted = self.forward_fn.forward(x0)
+    target = _broadcast_observation(self.observation, predicted)
+    adjoint = linear_adjoint(self.forward_fn, x0)
+    return x0 + adjoint(target - predicted)
+
+
+################################################################################
 # MARK: Categorical projection correction (discrete / simplicial state)
 ################################################################################
 

@@ -31,11 +31,17 @@ and ``solver="pinv"``.  Setting the posterior covariance to
 See :mod:`docs.composable_guidance` for a worked inpainting recipe.
 """
 
+from hackable_diffusion.lib.guidance.correction_schedules import (
+    IntervalSchedule,
+    LinearRampSchedule,
+    TimeBlendedCorrectionFn,
+)
 from hackable_diffusion.lib.guidance.corrections import (
     CategoricalProjectionCorrectionFn,
     GradientCorrectionFn,
     IteratedCorrectionFn,
     KalmanCorrectionFn,
+    ReplaceCorrectionFn,
 )
 from hackable_diffusion.lib.guidance.denoisers import (
     LinearBlendDenoiserFn,
@@ -48,6 +54,7 @@ from hackable_diffusion.lib.guidance.forward_ops import (
     ConvForwardFn,
     InpaintingForwardFn,
     LinearForwardFn,
+    StackForwardFn,
     SubsampleForwardFn,
 )
 from hackable_diffusion.lib.guidance.gaussian_conditioning import (
@@ -83,6 +90,7 @@ from hackable_diffusion.lib.guidance.resamplers import (
     ESSThresholdedResamplerFn,
     MultinomialResamplerFn,
     NoResamplerFn,
+    PerGroupResamplerFn,
     SystematicResamplerFn,
     normalised_weights,
 )
@@ -131,25 +139,31 @@ __all__ = [
     "GaussianStepKernel",
     "GradientCorrectionFn",
     "InpaintingForwardFn",
+    "IntervalSchedule",
     "IsotropicPosteriorCovarianceFn",
     "IteratedCorrectionFn",
     "KalmanCorrectionFn",
     "LinearBlendDenoiserFn",
     "LinearForwardFn",
+    "LinearRampSchedule",
     "LogProbFn",
     "LowRankTweediePosteriorCovarianceFn",
     "MultinomialResamplerFn",
     "NoResamplerFn",
     "NormResidualTwistFn",
     "PCAPosteriorCovarianceFn",
+    "PerGroupResamplerFn",
     "PosteriorCovarianceFn",
     "PosteriorPredictiveGaussianTwistFn",
+    "ReplaceCorrectionFn",
     "ResamplerFn",
     "ScaleFn",
     "SimplicialStepKernel",
+    "StackForwardFn",
     "StepKernel",
     "SubsampleForwardFn",
     "SystematicResamplerFn",
+    "TimeBlendedCorrectionFn",
     "TweediePosteriorCovarianceFn",
     "TwistFn",
     "accepts_rng_kwarg",
