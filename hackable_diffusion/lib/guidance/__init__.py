@@ -40,6 +40,11 @@ and ``solver="pinv"``.  Setting the posterior covariance to
 See :mod:`docs.composable_guidance` for a worked inpainting recipe.
 """
 
+from hackable_diffusion.lib.guidance.correction_schedules import (
+    IntervalSchedule,
+    LinearRampSchedule,
+    TimeBlendedCorrectionFn,
+)
 from hackable_diffusion.lib.guidance.corrections import (
     CategoricalProjectionCorrectionFn,
     GradientCorrectionFn,
@@ -48,6 +53,7 @@ from hackable_diffusion.lib.guidance.corrections import (
     LogImportanceFn,
     ProjectionCloudCorrectionFn,
     ProjectionFn,
+    ReplaceCorrectionFn,
 )
 from hackable_diffusion.lib.guidance.denoisers import (
     LinearBlendDenoiserFn,
@@ -61,6 +67,7 @@ from hackable_diffusion.lib.guidance.forward_ops import (
     ConvForwardFn,
     InpaintingForwardFn,
     LinearForwardFn,
+    StackForwardFn,
     SubsampleForwardFn,
 )
 from hackable_diffusion.lib.guidance.gaussian_conditioning import (
@@ -97,6 +104,7 @@ from hackable_diffusion.lib.guidance.resamplers import (
     ESSThresholdedResamplerFn,
     MultinomialResamplerFn,
     NoResamplerFn,
+    PerGroupResamplerFn,
     SystematicResamplerFn,
     normalised_weights,
 )
@@ -148,11 +156,13 @@ __all__ = [
     "GaussianStepKernel",
     "GradientCorrectionFn",
     "InpaintingForwardFn",
+    "IntervalSchedule",
     "IsotropicPosteriorCovarianceFn",
     "IteratedCorrectionFn",
     "KalmanCorrectionFn",
     "LinearBlendDenoiserFn",
     "LinearForwardFn",
+    "LinearRampSchedule",
     "LogImportanceFn",
     "LogProbFn",
     "LowRankTweediePosteriorCovarianceFn",
@@ -160,17 +170,21 @@ __all__ = [
     "NoResamplerFn",
     "NormResidualTwistFn",
     "PCAPosteriorCovarianceFn",
+    "PerGroupResamplerFn",
     "PosteriorCloudFn",
     "PosteriorCovarianceFn",
     "PosteriorPredictiveGaussianTwistFn",
     "ProjectionCloudCorrectionFn",
     "ProjectionFn",
+    "ReplaceCorrectionFn",
     "ResamplerFn",
     "ScaleFn",
     "SimplicialStepKernel",
+    "StackForwardFn",
     "StepKernel",
     "SubsampleForwardFn",
     "SystematicResamplerFn",
+    "TimeBlendedCorrectionFn",
     "TweediePosteriorCovarianceFn",
     "TwistFn",
     "accepts_rng_kwarg",

@@ -14,6 +14,7 @@
 
 """Attention layers and utils."""
 
+import math
 from typing import Callable
 import warnings
 
@@ -124,7 +125,7 @@ def _dot_product_attention(
     q: Float["batch head sequence_query dim"],
     k: Float["batch head sequence_key dim"],
     v: Float["batch head sequence_key dim"],
-    rescale: Float["..."],
+    rescale: Float["..."] | float,
     *,
     mask: Bool["batch sequence_key"] | None = None,
 ) -> Float["batch sequence_query head*dim"]:
@@ -329,7 +330,11 @@ class MultiHeadAttention(nn.Module):
       q = q / (norm_q + SAFETY_EPSILON)
       k = k / (norm_k + SAFETY_EPSILON)
     else:
-      scale = 1.0 / jnp.sqrt(head_d)
+      # Python ``math.sqrt`` so ``scale`` stays a Python float -- a JAX
+      # array would force the flash-attention branch of
+      # ``_dot_product_attention`` to call ``rescale.item()`` inside JIT,
+      # which raises ``ConcretizationTypeError``.
+      scale = 1.0 / math.sqrt(head_d)
 
     attn_output = _dot_product_attention(
         q=q,

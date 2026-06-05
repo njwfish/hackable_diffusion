@@ -137,3 +137,37 @@ class ESSThresholdedResamplerFn(ResamplerFn):
         jnp.where(should_resample, indices, identity_indices),
         jnp.where(should_resample, new_log_weights, log_weights),
     )
+
+
+@dataclasses.dataclass(kw_only=True, frozen=True)
+class PerGroupResamplerFn(ResamplerFn):
+  """Apply ``base`` independently to each group of ``num_particles`` particles.
+
+  ``log_weights`` is interpreted as a flattened ``(B, K)`` tensor with
+  ``K = num_particles``: position ``b * K + k`` is logical sample ``b``,
+  particle ``k``.  The wrapped ``base`` runs once per group via
+  ``jax.vmap``, and the returned indices are lifted to the global flat
+  range ``[0, B*K)`` so the sampler's gather stays a plain ``leaf[indices]``.
+
+  Use this when ``initial_noise`` is the flattened ``(B*K, ...)`` view of
+  per-sample particle populations and resampling must not mix across the
+  ``B`` logical groups.
+  """
+
+  base: ResamplerFn
+  num_particles: int
+
+  def __call__(
+      self,
+      log_weights: jax.Array,
+      *,
+      rng: jax.Array,
+  ) -> tuple[jax.Array, jax.Array]:
+    k = int(self.num_particles)
+    b = log_weights.shape[0] // k
+    log_w_grouped = log_weights.reshape(b, k)
+    rngs = jax.random.split(rng, b)
+    local_idx, log_w_res = jax.vmap(self.base)(log_w_grouped, rng=rngs)
+    offsets = jnp.arange(b, dtype=local_idx.dtype) * k
+    global_idx = (local_idx + offsets[:, None]).reshape(-1)
+    return global_idx, log_w_res.reshape(-1)

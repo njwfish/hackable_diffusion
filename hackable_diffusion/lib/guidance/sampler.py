@@ -156,7 +156,9 @@ class ConditionalDiffusionSampler:
     resampler_fn: particle resampler (defaults to :class:`NoResamplerFn`).
       The SMC population size is ``initial_noise.shape[0]``; with no
       correction / twist / non-identity resampler the call short-circuits
-      to ``base_sampler``.
+      to ``base_sampler``.  For per-logical-sample SMC (B groups of K
+      particles), pre-repeat ``initial_noise`` + ``conditioning`` to
+      ``(B*K, ...)`` and wrap the resampler in :class:`PerGroupResamplerFn`.
     resample_until_step_frac: fraction of the trajectory after which
       ``resampler_fn`` is replaced by the identity (``NoResamplerFn``).
       ``1.0`` (default) resamples for the entire trajectory; ``0.8``
@@ -199,16 +201,12 @@ class ConditionalDiffusionSampler:
         and isinstance(self.resampler_fn, NoResamplerFn)
     ):
       return self.base_sampler(
-          inference_fn=inference_fn,
-          rng=rng,
-          initial_noise=initial_noise,
-          conditioning=conditioning,
+          inference_fn=inference_fn, rng=rng,
+          initial_noise=initial_noise, conditioning=conditioning,
       )
     return self._run_loop(
-        inference_fn=inference_fn,
-        rng=rng,
-        initial_noise=initial_noise,
-        conditioning=conditioning,
+        inference_fn=inference_fn, rng=rng,
+        initial_noise=initial_noise, conditioning=conditioning,
     )
 
   def _apply_correction(
@@ -237,9 +235,9 @@ class ConditionalDiffusionSampler:
       denoiser_fn: DenoiserFn,
       cloud_fn: PosteriorCloudFn | None = None,
   ) -> jax.Array:
-    """``twist_fn(xt, time, denoiser_fn=..., cloud_fn=...)``, zero if None."""
+    """``twist_fn(xt, time, denoiser_fn=..., cloud_fn=...)``, zero (float32) if None."""
     if self.twist_fn is None:
-      return jnp.zeros(xt.shape[0], dtype=xt.dtype)
+      return jnp.zeros(xt.shape[0], dtype=jnp.float32)
     return self.twist_fn(
         xt, time, denoiser_fn=denoiser_fn, cloud_fn=cloud_fn,
     )
@@ -260,6 +258,18 @@ class ConditionalDiffusionSampler:
     store_trajectory = bool(self.base_sampler.store_trajectory)
     correction_identity = self.correction_fn is None
     uses_rng = accepts_rng_kwarg(inference_fn)
+    # SMC bookkeeping (per-step importance weight ratio, twist log-density,
+    # resampling) is only meaningful when there's a twist to weight by OR
+    # a non-trivial resampler.  Without those, ``log_w`` is never read --
+    # the proposal-ratio kernel call would be wasted work, and for some
+    # discrete steppers (e.g. SimplicialDDIMStep with ``churn>0``) it
+    # raises ``NotImplementedError`` because the inverse Dirichlet
+    # shrinkage kernel isn't derived.  Compute once here; the static
+    # bool gates the scan body so only one branch gets traced.
+    needs_smc = (
+        self.twist_fn is not None
+        or not isinstance(self.resampler_fn, NoResamplerFn)
+    )
 
     all_infos = time_schedule.all_step_infos(rng, num_steps, initial_noise)
     first_info, next_infos, last_info = _split_first_middle_last(all_infos)
@@ -374,6 +384,15 @@ class ConditionalDiffusionSampler:
           advance_fn=lambda outputs, cur: stepper.update(outputs, cur, next_info),
           rng_or_none=step_rng_or_none,
       )
+
+      if not needs_smc:
+        # Correction-only path: the per-step Kalman / projection update is
+        # already baked into ``next_step``; nothing else to compute or
+        # resample on.
+        new_carry = (next_step, log_w, log_psi_old, rng_state, step_idx + 1)
+        scan_emit = next_step if store_trajectory else None
+        return new_carry, scan_emit
+
       xt_new, time_new = _xt_time(next_step)
 
       log_proposal_ratio = proposal_log_ratio(
