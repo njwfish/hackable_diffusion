@@ -338,16 +338,8 @@ class VelocityOnlyTargets(TargetAdapter):
     del xt, t, interpolant
     if 'velocity' in prediction:
       return prediction
-    # A posterior / distributional model emits a clean-endpoint sample
-    # under ``x0`` (manuscript Posterior Models).  Pass it through so the
-    # posterior-bridge sampler and the guidance ``denoiser_fn`` can read
-    # ``x0`` for an arbitrary interpolant -- the bridge step never needs
-    # score / velocity.  The Gaussian-only ``x0 <-> velocity`` identities
-    # still require :class:`GaussianSourceTargets`.
-    if 'x0' in prediction:
-      return {'x0': prediction['x0']}
     raise NotImplementedError(
-        'VelocityOnlyTargets supports velocity or x0 predictions.  For '
-        'score / v / x1 parameterisations, use GaussianSourceTargets '
-        '(requires a GaussianPrior).'
+        'VelocityOnlyTargets only supports velocity predictions.  For '
+        'other parameterisations, use GaussianSourceTargets (requires '
+        'a GaussianPrior).'
     )

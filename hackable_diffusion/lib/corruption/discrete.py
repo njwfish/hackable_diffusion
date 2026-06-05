@@ -334,6 +334,65 @@ class CategoricalProcess(CorruptionProcess):
     return self.schedule.evaluate(time)
 
   ##############################################################################
+  # MARK: Posterior-bridge interface
+  ##############################################################################
+
+  @kt.typechecked
+  def sample_endpoint(
+      self,
+      key: PRNGKey,
+      prediction: TargetInfo,
+      xt: DataArray,
+      time: TimeArray,
+  ) -> DataArray:
+    """Draw one clean-endpoint token ``x_0 ~ Categorical(logits)``.
+
+    The categorical model reports the clean-endpoint posterior as logits;
+    this materializes a single token sample from it (the posterior draw of
+    the posterior-bridge sampler).
+    """
+    logits = self.convert_predictions(prediction, xt, time)['logits']
+    return jax.random.categorical(key, logits)[..., None]
+
+  @kt.typechecked
+  def bridge_step(
+      self,
+      key: PRNGKey,
+      x0: DataArray,
+      xt: DataArray,
+      t: TimeArray,
+      s: TimeArray,
+  ) -> DataArray:
+    r"""Finite-state two-endpoint bridge step ``K_{s|0,t}`` (Posterior Bridges eq. 18).
+
+    Each coordinate currently differing from the clean endpoint (a noised
+    / masked coordinate, ``x_t^i != x_0^i``) is kept noised with the
+    retention probability ``rho = (1 - alpha(s)) / (1 - alpha(t))`` and
+    otherwise revealed to ``x_0``; coordinates already equal to ``x_0``
+    are left untouched.  At ``s = 0`` (``rho = 0``) the step collapses to
+    ``x_0``.  For the absorbing-mask process the reveal probability
+    ``1 - rho = (alpha_s - alpha_t)/(1 - alpha_t)`` matches the
+    unmasking rate of
+    :class:`~hackable_diffusion.lib.sampling.discrete_step_sampler.UnMaskingStep`;
+    that stepper and ``DiscreteDDIMStep`` are its feature-rich variants
+    (remasking, planning).
+    """
+    t_b = jax_helpers.bcast_right(t, xt.ndim)
+    s_b = jax_helpers.bcast_right(s, xt.ndim)
+    lambda_t = 1.0 - self.schedule.alpha(t_b)
+    lambda_s = 1.0 - self.schedule.alpha(s_b)
+    rho = jnp.broadcast_to(lambda_s / lambda_t, xt.shape)
+
+    unused_mask = xt == self.unused_token
+    noised = xt != x0  # coordinates currently away from the clean endpoint
+    keep_noised = jax.random.bernoulli(key, p=rho, mode=self.mode) & noised
+
+    x_s = jnp.where(keep_noised, xt, x0)
+    x_s = self.post_corruption_fn(x_s)
+    x_s = jnp.where(unused_mask, self.unused_token, x_s)
+    return x_s
+
+  ##############################################################################
   # MARK: Factory Methods
   ##############################################################################
 

@@ -15,48 +15,49 @@
 """The posterior-bridge sampler step (Posterior Bridges, Algorithm 2).
 
 For a distributional / posterior model the finite-step update is *not* a
-score / velocity reverse-time integrator.  It is two operations:
+score / velocity reverse-time integrator.  It is two operations, identical
+across every modality:
 
-  1. draw a clean-endpoint sample ``x_0 ~ p_{0|t}(. | x_t)`` -- supplied
-     by the inference fn as the ``x0`` entry of its prediction (e.g.
-     :class:`hackable_diffusion.lib.inference.PosteriorSamplerInferenceFn`);
-  2. apply the fixed two-endpoint bridge ``x_s ~ K_{s|0,t}(. | x_0, x_t)``
-     -- supplied by the interpolant's ``bridge_step``.
+  1. ``x_0 = process.sample_endpoint(prediction)`` -- draw one clean
+     endpoint from the model's posterior report (the identity for a model
+     that already emits an ``x_0`` sample, a categorical draw from logits
+     for discrete, a simplex point for the Dirichlet model);
+  2. ``x_s = process.bridge_step(x_0, x_t, t -> s)`` -- apply the
+     corruption's own two-endpoint bridge ``K_{s|0,t}``.
 
-That is the whole step.  There is no schedule-derived drift, no score
-conversion, no churn knob: the geometry lives entirely in the
-interpolant's ``bridge_step`` and the learned object lives entirely in
-``x_0``.  This is the literal realisation of the manuscript's modularity
-claim -- ``(geometry = interpolant) x (posterior = inference_fn)`` -- and
-is strictly simpler than the Gaussian SDE/ODE steppers, which exist to
-turn a *point* denoiser estimate into a transition.
+A single :class:`PosteriorBridgeStep` runs this for *all* modalities,
+because ``sample_endpoint`` and ``bridge_step`` are the reverse face of
+the same :class:`hackable_diffusion.lib.corruption.base.CorruptionProcess`
+that defined the corruption at training (``corrupt``).  Consistency with
+training is therefore structural -- there is no second copy of the
+geometry to keep in sync -- and multimodal falls out for free, since
+``NestedProcess`` maps both methods over its sub-processes.
 
-Compared with :class:`hackable_diffusion.lib.sampling.gaussian_step_sampler.DDIMStep`
-et al., ``BridgeStep``:
+This is the continuous/discrete/simplex-agnostic realisation of the
+manuscript's modularity claim ``(geometry = process) x (posterior =
+inference_fn)``.  The geometry-specific math lives on each process
+(``InterpolantProcess`` delegates to its interpolant's ``bridge_step``;
+``CategoricalProcess`` reveals; ``SimplicialProcess`` mixes Beta/Dirichlet);
+the learned object lives entirely in the model's report of ``x_0``.
 
-  * reads only ``x_0`` and ``x_t`` -- never a score or velocity;
-  * works across every interpolant geometry (Euclidean linear/Gaussian,
-    Brownian-bridge stochastic interpolant, Riemannian geodesic) through
-    the single ``Interpolant.bridge_step`` interface;
-  * is marginally exact whenever the supplied posterior is exact
-    (Theorem: finite-step posterior-bridge identity), with no
-    discretisation of a continuous-time SDE.
+Relationship to the existing steppers (so there is no ambiguity):
 
-The discrete / finite-state analogue of this step is the coordinate-switch
-reveal already implemented by the routing samplers in
-:mod:`hackable_diffusion.lib.sampling.discrete_step_sampler`; this module is
-the continuous-state member of the same family.
+  * For a plain Gaussian ``LinearInterpolant``, the bridge step is the
+    deterministic affine map -- *identical* to ``DDIMStep(stoch_coeff=0)``.
+    Either can sample a Gaussian distributional model; ``DDIMStep`` is the
+    conventional choice.
+  * The feature-rich discrete / simplicial steppers (``UnMaskingStep``,
+    ``DiscreteDDIMStep``, ``DiscreteFlowMatchingStep``, ``SimplicialDDIMStep``)
+    are enhancements of the same bridge with extra knobs (remasking,
+    planning, churn).  ``PosteriorBridgeStep`` is the bare, uniform path.
 """
 
 import dataclasses
-from typing import Protocol
 
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib.corruption import base as corruption_base
 from hackable_diffusion.lib.sampling import base
-from hackable_diffusion.lib.sampling import gaussian_step_sampler
 import jax
-import jax.numpy as jnp
 import kauldron.ktyping as kt
 
 ################################################################################
@@ -65,88 +66,45 @@ import kauldron.ktyping as kt
 
 DataArray = hd_typing.DataArray
 TargetInfo = hd_typing.TargetInfo
-TimeTree = hd_typing.TimeTree
 
 DiffusionStep = base.DiffusionStep
 StepInfo = base.StepInfo
 SamplerStep = base.SamplerStep
 
-Interpolant = corruption_base.Interpolant
-InterpolantProcess = corruption_base.InterpolantProcess
-GaussianStepKernel = gaussian_step_sampler.GaussianStepKernel
+CorruptionProcess = corruption_base.CorruptionProcess
 
-
-class BridgeProcess(Protocol):
-  """A corruption process that exposes a bridge geometry for :class:`BridgeStep`.
-
-  The minimal contract the posterior-bridge sampler reads: an
-  ``interpolant`` carrying the two-endpoint :meth:`Interpolant.bridge_step`
-  (and, for SMC, the optional ``bridge_coefficients`` hook), plus
-  ``convert_predictions`` as the fallback that maps a non-``x0``
-  parameterisation to a clean-endpoint sample.  :class:`InterpolantProcess`
-  and the ``GaussianProcess`` / ``RiemannianProcess`` shims all satisfy it
-  structurally -- no registration needed.
-  """
-
-  interpolant: Interpolant
-
-  def convert_predictions(
-      self,
-      prediction: TargetInfo,
-      xt: DataArray,
-      time: TimeTree,
-  ) -> TargetInfo: ...
-
-
-def _time_1d(time: jax.Array) -> jax.Array:
-  """First entry of a (possibly batched) time array, kept shape ``(1,)``.
-
-  Schedules are ``@kt.typechecked`` to reject a bare scalar ``()``; the
-  Gaussian steppers feed shape ``(1,)`` and reshape the *result*.  We
-  mirror that: the bridge coefficients are scalar across particles (all
-  share the step's time), so we evaluate at one time and broadcast.
-  """
-  return jnp.atleast_1d(time).reshape(-1)[0:1]
+# Salts that derive the endpoint-draw and bridge-noise keys from the step
+# rng as independent streams (and independent of any salt the inference fn
+# folds in for its own noise).  Hex constants for traceability in logs.
+_ENDPOINT_RNG_SALT = 0xB1D6_0E0
+_BRIDGE_RNG_SALT = 0xB1D6_0E1
 
 
 ################################################################################
-# MARK: Bridge Step
+# MARK: Posterior Bridge Step
 ################################################################################
 
 
 @dataclasses.dataclass(frozen=True, kw_only=True)
-class BridgeStep(SamplerStep):
-  """Posterior-bridge step: draw ``x_0`` from the posterior, apply ``K_{s|0,t}``.
+class PosteriorBridgeStep(SamplerStep):
+  """Draw ``x_0`` from the posterior, then apply the process's bridge ``K_{s|0,t}``.
 
-  Pair this with a distributional inference fn whose prediction carries a
-  clean-endpoint *sample* under the ``x0`` key (e.g.
-  :class:`hackable_diffusion.lib.inference.PosteriorSamplerInferenceFn`).
-  The step itself is geometry-agnostic: it delegates the move from ``x_t``
-  to ``x_s`` to ``corruption_process.interpolant.bridge_step``.
+  Modality-agnostic: it delegates both the endpoint draw and the bridge to
+  ``corruption_process``, so the *same* stepper drives Gaussian, stochastic
+  interpolant, geodesic, categorical, Dirichlet, and multimodal
+  (``NestedProcess``) data.  Pair it with an inference fn that reports the
+  clean-endpoint posterior in the modality's parameterisation -- an ``x0``
+  sample for continuous models (e.g.
+  :class:`hackable_diffusion.lib.inference.PosteriorSamplerInferenceFn`),
+  logits for discrete / simplicial ones.
 
   Attributes:
-    corruption_process: A process exposing an ``interpolant`` with a
-      ``bridge_step`` (any :class:`InterpolantProcess`, or the
-      ``GaussianProcess`` / ``RiemannianProcess`` shims) -- see
-      :class:`BridgeProcess`.
+    corruption_process: the process whose ``sample_endpoint`` /
+      ``bridge_step`` define the reverse step (see
+      :class:`hackable_diffusion.lib.corruption.base.CorruptionProcess`).
   """
 
-  corruption_process: BridgeProcess
-
-  def _x0(
-      self, prediction: TargetInfo, xt: DataArray, time,
-  ) -> DataArray:
-    """Extract the clean-endpoint sample ``x_0`` from the prediction.
-
-    A posterior sampler emits ``x_0`` directly; we use it verbatim and
-    only fall back to the parameterisation-conversion table for
-    predictions reported in another coordinate.
-    """
-    if "x0" in prediction:
-      return prediction["x0"]
-    return self.corruption_process.convert_predictions(prediction, xt, time)[
-        "x0"
-    ]
+  corruption_process: CorruptionProcess
 
   @kt.typechecked
   def initialize(
@@ -160,6 +118,27 @@ class BridgeStep(SamplerStep):
         aux=dict(),
     )
 
+  def _step(
+      self,
+      prediction: TargetInfo,
+      current_step: DiffusionStep,
+      next_step_info: StepInfo,
+  ) -> DiffusionStep:
+    xt = current_step.xt
+    t = current_step.step_info.time
+    s = next_step_info.time
+
+    endpoint_key = jax.random.fold_in(next_step_info.rng, _ENDPOINT_RNG_SALT)
+    bridge_key = jax.random.fold_in(next_step_info.rng, _BRIDGE_RNG_SALT)
+
+    x0 = self.corruption_process.sample_endpoint(endpoint_key, prediction, xt, t)
+    x_s = self.corruption_process.bridge_step(bridge_key, x0, xt, t, s)
+    return DiffusionStep(
+        xt=x_s,
+        step_info=next_step_info,
+        aux=dict(),
+    )
+
   @kt.typechecked
   def update(
       self,
@@ -167,23 +146,7 @@ class BridgeStep(SamplerStep):
       current_step: DiffusionStep,
       next_step_info: StepInfo,
   ) -> DiffusionStep:
-    xt = current_step.xt
-    time = current_step.step_info.time
-    next_time = next_step_info.time
-
-    x0 = self._x0(prediction, xt, time)
-    x_s = self.corruption_process.interpolant.bridge_step(
-        x0=x0,
-        xt=xt,
-        t=time,
-        s=next_time,
-        key=next_step_info.rng,
-    )
-    return DiffusionStep(
-        xt=x_s,
-        step_info=next_step_info,
-        aux=dict(),
-    )
+    return self._step(prediction, current_step, next_step_info)
 
   @kt.typechecked
   def finalize(
@@ -193,52 +156,5 @@ class BridgeStep(SamplerStep):
       last_step_info: StepInfo,
   ) -> DiffusionStep:
     # At s = 0 the bridge collapses to the clean endpoint
-    # (K_{0|0,t} = delta_{x_0}); update handles that limit directly.
-    return self.update(
-        prediction,
-        current_step,
-        last_step_info,
-    )
-
-  def kernel(
-      self,
-      *,
-      prediction_uncorrected: TargetInfo,
-      prediction_corrected: TargetInfo,
-      xt: DataArray,
-      time_prev: jax.Array,
-      time_next: jax.Array,
-  ) -> GaussianStepKernel:
-    """Linear-Gaussian proposal kernel for the bridge step.
-
-    The bridge transition is ``x_s = coeff_x0 x_0 + coeff_xt x_t +
-    sigma_step Z`` with coefficients supplied by the interpolant's
-    ``bridge_coefficients``.  Since the noise is independent of ``x_0``,
-    the SMC proposal ratio between the corrected and uncorrected
-    endpoints is the standard :class:`GaussianStepKernel` quadratic form
-    -- and is identically zero for a deterministic bridge
-    (``sigma_step = 0``: linear / flow-matching).
-
-    Interpolants without a Gaussian bridge (e.g. the geodesic bridge)
-    expose no ``bridge_coefficients``; their bridge is deterministic, so
-    we return a zero-ratio Dirac kernel.
-    """
-    interpolant = self.corruption_process.interpolant
-    coeff_fn = getattr(interpolant, "bridge_coefficients", None)
-    if coeff_fn is None:
-      zero = jnp.asarray(0.0, dtype=xt.dtype)
-      return GaussianStepKernel(
-          coeff_x0=zero, coeff_xt=zero, sigma_step=zero,
-          x0_uncorrected=jnp.zeros_like(xt),
-          x0_corrected=jnp.zeros_like(xt),
-      )
-    coeff_x0, coeff_xt, sigma_step = coeff_fn(
-        _time_1d(time_prev), _time_1d(time_next),
-    )
-    return GaussianStepKernel(
-        coeff_x0=coeff_x0.reshape(()),
-        coeff_xt=coeff_xt.reshape(()),
-        sigma_step=sigma_step.reshape(()),
-        x0_uncorrected=self._x0(prediction_uncorrected, xt, time_prev),
-        x0_corrected=self._x0(prediction_corrected, xt, time_prev),
-    )
+    # (K_{0|0,t} = delta_{x_0}); _step handles that limit directly.
+    return self._step(prediction, current_step, last_step_info)

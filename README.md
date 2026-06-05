@@ -26,19 +26,23 @@ The `notebooks/` directory contains several tutorials to get you started:
 
 A standard diffusion sampler turns a *point* denoiser estimate into a
 transition via a score/velocity SDE or ODE update (`DDIMStep`, `SdeStep`,
-`VelocityStep`, ...).  A **distributional** model is different: at a state
-`x_t` it produces a *sample* from the clean-endpoint posterior
-`p(x_0 | x_t)`, and the finite step is then just the fixed two-endpoint
-bridge of the corruption geometry:
+`VelocityStep`, ...).  A **distributional** model is different: it reports
+the clean-endpoint posterior `p(x_0 | x_t)`, and the finite step is then
+just two operations, *the same for every modality*:
 
-1.  draw `x_0 ~ p(x_0 | x_t)` from the model;
-2.  apply `x_s ~ K(x_s | x_0, x_t)` -- the interpolant's bridge step.
+1.  `x_0 = sample_endpoint(prediction)` -- draw one clean endpoint from the
+    model's report;
+2.  `x_s = bridge_step(x_0, x_t, t -> s)` -- apply the corruption's own
+    two-endpoint bridge `K(x_s | x_0, x_t)`.
 
-There is no score or velocity in between.  This is implemented by
-`BridgeStep` (in `lib.sampling`), which reads the endpoint sample from the
-model's `x0` output and delegates the move to `Interpolant.bridge_step`.
-It is a drop-in `SamplerStep`, so running a distributional model is a
-one-line stepper swap:
+Both are the **reverse face of the same `CorruptionProcess`** that defined
+the corruption at training (`corrupt`).  Because it is the same object
+(with the same noise), the sampling step is consistent with training *by
+construction* -- there is no separate stepper math to keep in sync, and no
+score or velocity in between.
+
+A single stepper, `PosteriorBridgeStep` (in `lib.sampling`), runs this for
+every modality by delegating both steps to the process:
 
 ```python
 from hackable_diffusion.lib.corruption.gaussian import GaussianProcess
@@ -46,18 +50,18 @@ from hackable_diffusion.lib.corruption.schedules import RFSchedule
 from hackable_diffusion.lib.inference.posterior_sampler import (
     PosteriorSamplerInferenceFn,
 )
-from hackable_diffusion.lib.sampling.bridge_step_sampler import BridgeStep
+from hackable_diffusion.lib.sampling.bridge_step_sampler import PosteriorBridgeStep
 from hackable_diffusion.lib.sampling.sampling import DiffusionSampler
 from hackable_diffusion.lib.sampling.time_scheduling import UniformTimeSchedule
 
-process = GaussianProcess(schedule=RFSchedule())          # exposes `.interpolant`
-inference_fn = PosteriorSamplerInferenceFn(               # emits {"x0": sample}
+process = GaussianProcess(schedule=RFSchedule())
+inference_fn = PosteriorSamplerInferenceFn(               # reports the posterior
     network=net, params=params,
 )
 
 sampler = DiffusionSampler(
     time_schedule=UniformTimeSchedule(),
-    stepper=BridgeStep(corruption_process=process),       # <- the only change vs DDIM/SDE
+    stepper=PosteriorBridgeStep(corruption_process=process),
     num_steps=num_steps,
 )
 last_step, trajectory = sampler(
@@ -68,18 +72,35 @@ last_step, trajectory = sampler(
 )
 ```
 
-`BridgeStep` works across the continuous geometries through one interface:
+The same `PosteriorBridgeStep` works across every modality, because the
+modality lives entirely in the process's `sample_endpoint` / `bridge_step`:
 
-*   **Gaussian / flow** (`LinearInterpolant`): the deterministic affine bridge
-    -- equivalently the ODE-limit DDIM update.
-*   **Stochastic interpolant** (`StochasticInterpolant`): the Brownian-bridge
-    step, with bridge noise drawn from the per-step rng.
-*   **Riemannian** (`GeodesicInterpolant`): the geodesic bridge.
+| Modality | `sample_endpoint` | `bridge_step` |
+| --- | --- | --- |
+| Gaussian / flow (`LinearInterpolant`) | read the `x0` sample | deterministic affine |
+| Stochastic interpolant | read the `x0` sample | Brownian bridge (its own `gamma`) |
+| Riemannian (`GeodesicInterpolant`) | read the `x0` sample | geodesic |
+| Categorical | categorical draw from logits | coordinate-switch reveal |
+| Dirichlet (`SimplicialProcess`) | `softmax(logits)` | Beta/Dirichlet mix |
+| Multimodal (`NestedProcess`) | per-modality | per-modality (mapped) |
 
-Guidance composes for free: a `CorrectionFn` shifts `x_0`, then the
-*unchanged* bridge step applies, and `BridgeStep.kernel(...)` supplies the
-SMC proposal ratio -- so it slots into `ConditionalDiffusionSampler` like
-any other stepper.
+For continuous models the endpoint draw happens inside the inference fn
+(it reports an `x0` sample), so `sample_endpoint` is the identity; for
+categorical/Dirichlet the inference fn reports logits and `sample_endpoint`
+materializes the draw.  Multimodal falls out for free: `NestedProcess`
+maps both methods over its sub-processes, so one `PosteriorBridgeStep`
+drives mixed image+label data.
+
+**Relationship to the existing steppers (so there's no ambiguity).** For a
+plain Gaussian `LinearInterpolant`, the bridge step is *identical* to
+`DDIMStep(stoch_coeff=0)` -- both compute
+`x_s = (sigma_s/sigma_t) x_t + (alpha_s - alpha_t sigma_s/sigma_t) x_0` --
+so `DDIMStep(stoch_coeff=0)` remains a fine conventional choice for that
+case.  The feature-rich discrete / simplicial steppers (`UnMaskingStep`,
+`DiscreteDDIMStep`, `DiscreteFlowMatchingStep`, `SimplicialDDIMStep`) are
+enhancements of the same bridge with extra knobs (remasking, planning,
+churn); `PosteriorBridgeStep` is the bare, uniform path. In particular
+`SimplicialProcess.bridge_step` equals `SimplicialDDIMStep` at `churn=1`.
 
 For the **categorical** and **Dirichlet (simplicial)** models the posterior
 view is already native: the network predicts a *distribution* over the clean

@@ -183,6 +183,52 @@ class NestedProcess(corruption_base.CorruptionProcess):
         time,
     )
 
+  @kt.typechecked
+  def sample_endpoint(
+      self,
+      key: PRNGKey,
+      prediction: TargetInfoTree,
+      xt: DataTree,
+      time: TimeTree,
+  ) -> DataTree:
+    """Per-modality clean-endpoint draw (maps over the sub-processes)."""
+    return jax_helpers.tree_map_with_key(
+        lambda k, process, pred, x, t: process.sample_endpoint(k, pred, x, t),
+        key,
+        self.processes,
+        prediction,
+        xt,
+        time,
+    )
+
+  @kt.typechecked
+  def bridge_step(
+      self,
+      key: PRNGKey,
+      x0: DataTree,
+      xt: DataTree,
+      t: TimeTree,
+      s: TimeTree,
+  ) -> DataTree:
+    """Per-modality two-endpoint bridge step (maps over the sub-processes).
+
+    This is what makes the single
+    :class:`~hackable_diffusion.lib.sampling.bridge_step_sampler.PosteriorBridgeStep`
+    drive multimodal data directly: each modality applies its own native
+    bridge (Gaussian / discrete / simplicial) under one stepper.
+    """
+    return jax_helpers.tree_map_with_key(
+        lambda k, process, x0_, xt_, t_, s_: process.bridge_step(
+            k, x0_, xt_, t_, s_
+        ),
+        key,
+        self.processes,
+        x0,
+        xt,
+        t,
+        s,
+    )
+
 
 ################################################################################
 # MARK: NestedSamplerStep

@@ -66,11 +66,6 @@ class RiemannianProcess(base.CorruptionProcess):
         ),
     )
 
-  @property
-  def interpolant(self):
-    """The underlying :class:`GeodesicInterpolant` (exposes ``bridge_step``)."""
-    return self._process.interpolant
-
   def corrupt(self, key, x0, time):
     return self._process.corrupt(key, x0, time)
 
@@ -82,3 +77,9 @@ class RiemannianProcess(base.CorruptionProcess):
 
   def get_schedule_info(self, time):
     return self._process.get_schedule_info(time)
+
+  def sample_endpoint(self, key, prediction, xt, time):
+    return self._process.sample_endpoint(key, prediction, xt, time)
+
+  def bridge_step(self, key, x0, xt, t, s):
+    return self._process.bridge_step(key, x0, xt, t, s)

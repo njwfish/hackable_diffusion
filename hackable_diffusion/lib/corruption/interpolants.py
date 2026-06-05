@@ -14,16 +14,38 @@
 
 """Concrete :class:`Interpolant` implementations.
 
+Each interpolant exposes the *same* geometry from both ends:
+
+- ``eval`` -- the forward path used in training (``x_t`` from the
+  endpoints, optionally ``+ gamma(t) z``).
+- ``bridge_step`` -- the reverse two-endpoint step used in sampling
+  (``x_t`` at ``t`` and a clean endpoint ``x_0`` -> ``x_s`` at
+  ``s in [0, t)``), with the same noise the forward path used.  This is
+  the posterior-bridge step (see
+  :class:`hackable_diffusion.lib.sampling.bridge_step_sampler.PosteriorBridgeStep`);
+  because it is the same object that defined the corruption, the sampling
+  step is consistent with training by construction.
+
+The shipped interpolants:
+
 - :class:`LinearInterpolant`: ``x_t = alpha(t) x_0 + sigma(t) x_1``.
   Wraps a :class:`GaussianSchedule`.  Byte-equivalent to the Gaussian
-  interpolation in legacy ``GaussianProcess.corrupt``.
+  interpolation in legacy ``GaussianProcess.corrupt``.  Its bridge step
+  is the deterministic affine map (the ODE-limit / DDIM update).
 - :class:`GeodesicInterpolant`: ``x_t = geodesic(x_1, x_0, alpha(t))``.
   Wraps a :class:`RiemannianSchedule` + :class:`Manifold`.
   Byte-equivalent to the Riemannian interpolation in legacy
-  ``RiemannianProcess.corrupt``.
+  ``RiemannianProcess.corrupt``.  Its bridge step walks the geodesic from
+  ``x_t`` toward ``x_0``.
 - :class:`StochasticInterpolant`: ``x_t = alpha(t) x_0 + beta(t) x_1
   + gamma(t) z``.  "Just another interpolant" -- pair with
-  :class:`VelocityOnlyTargets` and train on ``x_0`` or ``velocity``.
+  :class:`VelocityOnlyTargets` and train on ``x_0`` or ``velocity``.  Its
+  bridge step is the Brownian-bridge conditional, carrying the same
+  ``gamma`` noise into sampling.
+
+The shared Gaussian closed form (:func:`_gaussian_bridge_coeffs`) makes
+the ``LinearInterpolant`` step the ``gamma = 0`` special case of the
+``StochasticInterpolant`` step.
 """
 
 from __future__ import annotations
@@ -63,9 +85,9 @@ def _gaussian_bridge_coeffs(
   The Gaussian bridge step is ``x_s = coeff_x0 x_0 + coeff_xt x_t +
   sigma_step Z`` with ``coeff_xt = rho = weight(s)/weight(t)``,
   ``coeff_x0 = alpha(s) - rho alpha(t)`` and
-  ``sigma_step = sqrt(max(gamma(s)^2 - rho^2 gamma(t)^2, 0))``.  Shared by
-  :func:`_gaussian_bridge_step` (sampling) and the
-  ``bridge_coefficients`` hook the SMC proposal-ratio kernel reads.
+  ``sigma_step = sqrt(max(gamma(s)^2 - rho^2 gamma(t)^2, 0))``.  Factored
+  out of :func:`_gaussian_bridge_step` so the affine map and its noise std
+  are computed in one place.
   """
   rho = weight_s / weight_t
   coeff_x0 = alpha_s - rho * alpha_t
@@ -188,24 +210,6 @@ class LinearInterpolant(Interpolant):
         gamma_s=jnp.zeros_like(s_b),
         gamma_t=jnp.zeros_like(t_b),
         key=None,
-    )
-
-  def bridge_coefficients(
-      self, t: TimeTree, s: TimeTree,
-  ) -> tuple[jax.Array, jax.Array, jax.Array]:
-    """``(coeff_x0, coeff_xt, sigma_step)`` of the bridge (``sigma_step = 0``).
-
-    Exposed for the SMC proposal-ratio kernel; the linear bridge is
-    deterministic so ``sigma_step`` is identically zero and the ratio
-    vanishes.
-    """
-    return _gaussian_bridge_coeffs(
-        alpha_s=self.schedule.alpha(s),
-        alpha_t=self.schedule.alpha(t),
-        weight_s=self.schedule.sigma(s),
-        weight_t=self.schedule.sigma(t),
-        gamma_s=jnp.zeros_like(s),
-        gamma_t=jnp.zeros_like(t),
     )
 
 
@@ -376,25 +380,6 @@ class StochasticInterpolant(Interpolant):
         gamma_s=self.gamma(s_b),
         gamma_t=self.gamma(t_b),
         key=key,
-    )
-
-  def bridge_coefficients(
-      self, t: TimeTree, s: TimeTree,
-  ) -> tuple[jax.Array, jax.Array, jax.Array]:
-    """``(coeff_x0, coeff_xt, sigma_step)`` of the Brownian-bridge step.
-
-    Exposed for the SMC proposal-ratio kernel; ``sigma_step`` is the
-    bridge noise std ``sqrt(gamma(s)^2 - rho^2 gamma(t)^2)`` and is
-    nonzero, so the proposal ratio between corrected and uncorrected
-    endpoints is the usual Gaussian quadratic form.
-    """
-    return _gaussian_bridge_coeffs(
-        alpha_s=self.alpha(s),
-        alpha_t=self.alpha(t),
-        weight_s=self.beta(s),
-        weight_t=self.beta(t),
-        gamma_s=self.gamma(s),
-        gamma_t=self.gamma(t),
     )
 
 

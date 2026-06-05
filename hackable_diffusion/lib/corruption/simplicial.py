@@ -371,6 +371,84 @@ class SimplicialProcess(CorruptionProcess):
     return self.schedule.evaluate(time)
 
   ##############################################################################
+  # MARK: Posterior-bridge interface
+  ##############################################################################
+
+  @kt.typechecked
+  def sample_endpoint(
+      self,
+      key: PRNGKey,
+      prediction: TargetInfo,
+      xt: DataArray,
+      time: TimeArray,
+  ) -> DataArray:
+    """Materialize the predicted clean simplex ``P_hat_0 = softmax(logits)``.
+
+    The simplicial model reports the clean-endpoint posterior as logits;
+    the endpoint the bridge consumes is the predicted probability vector
+    itself (the simplex is continuous, so there is no token to draw).
+    ``key`` is unused.
+    """
+    del key
+    logits = self.convert_predictions(prediction, xt, time)['logits']
+    return jax.nn.softmax(logits, axis=-1)
+
+  @kt.typechecked
+  def bridge_step(
+      self,
+      key: PRNGKey,
+      x0: DataArray,
+      xt: DataArray,
+      t: TimeArray,
+      s: TimeArray,
+      eps: float = 1e-6,
+  ) -> DataArray:
+    r"""Dirichlet two-endpoint bridge step ``K_{s|0,t}`` (log-simplex state).
+
+    The bare (``churn = 1``) simplicial bridge: given the predicted clean
+    simplex ``x_0 = P_hat_0`` and the current log-simplex state ``x_t``,
+
+        W ~ Beta(tau/(1 - alpha_t),  tau/(1 - alpha_s) - tau/(1 - alpha_t)),
+        V ~ Dir(tau (alpha_s/(1 - alpha_s) - alpha_t/(1 - alpha_t)) P_hat_0),
+        P_s = W P_t + (1 - W) V,
+
+    in log-space.  This is exactly
+    :class:`~hackable_diffusion.lib.sampling.simplicial_step_sampler.SimplicialDDIMStep`
+    at ``churn = 1`` (the key is split four ways to match it bit-for-bit);
+    that stepper is the feature-rich variant exposing the ``churn``
+    shrinkage knob.
+    """
+    log_xt = xt
+    t_b = jax_helpers.bcast_right(t, log_xt.ndim)
+    s_b = jax_helpers.bcast_right(s, log_xt.ndim)
+    temperature = self.temperature
+    alpha_t = self.schedule.alpha(t_b)
+    alpha_s = self.schedule.alpha(s_b)
+
+    # Four-way split mirrors SimplicialDDIMStep (its churn=1 path leaves the
+    # shrinkage key unused), so the two implementations coincide exactly.
+    _, beta_key, dir_key, _shrink_key = jax.random.split(key, 4)
+
+    target_shape = log_xt.shape[:-1] + (1,)
+    a_w = temperature / (1.0 - alpha_t)
+    b_w = temperature / (1.0 - alpha_s) - temperature / (1.0 - alpha_t)
+    a_w = jnp.broadcast_to(a_w, target_shape)
+    b_w = jnp.broadcast_to(b_w, target_shape)
+    log_w, log_1_minus_w = fast_random.sample_log_beta_joint(
+        beta_key, a_w, b_w, shape=a_w.shape
+    )
+
+    pred_weight = (
+        temperature * alpha_s / (1.0 - alpha_s)
+        - temperature * alpha_t / (1.0 - alpha_t)
+    )
+    beta_v = jnp.maximum(pred_weight * x0, eps)
+    log_v = fast_random.log_dirichlet_fast(dir_key, beta_v)
+
+    new_xt = jnp.logaddexp(log_w + log_xt, log_1_minus_w + log_v)
+    return self.post_corruption_fn(new_xt)
+
+  ##############################################################################
   # MARK: Factory Methods
   ##############################################################################
 

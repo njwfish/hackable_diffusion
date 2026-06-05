@@ -83,7 +83,22 @@ ScheduleInfoTree = hd_typing.ScheduleInfoTree
 
 
 class CorruptionProcess(Protocol):
-  """Base class for all corruption processes (continuous and discrete)."""
+  """Base class for all corruption processes (continuous and discrete).
+
+  A process is symmetric: ``corrupt`` is the forward direction used in
+  training, and ``sample_endpoint`` + ``bridge_step`` are the reverse
+  direction used by the posterior-bridge sampler
+  (:class:`hackable_diffusion.lib.sampling.bridge_step_sampler.PosteriorBridgeStep`).
+  A finite reverse step is always the same two operations, for every
+  modality:
+
+      x_0 = sample_endpoint(prediction)          # draw one clean endpoint
+      x_s = bridge_step(x_0, x_t, t -> s)         # apply the bridge
+
+  The forward and reverse faces live on the *same* object, so the
+  sampling step is consistent with the corruption used at training by
+  construction.
+  """
 
   def corrupt(
       self,
@@ -110,6 +125,38 @@ class CorruptionProcess(Protocol):
 
   def get_schedule_info(self, time: TimeTree) -> ScheduleInfoTree:
     """Get the schedule info for the given time."""
+
+  def sample_endpoint(
+      self,
+      key: PRNGKey,
+      prediction: TargetInfoTree,
+      xt: DataTree,
+      time: TimeTree,
+  ) -> DataTree:
+    """Materialize one clean-endpoint sample ``x_0`` from the model's report.
+
+    The model reports the clean-endpoint posterior ``p_{0|t}(. | x_t)`` in
+    whatever parameterisation the modality uses (an ``x_0`` sample for a
+    continuous distributional model, logits for a categorical / simplicial
+    one).  This draws a single concrete endpoint from that report: the
+    identity for a model that already emits a sample, a categorical draw
+    from logits for discrete, a simplex point for the Dirichlet model.
+    """
+
+  def bridge_step(
+      self,
+      key: PRNGKey,
+      x0: DataTree,
+      xt: DataTree,
+      t: TimeTree,
+      s: TimeTree,
+  ) -> DataTree:
+    """Sample ``x_s ~ K_{s|0,t}(. | x_0, x_t)`` for ``0 <= s < t``.
+
+    The reverse of ``corrupt``: the two-endpoint bridge step of the
+    posterior-bridge calculus.  At ``s = 0`` it collapses to the clean
+    endpoint (``K_{0|0,t} = delta_{x_0}``).
+    """
 
 
 ################################################################################
@@ -190,25 +237,37 @@ class Interpolant(Protocol):
   ``(alpha, beta, gamma)`` callables for stochastic interpolants).
   Forwarded to samplers that peek.
 
-  ``eval`` returns ``(x_t, dx_t/dt)`` as a tuple -- shared-work shortcut
+  An interpolant has two faces of the *same* geometry:
+
+  - ``eval`` -- the **forward** face used in training: build ``x_t`` (and
+    its velocity) from the endpoints ``(x_0, x_1)`` and any noise ``z``.
+  - ``bridge_step`` -- the **reverse** face used in sampling: step from a
+    current state ``x_t`` at time ``t`` to an intermediate ``s in [0, t)``,
+    given a clean endpoint ``x_0``.
+
+  ``eval`` returns ``(x_t, dx_t/dt)`` as a tuple -- a shared-work shortcut
   for interpolants whose path and velocity reuse schedule evaluations.
   ``TargetAdapter``s pull ``dx_t/dt`` from the second element.
 
-  ``bridge_step`` is the *two-endpoint bridge* ``K_{s|0,t}(. | x_0, x_t)``
-  of the posterior-bridge calculus (Posterior Bridges, Assumption 1): the
-  conditional law of the state at an earlier time ``s < t`` given the
-  clean endpoint ``x_0`` and the current state ``x_t``.  It is the
-  *defining geometry object* the theory pairs with a clean-endpoint
-  posterior, and -- crucially -- it is **not** recoverable from the
-  one-time marginals ``eval`` produces (a VP Gaussian-Markov bridge and a
-  Brownian-bridge stochastic interpolant share marginals but step
-  differently).  Each concrete interpolant therefore declares its own
-  ``bridge_step``.
+  ``bridge_step`` is the two-endpoint bridge ``K_{s|0,t}(. | x_0, x_t)`` of
+  the posterior-bridge calculus (Posterior Bridges, Assumption 1).  Two
+  properties make this the right home for it:
 
-  A distributional / posterior sampler draws ``x_0 ~ p_{0|t}(. | x_t)``
-  and then applies ``bridge_step`` directly -- there is no score / velocity
+  1. **Consistency with training is structural.** The interpolant that
+     defined the corruption (via ``eval``) is the *same object* that steps
+     at sampling (via ``bridge_step``), drawing its bridge noise from the
+     same ``gamma`` / ``sigma``.  There is no second copy of the geometry
+     to keep in sync -- you cannot pair a corruption with a mismatched
+     step.
+  2. **It is not recoverable from the marginals.** A VP Gaussian-Markov
+     bridge and a Brownian-bridge stochastic interpolant share the
+     one-time marginals ``eval`` produces yet step differently, so each
+     concrete interpolant must declare its own ``bridge_step``.
+
+  A distributional / posterior sampler draws ``x_0 ~ p_{0|t}(. | x_t)`` and
+  applies ``bridge_step`` directly -- there is no score / velocity
   reverse-time update in between.  See
-  :class:`hackable_diffusion.lib.sampling.bridge_step_sampler.BridgeStep`.
+  :class:`hackable_diffusion.lib.sampling.bridge_step_sampler.PosteriorBridgeStep`.
   """
 
   schedule: object
@@ -457,6 +516,38 @@ class InterpolantProcess(CorruptionProcess):
 
   def get_schedule_info(self, time: TimeTree) -> ScheduleInfoTree:
     return self.schedule.evaluate(time)
+
+  def sample_endpoint(
+      self,
+      key: PRNGKey,
+      prediction: TargetInfoTree,
+      xt: DataTree,
+      time: TimeTree,
+  ) -> DataTree:
+    """Read the clean-endpoint sample the distributional model emitted.
+
+    A continuous distributional model (e.g.
+    :class:`hackable_diffusion.lib.inference.PosteriorSamplerInferenceFn`)
+    draws its own endpoint sample and reports it under ``x0``; we use it
+    verbatim, falling back to the parameterisation-conversion table only
+    for predictions reported in another coordinate.  ``key`` is unused --
+    the sample was already drawn by the model.
+    """
+    del key
+    if 'x0' in prediction:
+      return prediction['x0']
+    return self.convert_predictions(prediction, xt, time)['x0']
+
+  def bridge_step(
+      self,
+      key: PRNGKey,
+      x0: DataTree,
+      xt: DataTree,
+      t: TimeTree,
+      s: TimeTree,
+  ) -> DataTree:
+    """Delegate to the interpolant's two-endpoint bridge step ``K_{s|0,t}``."""
+    return self.interpolant.bridge_step(x0=x0, xt=xt, t=t, s=s, key=key)
 
 
 # Multimodal `NestedProcess` (and other Nested* operators) lives in
