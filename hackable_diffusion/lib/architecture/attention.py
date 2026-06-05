@@ -15,7 +15,7 @@
 """Attention layers and utils."""
 
 import math
-from typing import Callable
+from typing import Callable, Literal
 import warnings
 
 import flax.linen as nn
@@ -35,8 +35,11 @@ Float = hd_typing.Float
 Bool = hd_typing.Bool
 DType = hd_typing.DType
 
-RoPEPositionType = arch_typing.RoPEPositionType
+RoPEPositionsFn = sequence_embedders.RoPEPositionsFn
+SquareRoPEPositions = sequence_embedders.SquareRoPEPositions
 INVALID_INT = arch_typing.INVALID_INT
+
+AttnQKNormMethod = Literal["l2", "rms_norm"]
 
 ################################################################################
 # MARK: Constants
@@ -128,6 +131,8 @@ def _dot_product_attention(
     rescale: Float["..."] | float,
     *,
     mask: Bool["batch sequence_key"] | None = None,
+    dropout_rate: float = 0.0,
+    is_training: bool = True,
 ) -> Float["batch sequence_query head*dim"]:
   """Performs dot product attention.
 
@@ -144,6 +149,8 @@ def _dot_product_attention(
     rescale: Rescale factor for the attention scores.
     mask: Mask tensor. Mask is True for tokens we want to keep and False for
       tokens we want to mask. If None, no masking is performed.
+    dropout_rate: The dropout rate for the attention weights.
+    is_training: Whether the model is in training mode.
 
   Returns:
     The output tensor.
@@ -158,7 +165,11 @@ def _dot_product_attention(
       hasattr(jax.nn, 'dot_product_attention')
       and rescale_is_scalar
       and mask is None
+      and dropout_rate == 0.0
   ):
+    # Fast path: jax.nn.dot_product_attention dispatches to cuDNN flash
+    # attention on supported GPUs.  Only valid without a mask, with a scalar
+    # rescale, and with no dropout (flash attention applies no flax dropout).
     # jax.nn.dot_product_attention expects (b, t, h, d) layout.
     if isinstance(rescale, (int, float)):
       scale_val = float(rescale)
@@ -172,12 +183,23 @@ def _dot_product_attention(
     )  # (b, t, h, d)
     attn_output = attn_output.reshape(b, t, -1)  # (b, t, h*d)
   else:
-    # Fallback: explicit attention matrix materialization (handles mask).
+    # Fallback: explicit attention matrix materialization (handles mask and
+    # attention dropout).
     attn_logits = jnp.einsum("bhtd,bhsd->bhts", q, k) * rescale
+
+    # We apply the mask to the logits before softmax so that the softmax is
+    # zero for masked tokens.
     if mask is not None:
       bcast_mask = jnp.expand_dims(mask, axis=(1, 2))
       attn_logits = jnp.where(bcast_mask, attn_logits, MASK_LOGITS_VALUE)
+
     attn_weights = _stable_softmax(logits=attn_logits)
+
+    if dropout_rate > 0.0:
+      attn_weights = nn.Dropout(rate=dropout_rate)(
+          attn_weights, deterministic=not is_training
+      )
+
     attn_output = jnp.einsum("bhts,bhsd->bhtd", attn_weights, v)
     attn_output = attn_output.transpose(0, 2, 1, 3).reshape(b, t, -1)
 
@@ -209,19 +231,24 @@ class MultiHeadAttention(nn.Module):
       must be INVALID_INT.
     normalize_qk: Whether to normalize query and key before attention.
     use_rope: Whether to use rotary positional embeddings on query and key.
-    rope_position_type: The type of rotary positional embeddings to use if
-      use_rope is True.
+    rope_positions_fn: The position function of rotary positional embeddings
+      to use if use_rope is True.
+    use_bias: Whether to use bias in the QKV and output projections.
     zero_init_output: If True, the kernel of the final output projection layer
       is initialized to zeros.
+    dropout_rate: The dropout rate for the attention weights.
     dtype: The data type of the computation.
   """
 
   num_heads: int = INVALID_INT
   head_dim: int = INVALID_INT
   normalize_qk: bool = False
+  qk_norm_method: AttnQKNormMethod = "l2"
   use_rope: bool = False
-  rope_position_type: RoPEPositionType = RoPEPositionType.SQUARE
+  rope_positions_fn: RoPEPositionsFn = SquareRoPEPositions()
+  use_bias: bool = True
   zero_init_output: bool = False
+  dropout_rate: float = 0.0
   dtype: DType = jnp.float32
 
   def setup(self):
@@ -245,6 +272,7 @@ class MultiHeadAttention(nn.Module):
       c: Float["batch sequence2 dim2"] | None,
       *,
       mask: Bool["batch sequence1|sequence2"] | None = None,
+      is_training: bool = True,
   ) -> Float["batch sequence1 dim1"]:
     """Computes multi-head attention.
 
@@ -282,18 +310,21 @@ class MultiHeadAttention(nn.Module):
 
     q = nn.Dense(
         features=d,
+        use_bias=self.use_bias,
         kernel_init=self.init_q,
         dtype=self.dtype,
         name="Dense_Q",
     )(x)
     k = nn.Dense(
         features=d,
+        use_bias=self.use_bias,
         kernel_init=self.init_k,
         dtype=self.dtype,
         name="Dense_K",
     )(y)
     v = nn.Dense(
         features=d,
+        use_bias=self.use_bias,
         kernel_init=self.init_v,
         dtype=self.dtype,
         name="Dense_V",
@@ -305,30 +336,30 @@ class MultiHeadAttention(nn.Module):
     v = v.reshape(b, seq_len_kv, num_heads, head_d).transpose(0, 2, 1, 3)
     # shape is [batch, num_heads, sequence_length, head_dim]
 
-    # RoPE: https://arxiv.org/abs/2104.09864
-    if self.use_rope:
-      q = sequence_embedders.RoPESequenceEmbedding(
-          rope_position_type=self.rope_position_type
-      )(q)
-      k = sequence_embedders.RoPESequenceEmbedding(
-          rope_position_type=self.rope_position_type
-      )(k)
-      # shape is [batch, num_heads, sequence_length, head_dim]
-
     # QK normalization: https://arxiv.org/abs/2010.04245.
     if self.normalize_qk:
-      scale = self.param(
-          "norm_qk_scale",
-          nn.initializers.constant(
-              jnp.log2(seq_len_kv**2 - seq_len_kv + SAFETY_EPSILON)
-          ),
-          (1, 1, 1, 1),
-      )
+      if self.qk_norm_method == "rms_norm":
+        q = nn.RMSNorm(name="RMSNorm_Q")(q)
+        k = nn.RMSNorm(name="RMSNorm_K")(k)
+        scale = 1.0 / math.sqrt(head_d)
+      # QK L2 normalization: https://arxiv.org/abs/2010.04245
+      elif self.qk_norm_method == "l2":
+        scale = self.param(
+            "norm_qk_scale",
+            nn.initializers.constant(
+                jnp.log2(seq_len_kv**2 - seq_len_kv + SAFETY_EPSILON)
+            ),
+            (1, 1, 1, 1),
+        )
 
-      norm_q = jnp.linalg.norm(q, ord=2, axis=-1, keepdims=True)
-      norm_k = jnp.linalg.norm(k, ord=2, axis=-1, keepdims=True)
-      q = q / (norm_q + SAFETY_EPSILON)
-      k = k / (norm_k + SAFETY_EPSILON)
+        norm_q = jnp.linalg.norm(q, ord=2, axis=-1, keepdims=True)
+        norm_k = jnp.linalg.norm(k, ord=2, axis=-1, keepdims=True)
+        q = q / (norm_q + SAFETY_EPSILON)
+        k = k / (norm_k + SAFETY_EPSILON)
+      else:
+        raise ValueError(
+            f"Unsupported QK normalization method: {self.qk_norm_method}."
+        )
     else:
       # Python ``math.sqrt`` so ``scale`` stays a Python float -- a JAX
       # array would force the flash-attention branch of
@@ -336,16 +367,29 @@ class MultiHeadAttention(nn.Module):
       # which raises ``ConcretizationTypeError``.
       scale = 1.0 / math.sqrt(head_d)
 
+    # RoPE: https://arxiv.org/abs/2104.09864
+    if self.use_rope:
+      q = sequence_embedders.RoPESequenceEmbedding(
+          rope_positions_fn=self.rope_positions_fn
+      )(q)
+      k = sequence_embedders.RoPESequenceEmbedding(
+          rope_positions_fn=self.rope_positions_fn
+      )(k)
+      # shape is [batch, num_heads, sequence_length, head_dim]
+
     attn_output = _dot_product_attention(
         q=q,
         k=k,
         v=v,
         rescale=scale,
         mask=mask,
+        dropout_rate=self.dropout_rate,
+        is_training=is_training,
     )
 
     attn_output = nn.Dense(
         features=d,
+        use_bias=self.use_bias,
         kernel_init=self.init_output,
         dtype=self.dtype,
         name="Dense_Output",

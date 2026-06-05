@@ -23,7 +23,16 @@ variance against the closed form of Posterior Bridges eq. (5).
 """
 
 import jax
+import pytest
+
 jax.config.update("jax_enable_x64", True)
+
+
+@pytest.fixture(autouse=True)
+def _enable_x64():
+  """This module's numerics require 64-bit precision (see conftest.py)."""
+  jax.config.update("jax_enable_x64", True)
+  yield
 
 import jax.numpy as jnp
 import numpy as np

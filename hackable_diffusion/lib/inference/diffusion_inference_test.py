@@ -20,7 +20,9 @@ from hackable_diffusion.lib import test_helpers
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import conditioning_encoder
 from hackable_diffusion.lib.architecture import normalization
+from hackable_diffusion.lib.architecture import sequence_embedders
 from hackable_diffusion.lib.architecture import unet
+from hackable_diffusion.lib.architecture import unet_blocks
 from hackable_diffusion.lib.corruption import gaussian
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.inference import diffusion_inference
@@ -80,12 +82,12 @@ UNET_CONFIG = {
     'attention_head_dim': arch_typing.INVALID_INT,
     'attention_normalize_qk': True,
     'attention_use_rope': False,
-    'attention_rope_position_type': arch_typing.RoPEPositionType.SQUARE,
+    'attention_rope_positions_fn': sequence_embedders.SquareRoPEPositions(),
     'normalization_type': normalization.NormalizationType.GROUP_NORM,
     'normalization_num_groups': 4,
-    'skip_connection_method': arch_typing.SkipConnectionMethod.UNNORMALIZED_ADD,
-    'downsample_method': arch_typing.DownsampleType.MAX_POOL,
-    'upsample_method': arch_typing.UpsampleType.NEAREST,
+    'skip_connection_fn': unet_blocks.UnnormalizedAddSkip(),
+    'downsample_fn': unet_blocks.MaxPoolDownsample(),
+    'upsample_fn': unet_blocks.ImageResizeUpsample(resize_method='nearest'),
     'activation': 'silu',
 }
 
@@ -130,7 +132,7 @@ class DiffusionInferenceTest(parameterized.TestCase):
     self.cond_encoder = conditioning_encoder.ConditioningEncoder(
         time_embedder=self.time_encoder,
         conditioning_embedders=CONDITIONING_ENCODER,
-        embedding_merging_method=arch_typing.EmbeddingMergeMethod.CONCAT,
+        merge_embeddings_fn=conditioning_encoder.ConcatEmbeddings(),
         conditioning_rules=CONDITIONING_RULES,
     )
     self.backbone = unet.Unet(**UNET_CONFIG)

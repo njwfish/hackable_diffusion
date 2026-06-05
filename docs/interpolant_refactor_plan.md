@@ -12,7 +12,7 @@ Because M4 and M5 are required, §10 below is devoted to the design questions ea
 
 **Non-goal:** changing any outputs of the existing Gaussian / Riemannian code paths. Every byte of `target_info`, every sample from `sample_from_invariant`, every trained model's loss value must be bitwise identical before and after M1-M2.
 
-**Non-goal (M1-M3 only):** touching `lib/sampling/`, `lib/guidance/`, `lib/loss/`, or `lib/architecture/`. M5 adds exactly one new stepper class in `lib/sampling/gaussian_step_sampler.py` — no other sampling-layer changes are authorized anywhere in the program.
+**Non-goal (M1-M3 only):** touching `lib/sampling/`, `lib/guidance/`, `lib/training/` (loss code), or `lib/architecture/`. M5 adds exactly one new stepper class in `lib/sampling/gaussian_step_sampler.py` — no other sampling-layer changes are authorized anywhere in the program.
 
 ---
 
@@ -308,7 +308,7 @@ All existing tests in `lib/corruption/` and `lib/sampling/` must continue to pas
 **Acceptance.**
 - Parity test suite (§4.2) passes at 100%.
 - Performance benchmark (§3.5) passes.
-- All existing tests in `lib/corruption/`, `lib/sampling/`, `lib/guidance/`, `lib/loss/` pass with zero modifications.
+- All existing tests in `lib/corruption/`, `lib/sampling/`, `lib/guidance/`, `lib/training/` pass with zero modifications.
 - `GaussianProcess(schedule=...)` and `RiemannianProcess(manifold=..., schedule=...)` are the only new public API; everything else is internal.
 
 ### M2 — Discrete / simplicial decision
@@ -366,7 +366,7 @@ All existing tests in `lib/corruption/` and `lib/sampling/` must continue to pas
   ```
 
   with the `γ(t) = 0` boundary handled by dropping the score term in the reverse SDE at the endpoints (the reverse SDE's diffusion coefficient `√((γ²)')` also vanishes there).
-- Dual-head training: the `InferenceFn` protocol already supports predicting multiple keys in `TargetInfo`. The model gains a second output head for `denoiser_z`; the training loss is a weighted sum of `velocity` MSE and `denoiser_z` MSE. Add a `CombinedInterpolantLoss` in `lib/loss/` composed from the existing `compute_continuous_diffusion_loss` twice — no new loss primitive, just a named composition.
+- Dual-head training: the `InferenceFn` protocol already supports predicting multiple keys in `TargetInfo`. The model gains a second output head for `denoiser_z`; the training loss is a weighted sum of `velocity` MSE and `denoiser_z` MSE. Add a `CombinedInterpolantLoss` in `lib/training/` composed from the existing `compute_continuous_diffusion_loss` twice — no new loss primitive, just a named composition.
 - `InterpolantSdeStep` in `lib/sampling/gaussian_step_sampler.py` — **the one sampling-layer change authorized in this program.** Implements the SI reverse SDE:
 
   ```
@@ -407,7 +407,7 @@ All existing tests in `lib/corruption/` and `lib/sampling/` must continue to pas
 | `lib/corruption/interpolant_parity_test.py` | New file (~200 lines) — the parity suite of §4.2. |
 | `lib/sampling/` | **No change in M1-M3.** |
 | `lib/guidance/` | **No change in M1-M3.** |
-| `lib/loss/` | **No change in M1-M3.** |
+| `lib/training/` | **No change in M1-M3** (loss code lives here). |
 | `lib/architecture/` | **No change.** |
 | `LOCAL_PATCHES.md` | New entry 7 documenting the refactor. |
 | `docs/corruption.md` | Updated to describe the factoring; old examples still work as-is. |
@@ -430,7 +430,7 @@ All existing tests in `lib/corruption/` and `lib/sampling/` must continue to pas
 | `lib/corruption/interpolants.py` | Add `StochasticInterpolant` (~200 lines) + `γ(t) = 0` boundary check. |
 | `lib/corruption/targets.py` | Add `StochasticInterpolantTargets` (~100 lines). |
 | `lib/sampling/gaussian_step_sampler.py` | Add `InterpolantSdeStep` + its `StepKernel` (~150 lines). **The single authorized sampling-layer change in this program.** |
-| `lib/loss/` | Add `CombinedInterpolantLoss` (~50 lines) — named composition over `compute_continuous_diffusion_loss`. |
+| `lib/training/` | Add `CombinedInterpolantLoss` (~50 lines) — named composition over `compute_continuous_diffusion_loss`. |
 | `lib/corruption/stochastic_interpolant_test.py` | New file (~300 lines): SI-math unit tests + degenerate-case equivalences. |
 | `lib/sampling/interpolant_sde_step_test.py` | New file (~200 lines). |
 | `examples/stochastic_interpolant_2d.py` | New file (~150 lines). |

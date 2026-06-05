@@ -61,7 +61,7 @@ class LogGammaFastTest(parameterized.TestCase):
     key = jax.random.PRNGKey(_RANDOM_SEED)
     alpha = jnp.ones((7, 32)) * 2.0
     with self.assertRaisesRegex(
-        ValueError, "Incompatible types for broadcasting"
+        ValueError, "Incompatible (types|shapes) for broadcasting"
     ):
       fast_random.log_gamma_fast(key, alpha, shape=(5, 3))
 

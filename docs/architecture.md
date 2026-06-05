@@ -43,22 +43,26 @@ This string specifies how a conditioning signal is injected into the backbone.
     module.
   * `sum`: The conditioning is added to the input of a layer or module.
 
-### `EmbeddingMergeMethod`
+### Embedding Merge Functions
 
-When multiple embeddings are directed to the same `ConditioningMechanism`, this
-enum defines how they are combined.
+When multiple embeddings are directed to the same `ConditioningMechanism`,
+a merge function defines how they are combined. Two frozen dataclasses are
+provided in `conditioning_encoder.py`:
 
-  * `SUM`: Embeddings are summed element-wise. This requires them to have the
-    same shape.
-  * `CONCAT`: Embeddings are concatenated along the feature axis.
+  * `SumEmbeddings()`: Embeddings are summed element-wise. This requires them
+    to have the same shape.
+  * `ConcatEmbeddings()`: Embeddings are concatenated along the feature axis.
+
+The type alias `MergeEmbeddingsFn = Union[SumEmbeddings, ConcatEmbeddings]` is
+available for type annotations.
 
 ### Resampling and Skip Connections
 
-  * `DownsampleType`: Methods for downsampling spatial feature maps, including
-    `MAX_POOL` and `AVG_POOL`.
-  * `UpsampleType`: Methods for upsampling, including `NEAREST` and `BILINEAR`.
-  * `SkipConnectionMethod`: Defines how skip connections in residual blocks are
-    handled, such as `UNNORMALIZED_ADD` and `NORMALIZED_ADD`.
+  * `DownsampleFn`: Callable classes for downsampling spatial feature maps, including
+    `MaxPoolDownsample` and `AvgPoolDownsample`.
+  * `UpsampleFn`: Callable classes for upsampling, including `ImageResizeUpsample`.
+  * `SkipConnectionFn`: Callable classes for adding skip connections in residual blocks,
+    such as `UnnormalizedAddSkip` and `NormalizedAddSkip`.
 
 ## Backbones
 
@@ -79,7 +83,7 @@ The architecture is highly configurable. Key parameters include:
   * `channels_multiplier`: A sequence of integers multiplying `base_channels` at
     each resolution level.
   * `num_residual_blocks`: Number of residual blocks at each resolution level.
-  * `downsample_method` / `upsample_method`: The resampling methods to use.
+  * `downsample_fn` / `upsample_fn`: The resampling callable instances to use.
   * `self_attention_bool`: A sequence of booleans indicating whether to use
     self-attention at each resolution.
   * `cross_attention_bool`: A sequence of booleans for using cross-attention.
@@ -113,8 +117,8 @@ unet = Unet(
     base_channels=128,
     channels_multiplier=(1, 2, 4),
     num_residual_blocks=(2, 2, 2),
-    downsample_method='avg_pool',
-    upsample_method='bilinear',
+    downsample_fn=hd.architecture.AvgPoolDownsample(),
+    upsample_fn=hd.architecture.ImageResizeUpsample(resize_method='bilinear'),
     self_attention_bool=(False, True, True),
     cross_attention_bool=(False, True, True),
     attention_num_heads=8,
@@ -124,7 +128,7 @@ unet = Unet(
     normalization_type='group_norm',
     normalization_num_groups=32,
     activation='silu',
-    skip_connection_method='normalized_add',
+    skip_connection_fn=hd.architecture.NormalizedAddSkip(),
 )
 
 variables = unet.init(key, x, conditioning_embeddings, is_training=False)
@@ -147,12 +151,12 @@ positional encoding.
 Key parameters:
 
   * `num_blocks`: Number of DiT blocks.
-  * `block`: A DiT block module (e.g., `DiTBlockAdaLNZero`).
-  * `encoder`: Optional encoder (e.g., `Patchify` for image inputs).
-  * `decoder`: Optional decoder (e.g., `DePatchify` for image outputs).
-  * `absolute_posenc`: Optional positional encoding module.
-  * `use_padding_mask`: Whether to mask out padding tokens (for tokenized
-    inputs).
+*   `block`: A DiT block module (e.g., `DiTBlockAdaLNZero`).
+    *   `encoder`: Optional encoder (e.g., `Patchify` for image inputs).
+    *   `decoder`: Optional decoder (e.g., `DePatchify` for image outputs).
+    *   `absolute_posenc`: Optional positional encoding module.
+    *   `use_padding_mask`: Whether to mask out padding tokens (for tokenized
+        inputs).
 
 The `DiT` expects an `ADAPTIVE_NORM` conditioning embedding. The `mnist_dit`
 notebook demonstrates its usage.
@@ -291,9 +295,8 @@ both adaptive normalization and cross-attention.
 import jax
 import jax.numpy as jnp
 from hackable_diffusion.lib.architecture.conditioning_encoder import (
-    ConditioningEncoder, SinusoidalTimeEmbedder, LabelEmbedder)
-from hackable_diffusion.lib.architecture.arch_typing import (
-    ConditioningMechanism, EmbeddingMergeMethod)
+    ConditioningEncoder, SinusoidalTimeEmbedder, LabelEmbedder,
+    SumEmbeddings)
 
 key = jax.random.PRNGKey(0)
 
@@ -315,7 +318,7 @@ conditioning_encoder = ConditioningEncoder(
         'label_adanorm': label_embedder_adanorm,
         'label_xattn': label_embedder_xattn,
     },
-    embedding_merging_method=EmbeddingMergeMethod.SUM,
+    merge_embeddings_fn=SumEmbeddings(),
     conditioning_rules={
         'time': 'adaptive_norm',
         'label_adanorm': 'adaptive_norm',
@@ -359,4 +362,4 @@ print(f"Cross Attention embedding shape: {xattn_emb.shape}")
     `conditioning_embedders` plus a key for `'time'`.
   * When multiple embeddings are routed to the same mechanism (like `time` and
     `label_adanorm` both to `ADAPTIVE_NORM`), they are combined using
-    `embedding_merging_method`. If summing, their feature dimensions must match.
+    `merge_embeddings_fn`. If summing, their feature dimensions must match.

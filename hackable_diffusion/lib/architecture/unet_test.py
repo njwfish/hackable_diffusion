@@ -17,22 +17,22 @@
 import dataclasses
 
 from hackable_diffusion.lib.architecture import arch_typing
+from hackable_diffusion.lib.architecture import sequence_embedders
 from hackable_diffusion.lib.architecture import unet
+from hackable_diffusion.lib.architecture import unet_blocks
 import jax
 import jax.numpy as jnp
 
 from absl.testing import absltest
 from absl.testing import parameterized
 
-################################################################################
-# MARK: Type Aliases
-################################################################################
 
-RoPEPositionType = arch_typing.RoPEPositionType
+
+# MARK: Type Aliases
+
+RoPEPositionsFn = sequence_embedders.RoPEPositionsFn
+SquareRoPEPositions = sequence_embedders.SquareRoPEPositions
 NormalizationType = arch_typing.NormalizationType
-DownsampleType = arch_typing.DownsampleType
-UpsampleType = arch_typing.UpsampleType
-SkipConnectionMethod = arch_typing.SkipConnectionMethod
 INVALID_INT = arch_typing.INVALID_INT
 
 
@@ -49,8 +49,10 @@ class Config:
   num_residual_blocks: tuple[int, ...] = (1, 1)
 
   # resampling
-  downsample_method: DownsampleType = DownsampleType.AVG_POOL
-  upsample_method: UpsampleType = UpsampleType.NEAREST
+  downsample_fn: unet_blocks.DownsampleFn = unet_blocks.AvgPoolDownsample()
+  upsample_fn: unet_blocks.UpsampleFn = unet_blocks.ImageResizeUpsample(
+      resize_method='nearest'
+  )
 
   # dropout
   dropout_rate: tuple[float, ...] = (0.0, 0.0)
@@ -63,7 +65,7 @@ class Config:
   attention_head_dim: int = 16
   attention_normalize_qk: bool = True
   attention_use_rope: bool = False
-  attention_rope_position_type: RoPEPositionType = RoPEPositionType.SQUARE
+  attention_rope_positions_fn: RoPEPositionsFn = SquareRoPEPositions()
 
   # normalization
   normalization_type: NormalizationType = NormalizationType.GROUP_NORM
@@ -71,8 +73,8 @@ class Config:
 
   # other
   activation: str = 'silu'
-  skip_connection_method: SkipConnectionMethod = (
-      SkipConnectionMethod.UNNORMALIZED_ADD
+  skip_connection_fn: unet_blocks.SkipConnectionFn = (
+      unet_blocks.UnnormalizedAddSkip()
   )
 
   output_channels: int | None = None

@@ -17,8 +17,8 @@
 from typing import Literal, Tuple
 
 from hackable_diffusion.lib.architecture import arch_typing
-from hackable_diffusion.lib.architecture import arch_utils
 from hackable_diffusion.lib.architecture import normalization
+from hackable_diffusion.lib.architecture import sequence_embedders
 from hackable_diffusion.lib.architecture import unet_blocks
 import jax
 import jax.numpy as jnp
@@ -30,11 +30,8 @@ from absl.testing import parameterized
 # MARK: Type Aliases
 ################################################################################
 
-RoPEPositionType = arch_typing.RoPEPositionType
+SquareRoPEPositions = sequence_embedders.SquareRoPEPositions
 NormalizationType = arch_typing.NormalizationType
-DownsampleType = arch_typing.DownsampleType
-UpsampleType = arch_typing.UpsampleType
-SkipConnectionMethod = arch_typing.SkipConnectionMethod
 ResampleType = Literal['down', 'up'] | None
 INVALID_INT = arch_typing.INVALID_INT
 
@@ -117,21 +114,20 @@ class ConvResidualBlockTest(parameterized.TestCase):
         num_groups=4 if normalization_type == 'group_norm' else None,
         dtype=jnp.float32,
     )
-    skip_connection_fn = arch_utils.get_skip_connection_fn(
-        SkipConnectionMethod.UNNORMALIZED_ADD
-    )
-    downsample_fn = arch_utils.get_downsample_fn(DownsampleType.AVG_POOL)
-    upsample_fn = arch_utils.get_upsample_fn(UpsampleType.NEAREST)
+    downsample_fn = unet_blocks.AvgPoolDownsample()
+    upsample_fn = unet_blocks.ImageResizeUpsample(resize_method='nearest')
 
     return unet_blocks.ConvResidualBlock(
         norm_factory=norm_factory,
         output_channels=32,
         activation_fn=jax.nn.silu,
-        skip_connection_fn=skip_connection_fn,
-        downsample_fn=downsample_fn if resample_type == 'down' else None,
-        upsample_fn=upsample_fn if resample_type == 'up' else None,
+        skip_connection_fn=unet_blocks.UnnormalizedAddSkip(),
+        resample_fn=(
+            downsample_fn
+            if resample_type == 'down'
+            else (upsample_fn if resample_type == 'up' else None)
+        ),
         dropout_rate=0.1,
-        resample_type=resample_type,
         dtype=jnp.float32,
     )
 
@@ -191,19 +187,16 @@ class AttentionResidualBlockTest(parameterized.TestCase):
         num_groups=4 if normalization_type == 'group_norm' else None,
         dtype=jnp.float32,
     )
-    skip_connection_fn = arch_utils.get_skip_connection_fn(
-        SkipConnectionMethod.UNNORMALIZED_ADD
-    )
     return unet_blocks.AttentionResidualBlock(
         norm_factory=norm_factory,
-        skip_connection_fn=skip_connection_fn,
+        skip_connection_fn=unet_blocks.UnnormalizedAddSkip(),
         cross_attention_bool=cross_attention_bool,
         dtype=jnp.float32,
         head_dim=16,
         num_heads=INVALID_INT,
         normalize_qk=True,
         use_rope=False,
-        rope_position_type=RoPEPositionType.SQUARE,
+        rope_positions_fn=SquareRoPEPositions(),
     )
 
   @parameterized.named_parameters(
