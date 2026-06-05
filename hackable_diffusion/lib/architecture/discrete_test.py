@@ -19,7 +19,9 @@ import itertools
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import discrete
 from hackable_diffusion.lib.architecture import mlp
+from hackable_diffusion.lib.architecture import sequence_embedders
 from hackable_diffusion.lib.architecture import unet
+from hackable_diffusion.lib.architecture import unet_blocks
 import jax
 import jax.numpy as jnp
 import numpy as np
@@ -74,8 +76,8 @@ class ConditionalDiscreteBackboneTest(parameterized.TestCase):
         base_channels=8,
         channels_multiplier=(2,),
         num_residual_blocks=(2,),
-        downsample_method=arch_typing.DownsampleType.AVG_POOL,
-        upsample_method=arch_typing.UpsampleType.NEAREST,
+        downsample_fn=unet_blocks.AvgPoolDownsample(),
+        upsample_fn=unet_blocks.ImageResizeUpsample(resize_method='nearest'),
         dropout_rate=(0.0,),
         bottleneck_dropout_rate=0.0,
         self_attention_bool=(False,),
@@ -84,11 +86,11 @@ class ConditionalDiscreteBackboneTest(parameterized.TestCase):
         attention_head_dim=8,
         attention_normalize_qk=False,
         attention_use_rope=False,
-        attention_rope_position_type=arch_typing.RoPEPositionType.SQUARE,
+        attention_rope_positions_fn=sequence_embedders.SquareRoPEPositions(),
         normalization_type=arch_typing.NormalizationType.RMS_NORM,
         normalization_num_groups=0,
         activation='relu',
-        skip_connection_method=arch_typing.SkipConnectionMethod.UNNORMALIZED_ADD,
+        skip_connection_fn=unet_blocks.UnnormalizedAddSkip(),
     )
 
   # TokenEmbedder tests

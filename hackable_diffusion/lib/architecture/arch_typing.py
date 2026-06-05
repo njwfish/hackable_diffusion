@@ -43,45 +43,10 @@ INVALID_INT = -1
 ################################################################################
 
 
-class EmbeddingMergeMethod(enum.StrEnum):
-  """Methods for merging embeddings in the conditioning encoder."""
-
-  SUM = "sum"
-  CONCAT = "concat"
-
-
-class RoPEPositionType(enum.StrEnum):
-  """Rotary Position Embedding (RoPE) types."""
-
-  SQUARE = "square"
-  LINEAR = "linear"
-
-
 class NormalizationType(enum.StrEnum):
   RMS_NORM = "rms_norm"
   GROUP_NORM = "group_norm"
   LAYER_NORM = "layer_norm"
-
-
-class DownsampleType(enum.StrEnum):
-  """Image downsampling methods."""
-
-  MAX_POOL = "max_pool"
-  AVG_POOL = "avg_pool"
-
-
-class UpsampleType(enum.StrEnum):
-  """Image upsampling methods."""
-
-  NEAREST = "nearest"
-  BILINEAR = "bilinear"
-
-
-class SkipConnectionMethod(enum.StrEnum):
-  """Methods for adding skip connections."""
-
-  UNNORMALIZED_ADD = "unnormalized_add"
-  NORMALIZED_ADD = "normalized_add"
 
 
 ################################################################################
@@ -97,7 +62,7 @@ class SkipConnectionMethod(enum.StrEnum):
 #    - concatenate
 #    - sum
 #    - self_conditioning
-#
+
 ConditioningEmbeddings = dict[str, Any]
 
 ################################################################################
@@ -114,37 +79,8 @@ class ConditionalBackbone(Protocol):
       self,
       x: DataTree,
       conditioning_embeddings: ConditioningEmbeddings,
+      *,
       is_training: bool,
   ) -> DataTree:
     ...
 
-
-class SkipConnectionFn(Protocol):
-  """Skip connection function."""
-
-  def __call__(
-      self,
-      x: Float["batch height width channels"],
-      skip: Float["batch height width channels"],
-  ) -> Float["batch height width channels"]:
-    ...
-
-
-class DownsampleFn(Protocol):
-  """Downsample function."""
-
-  def __call__(
-      self,
-      x: Float["batch height width channels"],
-  ) -> Float["batch height//2 width//2 channels"]:
-    ...
-
-
-class UpsampleFn(Protocol):
-  """Upsample function."""
-
-  def __call__(
-      self,
-      x: Float["batch height width channels"],
-  ) -> Float["batch 2*height 2*width channels"]:
-    ...

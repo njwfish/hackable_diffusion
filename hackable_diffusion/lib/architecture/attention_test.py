@@ -18,6 +18,7 @@ from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib import test_helpers
 from hackable_diffusion.lib.architecture import arch_typing
 from hackable_diffusion.lib.architecture import attention
+from hackable_diffusion.lib.architecture import sequence_embedders
 import jax
 import jax.numpy as jnp
 import kauldron.ktyping as kt
@@ -32,7 +33,9 @@ from absl.testing import parameterized
 
 Float = hd_typing.Float
 
-RoPEPositionType = arch_typing.RoPEPositionType
+LinearRoPEPositions = sequence_embedders.LinearRoPEPositions
+SquareRoPEPositions = sequence_embedders.SquareRoPEPositions
+RoPEPositionsFn = sequence_embedders.RoPEPositionsFn
 INVALID_INT = arch_typing.INVALID_INT
 
 ################################################################################
@@ -270,25 +273,25 @@ class AttentionTest(parameterized.TestCase):
     )
 
   @parameterized.named_parameters(
-      ("self_attention_linear", None, True, RoPEPositionType.LINEAR),
-      ("self_attention_square", None, True, RoPEPositionType.SQUARE),
-      ("cross_attention_linear", "c", True, RoPEPositionType.LINEAR),
-      ("cross_attention_square", "c", True, RoPEPositionType.SQUARE),
-      ("self_attention_no_rope", None, False, RoPEPositionType.LINEAR),
-      ("cross_attention_no_rope", "c", False, RoPEPositionType.LINEAR),
+      ("self_attention_linear", None, True, LinearRoPEPositions()),
+      ("self_attention_square", None, True, SquareRoPEPositions()),
+      ("cross_attention_linear", "c", True, LinearRoPEPositions()),
+      ("cross_attention_square", "c", True, SquareRoPEPositions()),
+      ("self_attention_no_rope", None, False, LinearRoPEPositions()),
+      ("cross_attention_no_rope", "c", False, LinearRoPEPositions()),
   )
   def test_multi_head_attention_output_shape(
       self,
       context: Float["batch sequence2 dim1"] | None,
       use_rope: bool,
-      rope_position_type: RoPEPositionType,
+      rope_positions_fn: RoPEPositionsFn,
   ):
     """Tests the output shape of MultiHeadAttention."""
     c = self.c if context == "c" else None
     module = attention.MultiHeadAttention(
         num_heads=self.num_heads,
         use_rope=use_rope,
-        rope_position_type=rope_position_type,
+        rope_positions_fn=rope_positions_fn,
     )
     x_curr = jnp.ones((self.batch_size, self.seq_len_kv, self.dim))
     variables = module.init(self.rng, x_curr, c)
@@ -334,7 +337,7 @@ class AttentionTest(parameterized.TestCase):
     module = attention.MultiHeadAttention(
         num_heads=self.num_heads,
         use_rope=True,
-        rope_position_type=RoPEPositionType.SQUARE,
+        rope_positions_fn=SquareRoPEPositions(),
         normalize_qk=normalize_qk,
     )
     variables = module.init(self.rng, self.x, self.c)
@@ -407,6 +410,254 @@ class AttentionTest(parameterized.TestCase):
         (ValueError, kt.KTypeCheckError), expected_regex
     ):
       module.init(self.rng, self.x, c, mask=invalid_mask)
+
+  # MARK: Dropout Tests
+
+  def test_multi_head_attention_dropout_disabled_during_evaluation(self):
+    """Verifies dropout is inactive when is_training=False (evaluation mode)."""
+    # Initialize with an aggressive dropout rate (e.g., 0.5)
+    module = attention.MultiHeadAttention(
+        num_heads=self.num_heads,
+        dropout_rate=0.5,
+    )
+
+    # Generate random inputs to capture exact matrix values
+    rng1, rng2 = jax.random.split(self.rng)
+    x_rand = jax.random.normal(
+        rng1, (self.batch_size, self.seq_len_q, self.dim)
+    )
+
+    variables = module.init(rng2, x_rand, c=None)
+
+    # Run twice with evaluation mode (is_training=False).
+    # Even with a 50% dropout rate, the outputs should be completely identical.
+    output_eval_1 = module.apply(variables, x_rand, c=None, is_training=False)
+    output_eval_2 = module.apply(variables, x_rand, c=None, is_training=False)
+
+    np.testing.assert_allclose(
+        output_eval_1,
+        output_eval_2,
+        atol=1e-6,
+    )
+
+  def test_multi_head_attention_dropout_active_during_training(self):
+    """Verifies dropout alters outputs randomly when is_training=True."""
+    module = attention.MultiHeadAttention(
+        num_heads=self.num_heads,
+        dropout_rate=0.5,
+    )
+
+    rng1, rng2, rng_dropout1, rng_dropout2 = jax.random.split(self.rng, 4)
+    x_rand = jax.random.normal(
+        rng1, (self.batch_size, self.seq_len_q, self.dim)
+    )
+
+    variables = module.init(rng2, x_rand, c=None)
+
+    # Flax requires a 'dropout' RNG stream state passed inside a dict
+    # whenever execution hits an active nn.Dropout layer during training.
+    output_train_1 = module.apply(
+        variables,
+        x_rand,
+        c=None,
+        is_training=True,
+        rngs={"dropout": rng_dropout1},
+    )
+    output_train_2 = module.apply(
+        variables,
+        x_rand,
+        c=None,
+        is_training=True,
+        rngs={"dropout": rng_dropout2},
+    )
+
+    # Since two distinct keys were injected into the dropout stream,
+    # different masks were dropped, meaning outputs must differ.
+    self.assertFalse(jnp.allclose(output_train_1, output_train_2, atol=1e-5))
+
+  def test_multi_head_attention_dropout_scales_retained_activations(self):
+    """Verifies dropout scales active entries by 1 / (1 - rate) during training."""
+    # Set a 50% rate. Active entries must double in value (multiplied by 2.0)
+    rate = 0.5
+    module = attention.MultiHeadAttention(
+        num_heads=self.num_heads,
+        dropout_rate=rate,
+    )
+
+    rng1, rng2, rng_dropout = jax.random.split(self.rng, 3)
+    x_rand = jax.random.normal(
+        rng1, (self.batch_size, self.seq_len_q, self.dim)
+    )
+
+    variables = module.init(rng2, x_rand, c=None)
+
+    output_eval = module.apply(variables, x_rand, c=None, is_training=False)
+    output_train = module.apply(
+        variables,
+        x_rand,
+        c=None,
+        is_training=True,
+        rngs={"dropout": rng_dropout},
+    )
+
+    # Standard inverted dropout behavior means active values must be larger
+    # than non-dropped values to preserve target expectation bounds.
+    max_train_val = float(jnp.max(jnp.abs(output_train)))
+    max_eval_val = float(jnp.max(jnp.abs(output_eval)))
+
+    self.assertGreater(max_train_val, max_eval_val)
+
+  # MARK: use_bias tests
+
+  @parameterized.named_parameters(
+      ("with_bias", True),
+      ("no_bias", False),
+  )
+  def test_multi_head_attention_use_bias(self, use_bias):
+    """Verifies that use_bias controls bias in all projections."""
+    module = attention.MultiHeadAttention(
+        num_heads=self.num_heads,
+        use_bias=use_bias,
+    )
+    variables = module.init(self.rng, self.x, c=None)
+    leaves_with_paths = test_helpers.get_leaves_with_paths(variables)
+
+    bias_paths = [p for p in leaves_with_paths if "bias" in p]
+    if use_bias:
+      # Dense_Q, Dense_K, Dense_V, Dense_Output each have a bias
+      self.assertLen(bias_paths, 4)
+    else:
+      self.assertEmpty(bias_paths)
+
+  def test_multi_head_attention_no_bias_output_shape(self):
+    """Verifies output shape is correct when use_bias=False."""
+    module = attention.MultiHeadAttention(
+        num_heads=self.num_heads,
+        use_bias=False,
+    )
+    variables = module.init(self.rng, self.x, c=None)
+    output = module.apply(variables, self.x, c=None, is_training=False)
+    self.assertEqual(output.shape, self.x.shape)
+
+  def test_multi_head_attention_no_bias_param_shapes(self):
+    """Verifies parameter shapes when use_bias=False."""
+    module = attention.MultiHeadAttention(
+        num_heads=self.num_heads,
+        use_bias=False,
+    )
+    variables = module.init(self.rng, self.x, c=None)
+    variables_shapes = test_helpers.get_pytree_shapes(variables)
+
+    expected = {
+        "params": {
+            "Dense_Q": {"kernel": (self.dim, self.dim)},
+            "Dense_K": {"kernel": (self.dim, self.dim)},
+            "Dense_V": {"kernel": (self.dim, self.dim)},
+            "Dense_Output": {"kernel": (self.dim, self.dim)},
+        }
+    }
+    self.assertDictEqual(expected, variables_shapes)
+
+  # MARK: qk_norm_method tests
+
+  @parameterized.named_parameters(
+      ("l2", "l2"),
+      ("rms_norm", "rms_norm"),
+  )
+  def test_qk_norm_method_output_shape(self, qk_norm_method):
+    """Verifies output shape is correct for each qk_norm_method."""
+    module = attention.MultiHeadAttention(
+        num_heads=self.num_heads,
+        normalize_qk=True,
+        qk_norm_method=qk_norm_method,
+    )
+    variables = module.init(self.rng, self.x, c=None)
+    output = module.apply(variables, self.x, c=None, is_training=False)
+    self.assertEqual(output.shape, self.x.shape)
+
+  def test_qk_norm_l2_param_shapes(self):
+    """Verifies L2 QK normalization creates a norm_qk_scale parameter."""
+    module = attention.MultiHeadAttention(
+        num_heads=self.num_heads,
+        normalize_qk=True,
+        qk_norm_method="l2",
+    )
+    variables = module.init(self.rng, self.x, c=None)
+    leaves = test_helpers.get_leaves_with_paths(variables)
+    # L2 method should have a norm_qk_scale param
+    self.assertIn("params/norm_qk_scale", leaves)
+    self.assertEqual(leaves["params/norm_qk_scale"].shape, (1, 1, 1, 1))
+    # Should NOT have RMSNorm_Q/K
+    rms_paths = [p for p in leaves if "RMSNorm" in p]
+    self.assertEmpty(rms_paths)
+
+  def test_qk_norm_rms_norm_param_shapes(self):
+    """Verifies RMSNorm QK normalization creates RMSNorm_Q/K scale params."""
+    module = attention.MultiHeadAttention(
+        num_heads=self.num_heads,
+        normalize_qk=True,
+        qk_norm_method="rms_norm",
+    )
+    variables = module.init(self.rng, self.x, c=None)
+    leaves = test_helpers.get_leaves_with_paths(variables)
+    # RMSNorm method should have RMSNorm_Q/scale and RMSNorm_K/scale
+    self.assertIn("params/RMSNorm_Q/scale", leaves)
+    self.assertIn("params/RMSNorm_K/scale", leaves)
+    self.assertEqual(leaves["params/RMSNorm_Q/scale"].shape, (self.head_dim,))
+    self.assertEqual(leaves["params/RMSNorm_K/scale"].shape, (self.head_dim,))
+    # Should NOT have norm_qk_scale
+    self.assertNotIn("params/norm_qk_scale", leaves)
+
+  def test_qk_norm_rms_norm_with_rope(self):
+    """Verifies RMSNorm QK norm works with RoPE (norm before RoPE)."""
+    module = attention.MultiHeadAttention(
+        num_heads=self.num_heads,
+        normalize_qk=True,
+        qk_norm_method="rms_norm",
+        use_rope=True,
+        rope_positions_fn=SquareRoPEPositions(),
+    )
+    x = jnp.ones((self.batch_size, self.seq_len_kv, self.dim))
+    variables = module.init(self.rng, x, c=None)
+    output = module.apply(variables, x, c=None, is_training=False)
+    self.assertEqual(output.shape, x.shape)
+
+  def test_qk_norm_l2_with_rope(self):
+    """Verifies L2 QK norm works with RoPE (norm before RoPE)."""
+    module = attention.MultiHeadAttention(
+        num_heads=self.num_heads,
+        normalize_qk=True,
+        qk_norm_method="l2",
+        use_rope=True,
+        rope_positions_fn=SquareRoPEPositions(),
+    )
+    x = jnp.ones((self.batch_size, self.seq_len_kv, self.dim))
+    variables = module.init(self.rng, x, c=None)
+    output = module.apply(variables, x, c=None, is_training=False)
+    self.assertEqual(output.shape, x.shape)
+
+  def test_qk_norm_disabled_has_no_norm_params(self):
+    """Verifies that normalize_qk=False creates no norm params."""
+    module = attention.MultiHeadAttention(
+        num_heads=self.num_heads,
+        normalize_qk=False,
+    )
+    variables = module.init(self.rng, self.x, c=None)
+    leaves = test_helpers.get_leaves_with_paths(variables)
+    norm_paths = [p for p in leaves if "norm_qk" in p or "RMSNorm" in p]
+    self.assertEmpty(norm_paths)
+
+  def test_qk_norm_invalid_method_raises_error(self):
+    """Verifies that an invalid qk_norm_method raises ValueError."""
+    module = attention.MultiHeadAttention(
+        num_heads=self.num_heads,
+        normalize_qk=True,
+        qk_norm_method="invalid_method",  # pytype: disable=wrong-arg-types
+    )
+    with self.assertRaisesRegex(
+        ValueError, "Unsupported QK normalization method"
+    ):
+      module.init(self.rng, self.x, c=None)
 
 
 if __name__ == "__main__":

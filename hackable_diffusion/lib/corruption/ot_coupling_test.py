@@ -33,11 +33,10 @@ from __future__ import annotations
 import unittest
 
 import jax
-jax.config.update("jax_enable_x64", True)
-
 import jax.numpy as jnp
 import numpy as np
 import optax
+import pytest
 
 from hackable_diffusion.lib.corruption import base
 from hackable_diffusion.lib.corruption import couplings
@@ -45,6 +44,13 @@ from hackable_diffusion.lib.corruption import interpolants
 from hackable_diffusion.lib.corruption import priors
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.corruption import targets
+
+
+@pytest.fixture(autouse=True)
+def _enable_x64():
+  """This module's numerics require 64-bit precision (see conftest.py)."""
+  jax.config.update("jax_enable_x64", True)
+  yield
 
 
 def _sample_moons(key: jax.Array, batch: int) -> jax.Array:

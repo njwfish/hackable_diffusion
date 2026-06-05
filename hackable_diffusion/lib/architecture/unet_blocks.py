@@ -14,13 +14,16 @@
 
 """Unet building blocks."""
 
-from typing import Literal
+import dataclasses
+import functools
+from typing import Union
 import flax.linen as nn
 from hackable_diffusion.lib import hd_typing
 from hackable_diffusion.lib.architecture import arch_typing
-from hackable_diffusion.lib.architecture import arch_utils
 from hackable_diffusion.lib.architecture import attention
 from hackable_diffusion.lib.architecture import normalization
+from hackable_diffusion.lib.architecture import sequence_embedders
+import jax
 import jax.numpy as jnp
 import kauldron.ktyping as kt
 
@@ -32,21 +35,108 @@ DType = hd_typing.DType
 Float = hd_typing.Float
 
 ActivationFn = arch_typing.ActivationFn
-SkipConnectionFn = arch_typing.SkipConnectionFn
-UpsampleFn = arch_typing.UpsampleFn
-DownsampleFn = arch_typing.DownsampleFn
-RoPEPositionType = arch_typing.RoPEPositionType
+RoPEPositionsFn = sequence_embedders.RoPEPositionsFn
+SquareRoPEPositions = sequence_embedders.SquareRoPEPositions
 NormalizationLayerFactory = normalization.NormalizationLayerFactory
-
-kernel_init = arch_utils.kernel_init
-Conv3x3 = arch_utils.Conv3x3
-ZerosConv3x3 = arch_utils.ZerosConv3x3
-Conv1x1 = arch_utils.Conv1x1
 
 BaseInput = Float["batch height width input_channels"]
 BaseOutput = Float["batch height width output_channels"]
 UpsampleOutput = Float["batch height*2 width*2 output_channels"]
 DownsampleOutput = Float["batch height/2 width/2 output_channels"]
+
+# Reusable NN Components
+kernel_init = nn.initializers.lecun_normal()
+Conv3x3 = functools.partial(nn.Conv, kernel_size=(3, 3), padding="SAME")
+ZerosConv3x3 = functools.partial(
+    nn.Conv,
+    kernel_size=(3, 3),
+    padding="SAME",
+    kernel_init=nn.initializers.zeros_init(),
+    bias_init=nn.initializers.zeros_init(),
+)
+Conv1x1 = functools.partial(nn.Conv, kernel_size=(1, 1), padding="SAME")
+
+
+################################################################################
+# MARK: Callable classes for skip connections, downsampling, and upsampling
+################################################################################
+
+
+class UnnormalizedAddSkip:
+  """Unnormalized addition skip connection (x + skip)."""
+
+  def __call__(
+      self,
+      x: Float["batch height width channels"],
+      skip: Float["batch height width channels"],
+  ) -> Float["batch height width channels"]:
+    return x + skip
+
+
+class NormalizedAddSkip:
+  """Normalized addition skip connection ((x + skip) / sqrt(2))."""
+
+  def __call__(
+      self,
+      x: Float["batch height width channels"],
+      skip: Float["batch height width channels"],
+  ) -> Float["batch height width channels"]:
+    return (x + skip) / jnp.sqrt(2)
+
+
+class MaxPoolDownsample:
+  """Max pooling downsample function."""
+
+  def __init__(
+      self,
+      window_shape: tuple[int, int] = (2, 2),
+      strides: tuple[int, int] = (2, 2),
+  ):
+    self.window_shape = window_shape
+    self.strides = strides
+
+  def __call__(
+      self, x: Float["batch height width channels"]
+  ) -> Float["batch height/2 width/2 channels"]:
+    return nn.max_pool(x, window_shape=self.window_shape, strides=self.strides)
+
+
+class AvgPoolDownsample:
+  """Average pooling downsample function."""
+
+  def __init__(
+      self,
+      window_shape: tuple[int, int] = (2, 2),
+      strides: tuple[int, int] = (2, 2),
+  ):
+    self.window_shape = window_shape
+    self.strides = strides
+
+  def __call__(
+      self, x: Float["batch height width channels"]
+  ) -> Float["batch height/2 width/2 channels"]:
+    return nn.avg_pool(x, window_shape=self.window_shape, strides=self.strides)
+
+
+class ImageResizeUpsample:
+  """Image resizing upsample function."""
+
+  def __init__(self, resize_method: str = "nearest"):
+    self.resize_method = resize_method
+
+  def __call__(
+      self, x: Float["batch height width channels"]
+  ) -> Float["batch height*2 width*2 channels"]:
+    return jax.image.resize(
+        x,
+        (x.shape[0], 2 * x.shape[1], 2 * x.shape[2], x.shape[3]),
+        method=self.resize_method,
+    )
+
+SkipConnectionFn = Union[UnnormalizedAddSkip, NormalizedAddSkip]
+DownsampleFn = Union[MaxPoolDownsample, AvgPoolDownsample]
+UpsampleFn = Union[ImageResizeUpsample]
+
 
 ################################################################################
 # MARK: Input and Output Blocks
@@ -98,7 +188,7 @@ class OutputConvBlock(nn.Module):
   dtype: DType = jnp.float32
 
   def setup(self):
-    self.unconditional_norm = self.norm_factory.unconditional_norm_factory()
+    self.unconditional_norm = self.norm_factory.unconditional_norm()
 
     if self.zero_init:
       self.output_conv = ZerosConv3x3
@@ -144,21 +234,13 @@ class ConvResidualBlock(nn.Module):
   output_channels: int
   activation_fn: ActivationFn
   skip_connection_fn: SkipConnectionFn
-  resample_type: Literal["down", "up"] | None = None
-  downsample_fn: DownsampleFn | None = None
-  upsample_fn: UpsampleFn | None = None
+  resample_fn: DownsampleFn | UpsampleFn | None = None
   dropout_rate: float = 0.0
   dtype: DType = jnp.float32
 
   def setup(self):
-    if self.resample_type == "down" and self.downsample_fn is None:
-      raise ValueError("downsample_fn must be provided for down-resampling.")
-
-    if self.resample_type == "up" and self.upsample_fn is None:
-      raise ValueError("upsample_fn must be provided for up-resampling.")
-
-    self.unconditional_norm = self.norm_factory.unconditional_norm_factory()
-    self.conditional_norm = self.norm_factory.conditional_norm_factory()
+    self.unconditional_norm = self.norm_factory.unconditional_norm()
+    self.conditional_norm = self.norm_factory.conditional_norm()
 
     self.init_input = kernel_init
     self.init_output = nn.initializers.zeros_init()
@@ -167,7 +249,7 @@ class ConvResidualBlock(nn.Module):
   @kt.typechecked
   def __call__(
       self,
-      x: Float["batch height width channels"],
+      x: BaseInput,
       adaptive_norm_emb: Float["batch emb_dim"],
       is_training: bool,
   ) -> BaseOutput | UpsampleOutput | DownsampleOutput:
@@ -176,15 +258,9 @@ class ConvResidualBlock(nn.Module):
     x = self.unconditional_norm(x)
     x = self.activation_fn(x)
 
-    if self.resample_type is not None:
-      if self.resample_type == "down":
-        x = self.downsample_fn(x)
-        skip = self.downsample_fn(skip)
-      elif self.resample_type == "up":
-        x = self.upsample_fn(x)
-        skip = self.upsample_fn(skip)
-      else:
-        raise ValueError(f"Unknown resample type: {self.resample_type}")
+    if self.resample_fn:
+      x = self.resample_fn(x)
+      skip = self.resample_fn(skip)
 
     x = Conv3x3(
         features=self.output_channels,
@@ -205,14 +281,6 @@ class ConvResidualBlock(nn.Module):
       skip = Conv1x1(features=self.output_channels, dtype=self.dtype)(skip)
 
     x = self.skip_connection_fn(x, skip)
-
-    # check types
-    if self.downsample_fn is not None:
-      kt.check_type(x, DownsampleOutput)
-    elif self.upsample_fn is not None:
-      kt.check_type(x, UpsampleOutput)
-    else:
-      kt.check_type(x, BaseOutput)
 
     return x
 
@@ -235,7 +303,7 @@ class AttentionResidualBlock(nn.Module):
       `cross_attention_emb` as key/value source if `cross_attention_emb` is not
       None. If False, uses self-attention.
     use_rope: Whether to use rotary positional embeddings in attention.
-    rope_position_type: The type of rotary positional embeddings to use.
+    rope_positions_fn: The position function of rotary positional embeddings.
     skip_connection_fn: The skip connection function.
     num_heads: The number of attention heads. If set to INVALID_INT, it is
       inferred from head_dim and input channels.
@@ -249,7 +317,7 @@ class AttentionResidualBlock(nn.Module):
   norm_factory: NormalizationLayerFactory
   cross_attention_bool: bool
   use_rope: bool
-  rope_position_type: RoPEPositionType
+  rope_positions_fn: RoPEPositionsFn
   skip_connection_fn: SkipConnectionFn
   num_heads: int
   head_dim: int
@@ -257,7 +325,7 @@ class AttentionResidualBlock(nn.Module):
   dtype: DType = jnp.float32
 
   def setup(self):
-    self.unconditional_norm = self.norm_factory.unconditional_norm_factory()
+    self.unconditional_norm = self.norm_factory.unconditional_norm()
 
   @nn.compact
   @kt.typechecked
@@ -277,7 +345,7 @@ class AttentionResidualBlock(nn.Module):
         head_dim=self.head_dim,
         use_rope=self.use_rope,
         normalize_qk=self.normalize_qk,
-        rope_position_type=self.rope_position_type,
+        rope_positions_fn=self.rope_positions_fn,
         zero_init_output=True,
         dtype=self.dtype,
     )(x=x, c=cross_attention_emb if self.cross_attention_bool else None)

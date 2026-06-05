@@ -63,7 +63,7 @@ def get_config():
       conditioning_embedders={
           "label": label_encoder,
       },
-      embedding_merging_method=hd.architecture.EmbeddingMergeMethod.SUM,
+      merge_embeddings_fn=hd.architecture.SumEmbeddings(),
       conditioning_rules={
           "label": 'adaptive_norm',
           "time": 'adaptive_norm',
@@ -76,21 +76,21 @@ def get_config():
       base_channels=192,
       channels_multiplier=(1, 2, 3, 4),
       num_residual_blocks=(3, 3, 3, 3),
-      downsample_method=hd.architecture.DownsampleType.AVG_POOL,
-      upsample_method=hd.architecture.UpsampleType.NEAREST,
+      downsample_fn=hd.architecture.AvgPoolDownsample(),
+      upsample_fn=hd.architecture.ImageResizeUpsample(resize_method="nearest"),
       dropout_rate=(0.0, 0.1, 0.1, 0.1),
       bottleneck_dropout_rate=0.1,
       self_attention_bool=(False, False, True, True),
       cross_attention_bool=(False, False, False, False),
       attention_normalize_qk=True,
       attention_use_rope=True,
-      attention_rope_position_type=hd.architecture.RoPEPositionType.SQUARE,
+      attention_rope_positions_fn=hd.architecture.SquareRoPEPositions(),
       attention_num_heads=-1,
       attention_head_dim=64,
       normalization_type=hd.architecture.NormalizationType.RMS_NORM,
       normalization_num_groups=None,
       activation="gelu",
-      skip_connection_method=hd.architecture.SkipConnectionMethod.UNNORMALIZED_ADD,
+      skip_connection_fn=hd.architecture.UnnormalizedAddSkip(),
   )
 
   # MARK: Model / Diffusion

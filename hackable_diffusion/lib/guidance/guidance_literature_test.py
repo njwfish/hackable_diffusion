@@ -56,10 +56,9 @@ from __future__ import annotations
 import unittest
 
 import jax
-jax.config.update("jax_enable_x64", True)
-
 import jax.numpy as jnp
 import numpy as np
+import pytest
 
 from hackable_diffusion.lib.corruption import schedules
 from hackable_diffusion.lib.corruption.gaussian import GaussianProcess
@@ -92,6 +91,13 @@ from hackable_diffusion.lib.guidance.twists import (
     GaussianLikelihoodTwistFn,
     NormResidualTwistFn,
 )
+
+
+@pytest.fixture(autouse=True)
+def _enable_x64():
+  """This module's numerics require 64-bit precision (see conftest.py)."""
+  jax.config.update("jax_enable_x64", True)
+  yield
 
 
 ################################################################################
